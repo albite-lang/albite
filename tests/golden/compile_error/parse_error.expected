@@ -1,0 +1,10 @@
+[E0117] Error: unterminated string literal
+   ╭─[tests/golden/compile_error/parse_error.tg:3:5]
+   │
+ 3 │     "never closed
+   │     ──────┬──────  
+   │           ╰──────── Lexical("unterminated string literal")
+───╯
+
+error: aborting due to 1 error (2 before deduplication)
+error: compilation failed: parse errors

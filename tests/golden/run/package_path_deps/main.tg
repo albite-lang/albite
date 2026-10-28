@@ -1,0 +1,11 @@
+// Two local path dependencies (ADR 29.9.26g): `geometry`, whose root imports
+// its own submodule absolutely, and `units`. Each keeps private helpers the
+// application cannot see; their names differ, so no cross-package collision.
+
+use geometry::area;
+use geometry::shapes::{Shape, Square, Rect};
+use units::double;
+
+fn main() -> Nat {
+    double(area(Square(3)) + area(Rect(2, 5)))
+}

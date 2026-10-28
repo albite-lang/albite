@@ -1,0 +1,59 @@
+// Unit tests for `albite1 run`'s repeated-name refusal (ADR 13.10.26m AC 2).
+// `first_repeated_name` is pure over strings, so every case is a hand-built
+// list: nothing here elaborates a program. The container proves the refusal
+// itself on the witness goldens (AC 3).
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_bool, assert_eq_string};
+use driver::util::{Option, Some, None, is_none, unwrap_or};
+use driver::pipeline::run::{first_repeated_name};
+
+/// The repeat `first_repeated_name` finds, or `"<none>"`.
+fn repeat_or_none(names: List<String>) -> String {
+    unwrap_or(first_repeated_name(names), "<none>")
+}
+
+// 13.10.26m AC2: no name repeats, so nothing is refused.
+pub fn test_repeated_name_none_when_distinct() -> Unit {
+    let names = Cons("helper", Cons("main", Cons("two", Nil)));
+    assert_eq_bool(is_none(first_repeated_name(names)), true)
+}
+
+// 13.10.26m AC2: two modules' `helper`, adjacent in definition order.
+pub fn test_repeated_name_found_adjacent() -> Unit {
+    let names = Cons("helper", Cons("helper", Cons("main", Nil)));
+    assert_eq_string(repeat_or_none(names), "helper")
+}
+
+// 13.10.26m AC2: the repeat is found when other definitions sit between the
+// two — the sort, not the input order, makes them adjacent.
+pub fn test_repeated_name_found_when_not_adjacent() -> Unit {
+    let names = Cons("helper", Cons("zeta", Cons("main", Cons("alpha", Cons("helper", Nil)))));
+    assert_eq_string(repeat_or_none(names), "helper")
+}
+
+// 13.10.26m AC2: a repeated `main` counts too — `find_main_def` would
+// otherwise silently take the first.
+pub fn test_repeated_name_counts_main() -> Unit {
+    let names = Cons("main", Cons("helper", Cons("main", Nil)));
+    assert_eq_string(repeat_or_none(names), "main")
+}
+
+// 13.10.26m AC2: with two different repeats the byte-order first is named,
+// so the message is the same whatever order the modules were elaborated in.
+pub fn test_repeated_name_first_in_byte_order() -> Unit {
+    let names = Cons("two", Cons("helper", Cons("two", Cons("helper", Nil))));
+    assert_eq_string(repeat_or_none(names), "helper")
+}
+
+// 13.10.26m AC2: the empty program and a single definition repeat nothing.
+pub fn test_repeated_name_none_when_empty_or_single() -> Unit {
+    let empty: List<String> = Nil;
+    let _ = assert_eq_bool(is_none(first_repeated_name(empty)), true);
+    assert_eq_bool(is_none(first_repeated_name(Cons("main", Nil))), true)
+}

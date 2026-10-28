@@ -1,0 +1,94 @@
+// src/compiler/driver/mod.tg
+// Self-hosted driver module.
+//
+// This module provides:
+// - CLI argument parsing
+// - Module resolution and workspace discovery
+// - Pipeline orchestration (lex → parse → elab → codegen)
+// - Diagnostic formatting (ariadne-style)
+// - File I/O and process control via FFI
+
+// FFI declarations for driver operations
+pub mod ffi;
+
+// Utility functions (string manipulation, parsing helpers)
+pub mod util;
+
+// CLI argument parsing
+pub mod cli;
+
+// Module resolution and workspace discovery
+pub mod modules;
+
+pub mod packages;
+
+// Pipeline orchestration
+pub mod pipeline;
+
+// Re-export commonly used FFI wrappers
+pub use driver::ffi::types::{
+    FfiResult, FfiOk, FfiErr, List, Nil, Cons,
+    invalid_handle
+};
+pub use driver::ffi::io::{
+    read_file, write_file, file_exists, is_directory, list_directory,
+    parent_directory, path_join
+};
+pub use driver::ffi::process::{
+    argc, argv, get_args,
+    print, println, eprintln,
+    process_exit,
+    stdout_is_tty, stderr_is_tty
+};
+pub use driver::ffi::eval::{
+    EvalEnvHandle, invalid_env_handle,
+    eval_env_new, eval_env_add, eval_env_free,
+    eval_run, eval_run_with_limit, eval_display, eval_display_value
+};
+
+// Re-export utility types
+pub use driver::util::{Option, Some, None, Result, Ok, Err};
+
+// Re-export CLI types and functions
+pub use driver::cli::{
+    Command, CmdCheck, CmdRun, CmdCompile, CmdTest, CmdInfo, CmdExplain, CmdHelp, CmdVersion, CmdError,
+    CheckOpts, RunOpts, CompileOpts, TestOpts, InfoOpts, ExplainOpts, CliError,
+    parse_args, print_help, print_version, print_error,
+    warn_if_invoked_by_old_name
+};
+
+// Re-export module resolution types and functions
+pub use driver::modules::{
+    // Path types
+    ModulePath, module_path_root, module_path_new, module_path_single,
+    module_path_child, module_path_parent, module_path_display,
+    // Source map
+    SourceMap, source_map_empty, source_map_single, source_map_get,
+    // Module tree
+    ParsedModule, parsed_module_new,
+    // Module info
+    ModuleInfo, ModuleItemNames, module_info_empty,
+    // Workspace discovery
+    find_workspace_root, discover_sibling_modules, workspace_module_info,
+    workspace_module_info_from,
+    // Module parsing
+    parse_module_tree, resolve_module_path,
+    // Building
+    build_source_map, build_module_info, build_workspace_module_info,
+    merge_module_info
+};
+
+// Re-export pipeline types and functions
+pub use driver::pipeline::{
+    // Result types
+    PipelineResult, PipelineOk, PipelineErr, PipelineIoErr,
+    pipeline_ok, pipeline_exit_code, pipeline_tree_failure,
+    // Exit codes
+    exit_success, exit_error, exit_io_error,
+    // Main dispatch
+    dispatch_command
+};
+pub use driver::pipeline::check::run_check;
+pub use driver::pipeline::run::run_run;
+pub use driver::pipeline::compile::run_compile;
+pub use driver::pipeline::test::run_test;

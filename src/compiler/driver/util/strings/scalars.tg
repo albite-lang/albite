@@ -1,0 +1,78 @@
+// src/compiler/driver/util/strings/scalars.tg
+// Copying part of a string one Unicode scalar at a time (ADR 30.9.26h).
+//
+// **Why not `string_slice`.** `tg_string_slice` is a runtime extern the
+// bootstrap EVALUATOR does not execute, so any `.tg` test whose subject slices
+// goes silently Stuck. The JSON writer and the `--flag=value` split both need
+// substrings AND cost-5 tests, so they copy through a StringBuilder instead:
+// `tg_string_char_at_internal`, `tg_string_len_internal` and the builder
+// externs are all in `albite info eval externs`.
+//
+// A builder pushes SCALARS, not bytes — a lone byte >= 0x80 pushed as a code
+// point would come out as two bytes — so a multi-byte UTF-8 sequence is
+// decoded to its scalar first and pushed whole.
+
+use driver::ffi::types::{string_len, string_char_at_internal};
+use driver::ffi::builder::{StringBuilder, string_builder_new, push_char, to_string};
+
+/// How many bytes the UTF-8 sequence led by `lead` spans. A stray
+/// continuation byte (0x80–0xBF) counts as one, so a walk always advances.
+pub fn utf8_width(lead: Nat) -> Nat {
+    if lead < 192 {
+        1
+    } else if lead < 224 {
+        2
+    } else if lead < 240 {
+        3
+    } else {
+        4
+    }
+}
+
+/// The scalar value of the `width`-byte sequence at byte `i` of `s`.
+pub fn utf8_scalar_at(s: String, i: Nat, width: Nat) -> Nat {
+    let b0 = string_char_at_internal(s, i);
+    if width == 1 {
+        b0
+    } else if width == 2 {
+        (b0 - 192) * 64 + utf8_tail(s, i + 1)
+    } else if width == 3 {
+        (b0 - 224) * 4096 + utf8_tail(s, i + 1) * 64 + utf8_tail(s, i + 2)
+    } else {
+        (b0 - 240) * 262144 + utf8_tail(s, i + 1) * 4096 + utf8_tail(s, i + 2) * 64 + utf8_tail(s, i + 3)
+    }
+}
+
+/// The six payload bits of the continuation byte at `i`.
+fn utf8_tail(s: String, i: Nat) -> Nat {
+    string_char_at_internal(s, i) - 128
+}
+
+/// Is the byte at `i` the first byte of a scalar (not a continuation byte)?
+/// Counting these is how a byte offset becomes a CHARACTER column.
+pub fn utf8_is_scalar_start(s: String, i: Nat) -> Bool {
+    let b = string_char_at_internal(s, i);
+    b < 128 || b >= 192
+}
+
+/// `[start, end_pos)` of `s`, clamped to its length, as `string_slice` would
+/// return it — but executable on the evaluator. Both ends are expected on
+/// scalar boundaries; a sequence that straddles `end_pos` is copied whole.
+pub fn string_copy_range(s: String, start: Nat, end_pos: Nat) -> String {
+    let len = string_len(s);
+    let stop = if end_pos < len { end_pos } else { len };
+    to_string(string_copy_range_into(string_builder_new(), s, start, stop))
+}
+
+// Partial (ADR 11.8.26b): `i` ascends toward `stop` rather than descending on a
+// structural subterm — a measure recursion, deferred to v2.1. Executable
+// compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn string_copy_range_into(sb: StringBuilder, s: String, i: Nat, stop: Nat) -> StringBuilder {
+    if i >= stop {
+        sb
+    } else {
+        let width = utf8_width(string_char_at_internal(s, i));
+        string_copy_range_into(push_char(sb, utf8_scalar_at(s, i, width)), s, i + width, stop)
+    }
+}

@@ -1,0 +1,219 @@
+//! ADT match expression elaboration.
+//!
+//! This module handles pattern matching on algebraic data types (ADTs).
+//!
+//! ## Architecture
+//!
+//! The elaboration is split into phases for clarity:
+//!
+//! 1. **Resolution** (`resolution`) - Resolves the ADT type from constructor patterns
+//! 2. **Classification** (`classification`) - Groups arms by constructor vs catch-all
+//! 3. **Type unfolding** (`unfolding`) - Handles μ-type unfolding for recursive ADTs
+//! 4. **Type inference** (`inference`) - Determines the result type
+//! 5. **Code generation** (`codegen`) - Generates nested case expressions
+//!
+//! ## Key Types
+//!
+//! - `AdtMatchContext` - Holds resolved ADT info (type def, constructors, recursiveness)
+//! - `ClassifiedArms` - Arms grouped by constructor index, plus optional catch-all
+//!
+//! ## Testing
+//!
+//! Unit tests focus on the two-phase substitution bug (ADR 30.1.26):
+//! - Generic ADT field types require substituting type params THEN μ-refs
+//! - Missing Phase 1 causes leaked `α_List` variables in error messages
+
+mod arm_elaboration;
+mod arm_product_destruct;
+mod classification;
+mod codegen;
+mod context;
+mod inference;
+pub(in crate::elaborate) mod ownership;
+mod resolution;
+mod unfolding;
+
+#[cfg(test)]
+mod tests;
+
+// Re-export the context types
+use context::AdtIdentity;
+use context::CatchAllScrutinee;
+pub(super) use context::ClassifiedArms;
+pub(in crate::elaborate) use unfolding::ResidualMuChain;
+
+use crate::ast;
+use crate::span::Span;
+use albite_core::{Term, Type};
+
+use crate::elaborate::error::{ElabError, ElabErrorKind};
+use crate::elaborate::{ElabResult, Elaborator};
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+impl<'a> Elaborator<'a> {
+    /// Elaborate match on an ADT with constructor patterns.
+    ///
+    /// This is the main entry point for ADT pattern matching. It coordinates
+    /// the phases of elaboration: resolution, classification, type inference,
+    /// and code generation.
+    ///
+    /// ## Representation Policy (ADR 2.2.26)
+    ///
+    /// - n = 1: Single constructor, no case needed
+    /// - n = 2: Binary sum → nested Term::case
+    /// - n >= 3: Flat ADT → Term::adt_match with O(1) switch dispatch
+    pub(super) fn elab_adt_match(
+        &mut self,
+        scrutinee_term: Term,
+        scrutinee_ty: Type,
+        arms: &[ast::MatchArm],
+        expected: Option<&Type>,
+        span: Span,
+    ) -> ElabResult<(Term, Type)> {
+        self.elab_adt_match_with_outer((scrutinee_term, scrutinee_ty), arms, expected, span, None)
+    }
+
+    /// [`Self::elab_adt_match`], for a nested re-entry too: `outer_scrut` is
+    /// the outer match's catch-all value, which the catch-all arm it pushed
+    /// down binds instead of the inner payload (ADR 9.10.26e D2).
+    pub(super) fn elab_adt_match_with_outer(
+        &mut self,
+        (scrutinee_term, scrutinee_ty): (Term, Type),
+        arms: &[ast::MatchArm],
+        expected: Option<&Type>,
+        span: Span,
+        outer_scrut: Option<&CatchAllScrutinee>,
+    ) -> ElabResult<(Term, Type)> {
+        // A bare nullary name inside a constructor pattern is that
+        // constructor, not a binder (ADR 13.10.26h D2): every later phase
+        // sees the bracketed program.
+        let named_arms = classification::name_bare_nullary_subpatterns(arms, |ident| {
+            self.names_nullary_constructor(ident)
+        });
+        let arms = &*named_arms;
+
+        // Phase 1: Resolve ADT context from constructor patterns. A poisoned
+        // ADT is transit (ADR 15.8.26d): arms elaborate with their variables
+        // at `Type::Error`, and the match is a hole. So is a poisoned
+        // scrutinee: `elab_match` transits one first, but a nested match
+        // over a poisoned payload (`nested_match.rs`) arrives here directly.
+        let Some(ctx) = self.resolve_adt_match_context(arms, &scrutinee_ty, span)? else {
+            return self.elab_poisoned_match(arms, expected);
+        };
+        if let Type::Error = scrutinee_ty {
+            return self.elab_poisoned_match(arms, expected);
+        }
+        let num_ctors = ctx.constructors.len();
+
+        // Phase 2: Unfold the scrutinee type if recursive.
+        // A μ chain that will not flatten (a nested inductive family) is
+        // rejected here rather than passed on: `build_adt_match` answers a
+        // non-`Sum` scrutinee with E9999 "expected sum type", and trading a
+        // hang for an internal-error code is not a conservative rejection
+        // (ADR 11.8.26c §2.2).
+        let source_scrutinee = scrutinee_term.clone();
+        let (inner_type, match_scrutinee) =
+            self.unfold_or_reject(&scrutinee_ty, scrutinee_term, ctx.is_recursive, span)?;
+
+        // Phase 3: Classify arms by constructor vs catch-all
+        let classified = self.classify_match_arms(arms, &ctx, &scrutinee_ty)?;
+
+        // Phase 4: Check exhaustiveness
+        self.check_exhaustiveness(&classified, num_ctors, span)?;
+
+        // Phase 5: Determine result type
+        let match_type_ctx = inference::MatchTypeCtx {
+            sum_type: &inner_type,
+            constructors: &ctx.constructors,
+            scrutinee_ty: &scrutinee_ty,
+            type_params: &ctx.type_def.params,
+        };
+        let result_ty = self.infer_match_result_type(expected, &classified, &match_type_ctx)?;
+
+        // Phase 5b: the value a variable catch-all names (ADR 9.10.26e D1).
+        let catch_all = self.plan_catch_all_scrutinee(
+            classified.catch_all,
+            &source_scrutinee,
+            &scrutinee_ty,
+            outer_scrut,
+        );
+
+        // Phase 6: Build case analysis
+        // Route based on representation policy (ADR 2.2.26)
+        let codegen_ctx = context::AdtCodegenCtx {
+            ctor_arms: &classified.ctor_arms,
+            catch_all_arm: classified.catch_all,
+            constructors: &ctx.constructors,
+            adt_type: &scrutinee_ty,
+            type_params: &ctx.type_def.params,
+            adt_name: &ctx.type_def.name,
+            catch_all_scrut: catch_all.scrutinee.as_ref(),
+        };
+
+        let Some(hoisted) = catch_all.hoisted else {
+            let term =
+                self.build_case_tree(match_scrutinee, &inner_type, &codegen_ctx, &result_ty)?;
+            return Ok((term, result_ty));
+        };
+        // A non-variable scrutinee is evaluated once: the match runs over the
+        // `__scrut_<n>` the catch-all also names.
+        let (_, hoisted_scrutinee) =
+            self.unfold_or_reject(&scrutinee_ty, Term::var(&hoisted), ctx.is_recursive, span)?;
+        let term = self.with_scoped_binding(&hoisted, scrutinee_ty.clone(), |elab| {
+            elab.build_case_tree(hoisted_scrutinee, &inner_type, &codegen_ctx, &result_ty)
+        })?;
+        let bound = Term::let_in(&hoisted, scrutinee_ty, source_scrutinee, term);
+        Ok((bound, result_ty))
+    }
+
+    /// Phase 2's unfold, rejecting a μ chain that will not flatten.
+    fn unfold_or_reject(
+        &mut self,
+        scrutinee_ty: &Type,
+        scrutinee_term: Term,
+        is_recursive: bool,
+        span: Span,
+    ) -> ElabResult<(Type, Term)> {
+        self.unfold_scrutinee_type(scrutinee_ty, scrutinee_term, is_recursive)
+            .map_err(|unflattened| self.nested_family_error(&unflattened, span))
+    }
+
+    /// Phase 6 proper: a flat `adt_match` for three or more constructors, a
+    /// nested binary `case` otherwise.
+    fn build_case_tree(
+        &mut self,
+        match_scrutinee: Term,
+        inner_type: &Type,
+        codegen_ctx: &context::AdtCodegenCtx,
+        result_ty: &Type,
+    ) -> ElabResult<Term> {
+        if codegen_ctx.constructors.len() >= 3 {
+            // Flat ADT: use Term::adt_match with O(1) switch
+            self.build_flat_adt_match(match_scrutinee, codegen_ctx, result_ty)
+        } else {
+            // Binary sum: use nested Term::case (existing code)
+            self.build_adt_match(match_scrutinee, inner_type, codegen_ctx, 0, result_ty)
+        }
+    }
+
+    /// Check that the match is exhaustive.
+    fn check_exhaustiveness(
+        &self,
+        classified: &ClassifiedArms,
+        num_ctors: usize,
+        span: Span,
+    ) -> ElabResult<()> {
+        if classified.catch_all.is_none() && classified.ctor_arms.len() != num_ctors {
+            return Err(
+                ElabError::new(span, ElabErrorKind::NonExhaustiveMatch).with_note(format!(
+                    "expected {} arms for {} constructors, or use a catch-all `_` pattern",
+                    num_ctors, num_ctors
+                )),
+            );
+        }
+        Ok(())
+    }
+}

@@ -1,0 +1,122 @@
+// src/compiler/driver/modules/workspace/paths.tg
+// Path comparison keys and the walk-up step (ADR 30.9.26i D4).
+//
+// Every function here is pure and evaluator-executable: strings are built
+// with `substring` and `++` only, never `tg_string_append_char` or
+// `string_slice`, which the evaluator does not run. Check with
+// `albite info eval reachable-externs normalize_file_path <file>`.
+
+use driver::ffi::{List, Nil, Cons, string_len, string_char_at_internal};
+use driver::util::{
+    Option, Some, None,
+    string_eq, starts_with, string_is_empty, string_join,
+    list_reverse, list_contains_string
+};
+
+// ===========================================================================
+// NORMALISATION
+// ===========================================================================
+
+/// A lexical comparison key for a file path: drops `.` segments and a leading
+/// `./`, collapses repeated `/`, and folds `x/..`. Used only to COMPARE two
+/// spellings (D3, D5) — diagnostics keep the spelling the parser recorded, so
+/// no rendered file name changes. No symlink resolution and no `realpath`.
+pub fn normalize_file_path(path: String) -> String {
+    let absolute = starts_with(path, "/");
+    let segments = split_path_segments(path, 0, 0, string_len(path), Nil);
+    let kept = fold_path_segments(list_reverse(segments), absolute, Nil);
+    render_path_segments(list_reverse(kept), absolute)
+}
+
+/// Whether two spellings name the same file, lexically.
+pub fn same_file(a: String, b: String) -> Bool {
+    string_eq(normalize_file_path(a), normalize_file_path(b))
+}
+
+/// Whether `path` is already in `known`, a list of NORMALISED files (D5): the
+/// pruning decision that keeps every file parsed at most once. It lives here
+/// rather than in `load.tg` because the parser asks it too, and `load.tg`
+/// imports the parser. An empty list answers without normalising, so the main
+/// tree's parse does no extra work.
+pub fn already_parsed(path: String, known: List<String>) -> Bool {
+    match known {
+        Nil() => false,
+        Cons(_, _) => list_contains_string(known, normalize_file_path(path))
+    }
+}
+
+// Partial (ADR 11.8.26b): `i` ascends toward `len` rather than descending on a
+// structural subterm — a measure recursion, deferred to v2.1. Executable
+// compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn split_path_segments(path: String, start: Nat, i: Nat, len: Nat,
+                       acc: List<String>) -> List<String> {
+    if i >= len {
+        Cons(substring(path, start, len - start), acc)
+    } else if string_char_at_internal(path, i) == 47 {
+        // '/' ends a segment; an empty one (`//`, a leading `/`) is dropped later
+        split_path_segments(path, i + 1, i + 1, len, Cons(substring(path, start, i - start), acc))
+    } else {
+        split_path_segments(path, start, i + 1, len, acc)
+    }
+}
+
+/// Fold segments onto a stack (top first): `.` and empty vanish, `..` pops a
+/// real segment, and a `..` that cannot pop is kept on a relative path and
+/// dropped at an absolute root.
+fn fold_path_segments(segments: List<String>, absolute: Bool,
+                      stack: List<String>) -> List<String> {
+    match segments {
+        Nil() => stack,
+        Cons(seg, rest) => fold_path_segments(rest, absolute, push_path_segment(stack, seg, absolute))
+    }
+}
+
+fn push_path_segment(stack: List<String>, seg: String, absolute: Bool) -> List<String> {
+    if string_is_empty(seg) || string_eq(seg, ".") {
+        stack
+    } else if !string_eq(seg, "..") {
+        Cons(seg, stack)
+    } else {
+        match stack {
+            Nil() => if absolute { Nil } else { Cons(seg, Nil) },
+            Cons(top, rest) => if string_eq(top, "..") { Cons(seg, stack) } else { rest }
+        }
+    }
+}
+
+fn render_path_segments(segments: List<String>, absolute: Bool) -> String {
+    let joined = string_join(segments, "/");
+    if absolute {
+        "/" ++ joined
+    } else if string_is_empty(joined) {
+        "."
+    } else {
+        joined
+    }
+}
+
+// ===========================================================================
+// THE WALK-UP STEP
+// ===========================================================================
+
+/// The next directory to probe for `main.tg` after `dir`, given what
+/// `parent_directory(dir)` returned — or `None` to stop.
+///
+/// The runtime returns no parent for a single relative segment (`sub`), which
+/// used to end the walk one step short of the working directory. So a relative
+/// directory with no parent continues at `.`; the walk stops at `.`, at an
+/// absolute root, and at a parent equal to its child.
+pub fn next_probe_dir(dir: String, parent: Option<String>) -> Option<String> {
+    if string_eq(dir, ".") || string_is_empty(dir) {
+        None
+    } else {
+        match parent {
+            None() => if starts_with(dir, "/") { None } else { Some(".") },
+            Some(p) =>
+                if string_eq(p, dir) { None }
+                else if string_is_empty(p) { Some(".") }
+                else { Some(p) }
+        }
+    }
+}

@@ -1,0 +1,5 @@
+// ADR 30.9.26h: one `ReservedKeyword` error (`await` is reserved but
+// unimplemented).
+fn main() -> Nat {
+    await
+}

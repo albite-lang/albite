@@ -1,0 +1,8 @@
+// Golden test (ADR 3.10.26n AC 5): the evaluator's invalid-UTF-8 trap line —
+// `error: byte buffer is not valid UTF-8`, native `tg_int_trap(12)`. A lone
+// continuation byte (0x80) cannot begin a scalar.
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_set(h: Nat, i: Nat, v: Nat) -> Nat
+extern "C" fn tg_bytes_into_string(h: Nat) -> String
+
+fn main() -> String { tg_bytes_into_string(tg_bytes_set(tg_bytes_new(1), 0, 128)) }

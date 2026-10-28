@@ -1,0 +1,7 @@
+// A qualified sibling constructor pattern, with no `use` (ADR 2.10.26g §2.4,
+// D5): the self-host must refuse it as the bootstrap does.
+fn pick(scrutinee: Nat) -> Nat {
+    match scrutinee { boxes::MkBox(k) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(1) }

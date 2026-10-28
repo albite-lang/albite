@@ -1,0 +1,11 @@
+// A function's name as a constructor pattern (ADR 3.10.26l §2.4): it
+// resolves, but to a value that is not a constructor. The bootstrap says E0003.
+type OptFun = NadaFun | AlgoFun(Nat)
+
+fn helper(n: Nat) -> Nat { n }
+
+fn pick(o: OptFun) -> Nat {
+    match o { helper(k) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(AlgoFun(1)) }

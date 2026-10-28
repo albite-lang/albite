@@ -1,0 +1,47 @@
+// The refusals of `let mut` and assignment, each beside its accepted twin
+// (ADR 13.10.26r AC 3): E0104 for both reasons, E0105, E0106, and E0010 for an
+// assignment of the wrong type. The accepted twins assert their values, so
+// every test executes an assertion.
+//
+// Bootstrap only: `expect_error` names BOOTSTRAP codes, and `./albite1
+// check` compares a code against its own numbering (E0740-E0742 here), so this
+// file is not one `albite1` is asked to accept. The self-host's refusals are
+// paired with these by the error goldens and the records census.
+//
+// This file is its own entry and must NEVER be imported from
+// `src/compiler/main.tg`.
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+
+fn assert_eq_nat(left: Nat, right: Nat) -> Unit {
+    tg_assert_eq_nat(left, right)
+}
+
+fn id(n: Nat) -> Nat { n }
+
+// ── Refused, each beside its accepted twin ──────────────────────────────────
+
+fn test_an_assignment_to_a_plain_let_is_refused() -> Unit {
+    let _ = expect_error({ let x = 1; x = 2; x }, "E0104");
+    assert_eq_nat({ let mut x = 1; x = 2; x }, 2)
+}
+
+fn test_an_assignment_in_a_call_argument_is_not_joined() -> Unit {
+    let _ = expect_error({ let mut x = 1; let y = id({ x = 2; 3 }); x + y }, "E0104");
+    assert_eq_nat({ let mut x = 1; let y = id({ let mut z = 2; z = 3; z }); x + y }, 4)
+}
+
+fn test_a_closure_over_a_mut_binding_is_refused() -> Unit {
+    let _ = expect_error({ let mut x = 1; let g = |y: Nat| x + y; g(1) }, "E0105");
+    assert_eq_nat({ let mut x = 1; let x = x; let g = |y: Nat| x + y; g(1) }, 2)
+}
+
+fn test_a_region_assigning_an_outer_mut_is_refused() -> Unit {
+    let _ = expect_error({ let mut x = 1; region { x = 5; 1 } }, "E0106");
+    assert_eq_nat({ let mut x = 1; region { let mut r = x; r = r + 5; r } }, 6)
+}
+
+fn test_an_assignment_of_the_wrong_type_is_a_mismatch() -> Unit {
+    let _ = expect_error({ let mut x = 1; x = true; x }, "E0010");
+    assert_eq_nat({ let mut x = 1; x = 3; x }, 3)
+}

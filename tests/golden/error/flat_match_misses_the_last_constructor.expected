@@ -1,0 +1,11 @@
+[E0020] Error: non-exhaustive match patterns
+   ╭─[tests/golden/error/flat_match_misses_the_last_constructor.tg:7:5]
+   │
+ 7 │     match q { A(x) => 1, B(y) => 2 }
+   │     ────────────────┬───────────────  
+   │                     ╰───────────────── 
+   │ 
+   │ Note: expected 3 arms for 3 constructors, or use a catch-all `_` pattern
+───╯
+
+error: aborting due to 1 error

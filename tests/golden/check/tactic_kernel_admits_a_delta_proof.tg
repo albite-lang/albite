@@ -1,0 +1,8 @@
+// The kernel admits a tactic proof that holds only by unfolding a definition
+// (ADR 2.10.26l). Until K-δ this was `error/tactic_kernel_refuses_a_delta_proof`
+// (ADR 2.10.26c D10): the elaborator unfolded the total `two` and the δ-free
+// kernel refused `refl`. The kernel now unfolds `two` itself — it is `Total`,
+// effect-free and typed by the kernel — so both agree.
+fn two() -> Nat { 2 }
+
+theorem two_is_two(): two() == 2 by { refl }

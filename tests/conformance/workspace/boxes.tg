@@ -1,0 +1,7 @@
+// A sibling no `mod` declares, exporting a type and its constructor (ADR
+// 1.10.26f §2.4). The `sibling_ctor*` and `sibling_type` entries probe it.
+pub type Box = MkBox(Nat)
+
+// Two constructors, one nullary (ADR 2.10.26g §2.4): a single-constructor
+// nullary type fails the import itself, so `Shut` would probe nothing.
+pub type Lid = Shut | Ajar(Nat)

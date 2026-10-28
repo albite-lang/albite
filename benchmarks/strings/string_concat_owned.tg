@@ -1,0 +1,52 @@
+// Benchmark: let-bound concat chains on the owned path (ADR 6.10.26n D6)
+//
+// Each round's step joins eight 64-byte pieces onto a short seed in one
+// let-bound chain. The first `++` takes the seed, a live parameter, so it is
+// the non-owned `tg_string_concat`; each of the seven after it takes the
+// previous `++`'s dead result, so it is `tg_string_concat_owned`, which grows
+// its left operand's block. Built `ALBITE_NATIVE_CORE=on` the owned joins
+// are Rust's; built `=all` they are the core's `string_concat_owned`.
+// Usage: ./string_concat_owned [rounds]  (default: 200000)
+
+extern "C" fn tg_argc() -> Nat
+extern "C" fn tg_argv(index: Nat) -> Nat
+extern "C" fn tg_string_to_nat(s: Nat) -> Nat
+
+fn get_rounds() -> Nat {
+  if tg_argc() > 1 { tg_string_to_nat(tg_argv(1)) } else { 200000 }
+}
+
+fn seed(i: Nat) -> String {
+  if i % 2 == 0 { "fox" } else { "dog!" }
+}
+
+fn piece() -> String {
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+
+/// One non-owned join, then seven owned ones: `len(seed) + 8 * 64` bytes.
+fn owned_step(start: String) -> String {
+  let s1 = start ++ piece();
+  let s2 = s1 ++ piece();
+  let s3 = s2 ++ piece();
+  let s4 = s3 ++ piece();
+  let s5 = s4 ++ piece();
+  let s6 = s5 ++ piece();
+  let s7 = s6 ++ piece();
+  s7 ++ piece()
+}
+
+/// Sum the lengths of `rounds` owned chains. Tail-recursive.
+// Partial (ADR 11.8.26b): a counted loop, which the termination gate refuses.
+#[partial]
+fn owned_rounds(i: Nat, rounds: Nat, total: Nat) -> Nat {
+  if i == rounds {
+    total
+  } else {
+    owned_rounds(i + 1, rounds, total + string_len(owned_step(seed(i))))
+  }
+}
+
+fn main() -> Nat {
+  owned_rounds(0, get_rounds(), 0)
+}

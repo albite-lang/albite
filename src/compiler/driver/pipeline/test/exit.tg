@@ -1,0 +1,55 @@
+// src/compiler/driver/pipeline/test/exit.tg
+// How a self-hosted `albite1 test` run ends, and the exit code it becomes
+// (ADR 29.9.26i D2/D5).
+//
+// The bootstrap's `TestExit` is the other half of the same contract:
+//   0  every gating verdict passed
+//   1  the run produced a failing verdict or a diagnostic
+//   2  the runner could not produce verdicts
+//
+// `PipelineResult` cannot say this — `PipelineErr(_)` is one exit code for a
+// failing test, a harness that never started and a module tree that would not
+// parse — and changing it would change `check`, `run` and `compile` too. So
+// `test` gets its own result type, and `dispatch_command`'s `CmdTest` arm is
+// the only caller of `test_exit_code`.
+//
+// Both functions here are pure: the harness's exit status arrives as an
+// `ExecOutcome` value, so every mapping is assertable without spawning
+// anything (`test_test_exit_codes.tg`).
+
+use driver::ffi::{ExecOutcome, ExecExited, ExecSpawnFailed};
+
+/// How a test run ended. The `Nat` is a count for the reader (tests run, or
+/// diagnostics rendered); the exit code depends only on the constructor.
+pub type TestRunResult =
+    | TestsPassed(Nat)
+    | TestsFailed(Nat)
+    | TestRunnerFailed
+
+/// The process exit code for a test run: 0, 1 or 2.
+pub fn test_exit_code(result: TestRunResult) -> Nat {
+    match result {
+        TestsPassed(_) => 0,
+        TestsFailed(_) => 1,
+        TestRunnerFailed() => 2
+    }
+}
+
+/// What the generated harness's exit status means.
+///
+/// The harness's `main` exits 0 when every test passed and 1 when one failed
+/// (`harness/runner.tg`), having printed its own report either way. Anything
+/// else — another code, the no-status sentinel a signal leaves, or a spawn
+/// that never happened — means the tests after the crash have no verdict, so
+/// it is a runner failure, not a test failure.
+pub fn harness_exit_verdict(outcome: ExecOutcome, test_count: Nat) -> TestRunResult {
+    match outcome {
+        ExecExited(code) =>
+            if code == 0 {
+                TestsPassed(test_count)
+            } else {
+                if code == 1 { TestsFailed(test_count) } else { TestRunnerFailed }
+            },
+        ExecSpawnFailed(_) => TestRunnerFailed
+    }
+}

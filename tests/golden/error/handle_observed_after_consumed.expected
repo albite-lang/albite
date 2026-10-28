@@ -1,0 +1,9 @@
+[E0092] Error: handle `sb` is used after it was consumed, in `length_after`
+    ╭─[tests/golden/error/handle_observed_after_consumed.tg:31:24]
+    │
+ 31 │     string_builder_len(sb)
+    │                        ─┬  
+    │                         ╰── 
+────╯
+
+error: aborting due to 1 error

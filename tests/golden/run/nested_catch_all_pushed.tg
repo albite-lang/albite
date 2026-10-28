@@ -1,0 +1,58 @@
+// Golden test: a match's catch-all also covers the inner cases its nested arms
+// leave out (ADR 16.10.26d). The self-host lowers `B(Som(n)) => …` into
+// `B(__nested) => match __nested { … }`; the outer catch-all must end that
+// inner match too, bound to the OUTER value when it names a variable.
+//
+// Each probe gives one digit per call; the composites are:
+//   lone_gap            7277     (a lone nested arm, `_` catch-all)
+//   lone_named          4256     (`other => tag(other)`: 5 only if `other` is B(…))
+//   group_partial      31274     (a group leaving `Z` out)
+//   group_named        41256
+//   depth_two_named     1453     (the catch-all of the inner match, pushed deeper)
+//   depth_two_outer     1776
+// and `main` weights them by distinct primes, so a digit that moves to a
+// neighbouring arm changes the sum.
+//
+// The ADR's `group_own_catch_all` (`B(Som(n)) => 2, B(m) => 5, _ => 7`, 7257)
+// is not here: the bootstrap warns W0001 that its `_` is unreachable, which it
+// is not (`A` and `C` reach it), and a run golden compares stderr too. The
+// tier-5 suite `src/compiler/test_nested_catch_all.tg` covers that rule.
+
+type M = Som(Nat) | Non
+type P = A(Nat) | B(M) | C(Nat)
+type K = X | Y | Z
+type Q = QA(Nat) | QB(K) | QC(Nat)
+type I = J(Nat) | Kz
+type N = Sm(I) | Nn
+type R = RA(Nat) | RB(N)
+
+fn tag(p: P) -> Nat { match p { A(n) => 4, B(m) => 5, C(n) => 6 } }
+fn qtag(q: Q) -> Nat { match q { QA(n) => 4, QB(k) => 5, QC(n) => 6 } }
+fn ntag(m: N) -> Nat { match m { Sm(i) => 4, Nn() => 5 } }
+fn rtag(r: R) -> Nat { match r { RA(n) => 6, RB(m) => 7 } }
+
+fn lone_gap(q: P) -> Nat { match q { B(Som(n)) => 2, _ => 7 } }
+fn lone_named(q: P) -> Nat { match q { B(Som(n)) => 2, other => tag(other) } }
+
+fn group_partial(q: Q) -> Nat {
+    match q { QB(X()) => 1, QB(Y()) => 2, QA(n) => 3, QC(n) => 4, _ => 7 }
+}
+fn group_named(q: Q) -> Nat { match q { QB(X()) => 1, QB(Y()) => 2, other => qtag(other) } }
+
+fn depth_two_named(q: R) -> Nat { match q { RB(Sm(J(n))) => 1, RB(x) => ntag(x), RA(n) => 3 } }
+fn depth_two_outer(q: R) -> Nat { match q { RB(Sm(J(n))) => 1, other => rtag(other) } }
+
+fn over_p(f: P -> Nat) -> Nat {
+    f(A(0)) * 1000 + f(B(Som(0))) * 100 + f(B(Non())) * 10 + f(C(0))
+}
+fn over_q(f: Q -> Nat) -> Nat {
+    f(QA(0)) * 10000 + f(QB(X())) * 1000 + f(QB(Y())) * 100 + f(QB(Z())) * 10 + f(QC(0))
+}
+fn over_r(f: R -> Nat) -> Nat {
+    f(RB(Sm(J(0)))) * 1000 + f(RB(Sm(Kz()))) * 100 + f(RB(Nn())) * 10 + f(RA(0))
+}
+
+fn main() -> Nat {
+    over_p(lone_gap) * 2 + over_p(lone_named) * 3 + over_q(group_partial) * 5
+        + over_q(group_named) * 7 + over_r(depth_two_named) * 13 + over_r(depth_two_outer) * 17
+}

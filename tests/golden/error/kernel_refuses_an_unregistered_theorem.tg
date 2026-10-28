@@ -1,0 +1,15 @@
+// The kernel refuses a term-mode theorem with no register row (ADR 2.10.26d AC 4).
+//
+// A record theorem: the elaborator accepts `refl`, but the record reaches the
+// kernel as a bare name it cannot bind. This golden used `two_is_two`'s shape
+// until ADR 2.10.26l taught the kernel to unfold `two`; since ADR 3.10.26p a
+// record reaches the kernel by its encoding, so `Point` is self-recursive — a
+// cycle the presentation leaves named (D3).
+// With no row, the build fails with E0081, naming the theorem and its cause.
+type Point = { x: Nat, next: Link }
+
+type Link = End | More(Point)
+
+fn px(p: Point) -> Nat { p.x }
+
+theorem px_refl(p: Point): px(p) == px(p) { refl }

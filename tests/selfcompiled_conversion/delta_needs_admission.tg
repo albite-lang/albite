@@ -1,0 +1,8 @@
+// ADR 30.9.26g D5: the one declared divergence. `same` is total, so the
+// bootstrap discharges `same(k) ≡ k` by δ after admission; tungsten1 has no δ
+// yet (part (b)) and must refuse it. Part (b) flips this fixture deliberately.
+fn same(n: Nat) -> Nat { n }
+
+fn delta_needs_admission(k: Nat) -> Nat { let _p: Eq<Nat, same(k), k> = refl; 0 }
+
+fn main() -> Nat { 0 }

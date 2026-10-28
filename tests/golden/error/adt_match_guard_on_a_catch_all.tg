@@ -1,0 +1,13 @@
+// Golden test (ADR 13.10.26v): a guard on the catch-all of a match over a
+// user type is refused at that arm by both compilers. Before this ADR both
+// accepted it, dropped the guard, and returned `50` with `b` false, where no
+// arm of the source matches. E0100 (self-host E0308).
+type K = | X(Nat) | Y
+
+fn f(k: K, b: Bool) -> Nat {
+    match k { X(n) => n, _ if b => 50 }
+}
+
+fn main() -> Nat {
+    f(Y(), false)
+}

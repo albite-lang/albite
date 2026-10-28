@@ -1,0 +1,287 @@
+// Constructor coverage for ADT match elaboration (ADR 13.10.26l).
+//
+// A match whose arms name constructors must name every constructor of the
+// scrutinee's type, or have some arm that is a catch-all — the bootstrap's
+// E0020 rule, raised here as the self-host's E0300 before the arms are sorted.
+
+use parser::ast::{MatchArm, NoExpr, SomeExpr};
+use parser::ast::pattern::{Pattern, PatConstructor, pattern_span};
+use parser::option::{Option, None, Some};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{nat_to_string, list_len};
+use lexer::span::Span;
+use elab::env::{Env, env_count_constructors};
+use elab::error::{ErrUnsupportedPattern, error_kind_code, error_kind_message};
+use elab::exprs::forms::result::{ElabExprError, elab_expr_error_coded};
+use elab::exprs::matches::{ScrutInfo};
+use elab::exprs::matches::patterns::is_catch_all_pattern;
+use elab::exprs::matches::patterns::resolve::{
+    refuse_unresolved_arms, MaybeElabExprError, NoElabExprError, SomeElabExprError
+};
+use elab::exprs::matches::arm_reorder::{
+    first_arm_parent_type, arm_parent_type, get_arm_constructor_index,
+    declared_constructor_count, unresolved_arm_index
+};
+
+/// An arm naming no constructor is refused first, at its own span (ADR
+/// 3.10.26l D1); then a match that names some of its type's constructors and
+/// has no catch-all, at the whole match, as the bootstrap's E0020 is (D2, D3);
+/// then a guarded arm or a multi-field nested group, whichever sits in the
+/// lower constructor slot (ADR 13.10.26v D3, 16.10.26c D2). That is the order
+/// the bootstrap raises them in.
+pub fn refuse_unplaceable_arms(env: Env, scrut: ScrutInfo, arms: List<MatchArm>, span: Span) -> MaybeElabExprError {
+    match refuse_unresolved_arms(env, scrut.ty, arms) {
+        SomeElabExprError(e) => SomeElabExprError(e),
+        NoElabExprError() => refuse_uncovered_or_guarded_arms(env, arms, span)
+    }
+}
+
+fn refuse_uncovered_or_guarded_arms(env: Env, arms: List<MatchArm>, span: Span) -> MaybeElabExprError {
+    match refuse_coverage_gap(env, arms, span) {
+        SomeElabExprError(e) => SomeElabExprError(e),
+        NoElabExprError() => refuse_slot_order_arms(env, arms)
+    }
+}
+
+/// Every ADT match is covered alike, the desugar's inner match included: the
+/// outer catch-all completes one when there is one (ADR 16.10.26d), and a
+/// group with none is refused at its first arm, as the bootstrap's E0020 is
+/// (ADR 16.10.26e D1, D2).
+fn refuse_coverage_gap(env: Env, arms: List<MatchArm>, span: Span) -> MaybeElabExprError {
+    refuse_uncovered_arms(constructor_coverage(env, arms), span)
+}
+
+/// The coverage verdict on a `(named, total)` reading: a refusal only when
+/// some constructor is left unnamed.
+fn refuse_uncovered_arms(coverage: (Nat, Nat), span: Span) -> MaybeElabExprError {
+    let (named, total) = coverage;
+    if named >= total {
+        NoElabExprError
+    } else {
+        SomeElabExprError(uncovered_constructors_error(named, total, span))
+    }
+}
+
+/// `E0300` `ErrInexhaustiveMatch`, with the bootstrap's count: distinct
+/// constructors named, out of those declared.
+pub fn uncovered_constructors_error(named: Nat, total: Nat, span: Span) -> ElabExprError {
+    let counts = nat_to_string(named) ++ " of " ++ nat_to_string(total);
+    elab_expr_error_coded("non-exhaustive match: " ++ counts ++ " constructors named, and no catch-all", span, "E0300")
+}
+
+/// `(named, total)`: how many distinct constructor indices the arms name, of
+/// how many the first named constructor's type declares (D1). The two are
+/// equal — no verdict — when no arm names a constructor, when an arm is a
+/// catch-all, or when an arm names another type's constructor, which the
+/// existing error path decides.
+pub fn constructor_coverage(env: Env, arms: List<MatchArm>) -> (Nat, Nat) {
+    let parent = first_arm_parent_type(env, arms);
+    if parent == "" {
+        (0, 0)
+    } else if arms_escape_coverage(env, arms, parent) {
+        (0, 0)
+    } else {
+        let total = env_count_constructors(env, parent);
+        (named_index_count(env, arms, 0, total), total)
+    }
+}
+
+/// Some arm is a catch-all, or names a constructor of a type other than
+/// `parent`: either way coverage gives no verdict.
+fn arms_escape_coverage(env: Env, arms: List<MatchArm>, parent: String) -> Bool {
+    match arms {
+        Nil() => false,
+        Cons(arm, rest) =>
+            if is_catch_all_pattern(arm.pattern) {
+                true
+            } else {
+                let own = arm_parent_type(env, arm);
+                if own != "" && own != parent { true } else { arms_escape_coverage(env, rest, parent) }
+            }
+    }
+}
+
+/// How many of the indices `index … total-1` some arm names; each index counts
+/// once, however many arms name it.
+// Partial (ADR 11.8.26b): the recursion counts `index` up to `total`, a
+// measure recursion, which Non-Goals defers to v2.1. Executable compiler code
+// no proof reaches; E0063 guards that.
+#[partial]
+fn named_index_count(env: Env, arms: List<MatchArm>, index: Nat, total: Nat) -> Nat {
+    if index >= total {
+        0
+    } else {
+        let here = if arms_name_index(env, arms, index) { 1 } else { 0 };
+        here + named_index_count(env, arms, index + 1, total)
+    }
+}
+
+fn arms_name_index(env: Env, arms: List<MatchArm>, index: Nat) -> Bool {
+    match arms {
+        Nil() => false,
+        Cons(arm, rest) =>
+            if get_arm_constructor_index(env, arm) == index { true } else { arms_name_index(env, rest, index) }
+    }
+}
+
+// ===========================================================================
+// GUARDED ARMS (ADR 13.10.26v)
+// ===========================================================================
+
+/// No arm of an ADT match may carry a guard: the lowering never reads one, so
+/// the arm would run with its condition false (D1). `E0308`, as the bootstrap's
+/// `E0100`, at the arm the bootstrap names (D3, D4), by `refuse_slot_order_arms`.
+pub fn guarded_arm_error(span: Span) -> ElabExprError {
+    let kind = ErrUnsupportedPattern("a guard on a match over a user type");
+    elab_expr_error_coded(error_kind_message(kind) ++ "; test the condition with an `if` inside the arm", span, error_kind_code(kind))
+}
+
+/// The guarded arm with the lowest slot index, the first in source order on a
+/// tie: the bootstrap elaborates one arm per constructor index, and refuses
+/// the first guarded one it reaches (D3). Read before the arms are arranged,
+/// so a nested arm is found here, on its own source span.
+pub fn first_guarded_arm(env: Env, arms: List<MatchArm>) -> Option<MatchArm> {
+    let catch_all_slot = first_unnamed_index(env, arms, 0, declared_constructor_count(env, arms));
+    lowest_slot_guarded_arm(env, arms, catch_all_slot, unresolved_arm_index(), None)
+}
+
+fn lowest_slot_guarded_arm(
+    env: Env,
+    arms: List<MatchArm>,
+    catch_all_slot: Nat,
+    best_slot: Nat,
+    best: Option<MatchArm>
+) -> Option<MatchArm> {
+    match arms {
+        Nil() => best,
+        Cons(arm, rest) => {
+            let slot = guarded_arm_slot(env, arm, catch_all_slot);
+            if slot < best_slot {
+                lowest_slot_guarded_arm(env, rest, catch_all_slot, slot, Some(arm))
+            } else {
+                lowest_slot_guarded_arm(env, rest, catch_all_slot, best_slot, best)
+            }
+        }
+    }
+}
+
+/// The index at which the bootstrap would elaborate a guarded arm: its
+/// constructor's, or for a catch-all the first index no constructor arm
+/// names. `unresolved_arm_index()` for an unguarded arm, and for a catch-all
+/// that fills no index, which the bootstrap never elaborates.
+pub fn guarded_arm_slot(env: Env, arm: MatchArm, catch_all_slot: Nat) -> Nat {
+    match arm.guard {
+        NoExpr() => unresolved_arm_index(),
+        SomeExpr(_) =>
+            if is_catch_all_pattern(arm.pattern) { catch_all_slot } else { get_arm_constructor_index(env, arm) }
+    }
+}
+
+/// The first of `index … total-1` no arm names; `0` when no arm names a
+/// constructor, and `unresolved_arm_index()` when every index is named.
+// Partial (ADR 11.8.26b): the recursion counts `index` up to `total`, a
+// measure recursion, which Non-Goals defers to v2.1. Executable compiler code
+// no proof reaches; E0063 guards that.
+#[partial]
+pub fn first_unnamed_index(env: Env, arms: List<MatchArm>, index: Nat, total: Nat) -> Nat {
+    if total == 0 {
+        0
+    } else if index >= total {
+        unresolved_arm_index()
+    } else if arms_name_index(env, arms, index) {
+        first_unnamed_index(env, arms, index + 1, total)
+    } else {
+        index
+    }
+}
+
+// ===========================================================================
+// MULTI-FIELD NESTED ARMS (ADR 16.10.26c)
+// ===========================================================================
+
+/// The bootstrap raises a nested group's E0021 and a guard's E0100 in one loop
+/// over constructor slots: the lower slot's is refused, on a tie the group's (D2).
+pub fn refuse_slot_order_arms(env: Env, arms: List<MatchArm>) -> MaybeElabExprError {
+    let nested_slot = lowest_offending_slot(env, arms, unresolved_arm_index());
+    let catch_all_slot = first_unnamed_index(env, arms, 0, declared_constructor_count(env, arms));
+    match first_guarded_arm(env, arms) {
+        None() => refuse_multi_field_nested_slot(env, arms, nested_slot),
+        Some(guarded) =>
+            if guarded_arm_slot(env, guarded, catch_all_slot) < nested_slot {
+                SomeElabExprError(guarded_arm_error(guarded.span))
+            } else {
+                refuse_multi_field_nested_slot(env, arms, nested_slot)
+            }
+    }
+}
+
+fn refuse_multi_field_nested_slot(env: Env, arms: List<MatchArm>, slot: Nat) -> MaybeElabExprError {
+    match first_arm_at_slot(env, arms, slot) {
+        None() => NoElabExprError,
+        Some(arm) => SomeElabExprError(multi_field_nested_error(pattern_span(arm.pattern)))
+    }
+}
+
+/// `E0308`, as the bootstrap's `E0021`, built from the kind (D3).
+pub fn multi_field_nested_error(span: Span) -> ElabExprError {
+    let kind = ErrUnsupportedPattern("a constructor pattern nested in a multi-field constructor");
+    elab_expr_error_coded(error_kind_message(kind) ++ "; match that field in an inner `match`", span, error_kind_code(kind))
+}
+
+/// The arm the bootstrap's E0021 names: the first in source order, offending
+/// or not, of the offending group with the lowest constructor index (D2).
+pub fn multi_field_nested_arm(env: Env, arms: List<MatchArm>) -> Option<MatchArm> {
+    first_arm_at_slot(env, arms, lowest_offending_slot(env, arms, unresolved_arm_index()))
+}
+
+fn lowest_offending_slot(env: Env, arms: List<MatchArm>, best: Nat) -> Nat {
+    match arms {
+        Nil() => best,
+        Cons(arm, rest) =>
+            let slot = if arm_offends(arm) { get_arm_constructor_index(env, arm) } else { unresolved_arm_index() };
+            lowest_offending_slot(env, rest, if slot < best { slot } else { best })
+    }
+}
+
+/// The arm naming index `slot` that starts first in the SOURCE, as the desugar
+/// can reorder an inner match's arms; `None` for `unresolved_arm_index()`.
+fn first_arm_at_slot(env: Env, arms: List<MatchArm>, slot: Nat) -> Option<MatchArm> {
+    match arms {
+        Nil() => None,
+        Cons(arm, rest) =>
+            let later = first_arm_at_slot(env, rest, slot);
+            let named_here = slot != unresolved_arm_index() && get_arm_constructor_index(env, arm) == slot;
+            if named_here { Some(earlier_arm(arm, later)) } else { later }
+    }
+}
+
+fn earlier_arm(arm: MatchArm, other: Option<MatchArm>) -> MatchArm {
+    match other {
+        None() => arm,
+        Some(o) => if pattern_span(o.pattern).start < pattern_span(arm.pattern).start { o } else { arm }
+    }
+}
+
+/// A constructor pattern with two or more sub-patterns, one of them itself a
+/// constructor pattern (D1). Counted on the pattern, not the declaration, so a
+/// wrong-arity pattern offends as the bootstrap's declared count makes it.
+pub fn arm_offends(arm: MatchArm) -> Bool {
+    match arm.pattern {
+        PatConstructor(_, subs, _) => list_len(subs) >= 2 && any_constructor_sub(subs),
+        _ => false
+    }
+}
+
+fn any_constructor_sub(subs: List<Pattern>) -> Bool {
+    match subs {
+        Nil() => false,
+        Cons(sub, rest) => if is_constructor_sub(sub) { true } else { any_constructor_sub(rest) }
+    }
+}
+
+fn is_constructor_sub(sub: Pattern) -> Bool {
+    match sub {
+        PatConstructor(_, _, _) => true,
+        _ => false
+    }
+}

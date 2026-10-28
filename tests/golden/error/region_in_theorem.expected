@@ -1,0 +1,9 @@
+[E0096] Error: a `region` is not allowed in a proof
+   ╭─[tests/golden/error/region_in_theorem.tg:2:39]
+   │
+ 2 │ theorem one_is_one(): Eq<Nat, 1, 1> { region { refl } }
+   │                                       ───────┬───────  
+   │                                              ╰───────── 
+───╯
+
+error: aborting due to 1 error

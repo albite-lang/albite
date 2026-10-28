@@ -1,0 +1,16 @@
+// The runner-parity gate's planted divergence, SELF-HOST half (ADR 28.9.26g D6).
+//
+// Deliberately failing, and NOT a regression. The gate hands this file to
+// `tungsten1` and planted_bootstrap_side.tg to the bootstrap: same two test
+// names, same order, and only here does `test_planted` fail. The register
+// entry for the pair expects `VerdictsDiffer` with `test_planted: ok vs FAILED`
+// and names THIS file as its record, which is why the explanation lives here.
+//
+// Expected here: `test_planted_agrees` ok, `test_planted` FAILED, exit 1.
+// Changing the assertion below to (1, 1) must turn the gate red with the pair
+// reported Stale — ADR 28.9.26g AC 8(a), the gate's end-to-end bite drill.
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+fn assert_eq_nat(a: Nat, b: Nat) -> Unit { tg_assert_eq_nat(a, b) }
+
+pub fn test_planted_agrees() -> Unit { assert_eq_nat(4, 4) }
+pub fn test_planted() -> Unit { assert_eq_nat(1, 2) }

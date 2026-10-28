@@ -1,0 +1,16 @@
+[E0117] Error: unterminated string literal
+   ╭─[tests/golden/error/parse_error_lexical.tg:3:17]
+   │
+ 3 │ fn g() -> Nat { "abc }
+   │                 ───┬──  
+   │                    ╰──── Lexical("unterminated string literal")
+───╯
+[E0111] Error: expected `}`, found end of file
+   ╭─[tests/golden/error/parse_error_lexical.tg:3:24]
+   │
+ 3 │ fn g() -> Nat { "abc }
+   │                        │ 
+   │                        ╰─ UnexpectedEof
+───╯
+
+error: aborting due to 2 errors (3 before deduplication)

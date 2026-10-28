@@ -1,0 +1,33 @@
+// tests/reserved_link_names_probe.tg — the probe program of
+// `make check-reserved-link-names` (ADR 9.10.26f D2).
+//
+// It allocates, concatenates and prints, so the linked binary carries the C
+// names a program, its runtime and its native core import: the gate reads
+// that binary with `nm` and fails on any the reserved table lacks. Its body
+// does not matter beyond reaching those paths; keep it small.
+
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+pub fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+#[partial]
+fn repeat(s: String, n: Nat) -> String {
+    match n {
+        0 => "",
+        _ => s ++ repeat(s, n - 1)
+    }
+}
+
+fn main() -> Unit {
+    let total: Int = 40 + 2;
+    println(repeat("probe ", 3));
+    if total > 41 { println("reached") } else { println("unreachable") }
+}

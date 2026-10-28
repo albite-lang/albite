@@ -1,0 +1,9 @@
+[E0081] Error: the kernel refused the proof of `px_refl`: marker-ill-formed — Malformed type: Point
+    ╭─[tests/golden/error/kernel_refuses_an_unregistered_theorem.tg:15:1]
+    │
+ 15 │ theorem px_refl(p: Point): px(p) == px(p) { refl }
+    │ ─────────────────────────┬────────────────────────  
+    │                          ╰────────────────────────── 
+────╯
+
+error: aborting due to 1 error

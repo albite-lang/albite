@@ -1,0 +1,17 @@
+// == a lone nested arm with no catch-all is not exhaustive (ADR 13.10.26u)
+//
+// `B(Som(n))` is the only arm for `B`, and nothing covers `B(Non())`. The arm
+// is lowered as an inner match over `M`, which refuses with E0020 at the arm.
+// Before the fix the match was accepted and `B(Non())` ran a synthesised hole.
+type M = Som(Nat) | Non
+type P = A(Nat) | B(M) | C(Nat)
+
+fn f(q: P) -> Nat {
+    match q {
+        A(n) => 1,
+        B(Som(n)) => 2,
+        C(n) => 3
+    }
+}
+
+fn main() -> Nat { f(B(Non())) }

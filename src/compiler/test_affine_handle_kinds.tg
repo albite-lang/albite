@@ -1,0 +1,191 @@
+// The pure half of the self-host's affine handle check (ADR 7.10.26t AC 4).
+//
+// The refusals themselves are pinned against the bootstrap's by the records
+// census over the error goldens and by `albite1 check` over the corpus; this
+// suite pins what both read — D3's kind table and D2's "contains a handle"
+// closure — and, over two hand-built bodies, that the walk counts arms as
+// alternatives and a sequence as a sum. Everything here is pure Tungsten over
+// AST values, so the evaluator runs it and `--assertion-census` counts it.
+
+// Full module tree (matches test_single_compiler_refusals.tg): with only
+// `mod elab`, Signature Collection fails resolving `Option` in driver::util.
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_bool, assert_eq_string, assert_eq_nat};
+use driver::util::lists::{list_len};
+use lexer::span::{Span, span_new};
+use parser::ast::{
+    TypeExpr, TyPath, TyApp, TyArrow, Expr, ExprPath, ExprApp, ExprIf, ExprBlock,
+    ExprStringLit, ExprBoolLit, ExprIntLit, ExprTuple, ExprMatch, ExprIfLet, ExprAnnot, ExprUnit,
+    MatchArm, Stmt, StmtLet, Param, PatVar, NoTypeExpr, SomeExpr, NoExpr,
+    ident_new, path_simple
+};
+use elab::items::handles::declarations::{
+    HandleDeclarations, HandleTypeParts, handle_kind_by_name, handle_kind_of, handle_kind_name,
+    handle_close_holders, handle_type_mentions
+};
+use elab::items::handles::state::{HandleWalk, handle_walk_start, handle_bind};
+use elab::items::handles::assign::{handle_join_value_yields};
+use elab::items::handles::walk::{handle_walk_expr};
+
+fn here() -> Span { span_new(0, 0, "") }
+
+fn ty(name: String) -> TypeExpr { TyPath(path_simple(ident_new(name, here()))) }
+
+fn var(name: String) -> Expr { ExprPath(path_simple(ident_new(name, here()))) }
+
+fn call(f: String, args: List<Expr>) -> Expr { ExprApp(var(f), args, here()) }
+
+/// `type W = MkW(StringBuilder)`, `type Chain = End | Link(Bytes, Chain)`,
+/// `type Box = MkBox(Nat)` and `type Spin = Spin(Spin)`, as their parts.
+fn declared_types() -> List<HandleTypeParts> {
+    let w: HandleTypeParts = { name: "W", parts: Cons(ty("StringBuilder"), Nil()) };
+    let chain: HandleTypeParts = { name: "Chain", parts: Cons(ty("Bytes"), Cons(ty("Chain"), Nil())) };
+    let boxed: HandleTypeParts = { name: "Box", parts: Cons(ty("Nat"), Nil()) };
+    let spin: HandleTypeParts = { name: "Spin", parts: Cons(ty("Spin"), Nil()) };
+    Cons(w, Cons(chain, Cons(boxed, Cons(spin, Nil()))))
+}
+
+fn holders() -> List<String> {
+    handle_close_holders(declared_types(), Cons("StringBuilder", Cons("Bytes", Nil())))
+}
+
+fn contains(t: TypeExpr) -> Bool { handle_type_mentions(t, holders()) }
+
+/// AC 4 (AC 1's answers): contained by name, through a field, through a
+/// recursive type's field, and through a type argument.
+fn test_a_handle_is_contained_by_name_fields_and_arguments() -> Unit {
+    let _ = assert_eq_bool(contains(ty("StringBuilder")), true);
+    let _ = assert_eq_bool(contains(ty("Bytes")), true);
+    let _ = assert_eq_bool(contains(ty("W")), true);
+    let _ = assert_eq_bool(contains(ty("Chain")), true);
+    assert_eq_bool(contains(TyApp(ty("Option"), Cons(ty("Bytes"), Nil()), here())), true)
+}
+
+/// AC 4: and not where nothing reaches a listed type — nor through a
+/// closure's result, and the closure over a self-recursive type ends.
+fn test_nat_a_wrapper_a_parameter_and_a_closure_contain_none() -> Unit {
+    let _ = assert_eq_bool(contains(ty("Nat")), false);
+    let _ = assert_eq_bool(contains(ty("Box")), false);
+    let _ = assert_eq_bool(contains(ty("T")), false);
+    let _ = assert_eq_bool(contains(ty("Spin")), false);
+    let _ = assert_eq_nat(list_len(holders()), 4);
+    assert_eq_bool(contains(TyArrow(ty("Nat"), ty("Bytes"), here())), false)
+}
+
+/// AC 4: D3's table, one name per kind and a name outside it.
+fn test_each_table_name_has_its_kind() -> Unit {
+    let _ = assert_eq_string(handle_kind_name(handle_kind_by_name("string_builder_new")), "maker");
+    let _ = assert_eq_string(handle_kind_name(handle_kind_by_name("bytes_from_string_grown")), "maker");
+    let _ = assert_eq_string(handle_kind_name(handle_kind_by_name("bytes_get")), "observer");
+    let _ = assert_eq_string(handle_kind_name(handle_kind_by_name("string_builder_len")), "observer");
+    let _ = assert_eq_string(handle_kind_name(handle_kind_by_name("push_char")), "threader");
+    let _ = assert_eq_string(handle_kind_name(handle_kind_by_name("bytes_blit_string")), "threader");
+    let _ = assert_eq_string(handle_kind_name(handle_kind_by_name("bytes_into_string_unchecked")), "consumer");
+    assert_eq_string(handle_kind_name(handle_kind_by_name("concat")), "none")
+}
+
+fn builder_decls() -> HandleDeclarations {
+    let decls: HandleDeclarations = {
+        holders: Cons("StringBuilder", Cons("Bytes", Nil())),
+        returning: Cons("push_str", Nil()),
+        mentioning: Cons("push_str", Cons("string_builder_len", Nil()))
+    };
+    decls
+}
+
+/// AC 4: a table name has its kind only when a declaration of it mentions a
+/// handle — `to_string` over `String` alone has none.
+fn test_a_kind_needs_a_signature_that_mentions_a_handle() -> Unit {
+    let _ = assert_eq_string(handle_kind_name(handle_kind_of(builder_decls(), "push_str")), "threader");
+    let _ = assert_eq_string(handle_kind_name(handle_kind_of(builder_decls(), "string_builder_len")), "observer");
+    assert_eq_string(handle_kind_name(handle_kind_of(builder_decls(), "to_string")), "none")
+}
+
+fn sb_param() -> List<Param> {
+    let p: Param = { pattern: PatVar(ident_new("sb", here())), ty: ty("StringBuilder"), span: here() };
+    Cons(p, Nil())
+}
+
+fn push(handle: String) -> Expr { call("push_str", Cons(var(handle), Cons(ExprStringLit("x", here()), Nil()))) }
+
+fn findings_in(body: Expr) -> Nat {
+    list_len(handle_walk_expr(handle_walk_start(sb_param()), builder_decls(), body).findings)
+}
+
+/// The walk: `{ let a = push_str(sb, "x"); push_str(sb, "x") }` uses `sb`
+/// twice in sequence — one finding — while `if true { push_str(sb, "x") }
+/// else { push_str(sb, "x") }` uses it once on each path, and an observer
+/// before a push is free.
+fn test_a_sequence_adds_and_arms_are_alternatives() -> Unit {
+    let first: Stmt = StmtLet(PatVar(ident_new("a", here())), NoTypeExpr(), push("sb"), here());
+    let sequence = ExprBlock(Cons(first, Nil()), SomeExpr(push("sb")), here());
+    let arms = ExprIf(ExprBoolLit(true, here()), push("sb"), push("sb"), here());
+    let looked: Stmt = StmtLet(PatVar(ident_new("n", here())), NoTypeExpr(),
+        call("string_builder_len", Cons(var("sb"), Nil())), here());
+    let observed = ExprBlock(Cons(looked, Nil()), SomeExpr(push("sb")), here());
+    let _ = assert_eq_nat(findings_in(sequence), 1);
+    let _ = assert_eq_nat(findings_in(arms), 0);
+    assert_eq_nat(findings_in(observed), 0)
+}
+
+fn maker_decls() -> HandleDeclarations {
+    let decls: HandleDeclarations = {
+        holders: Cons("StringBuilder", Nil()),
+        returning: Cons("string_builder_new", Cons("push_str", Nil())),
+        mentioning: Cons("push_str", Nil())
+    };
+    decls
+}
+
+// The constructs below are hand-built in the shape `blocks/mutable/mod.tg`
+// lowers a join's arms to: each a block ending in a pairing tuple whose first
+// item is the arm's value. The walk that closes a join reads its names through
+// `string_split_once`, an extern the evaluator cannot run, so this pins the
+// decision itself (ADR 16.10.26f D1); the binding it drives is pinned on
+// `albite1` by the records census over `mut_handle_value_join_reused`.
+
+fn made() -> Expr { call("string_builder_new", Nil()) }
+
+/// `{ (value, n#1) }`: an arm's pairing.
+fn pairing_arm(value: Expr) -> Expr {
+    ExprBlock(Nil(), SomeExpr(ExprTuple(Cons(value, Cons(var("n#1"), Nil())), here())), here())
+}
+
+fn if_join(then: Expr, otherwise: Expr) -> Expr { ExprIf(ExprBoolLit(true, here()), then, otherwise, here()) }
+
+fn match_arm(body: Expr) -> MatchArm {
+    let arm: MatchArm = { pattern: PatVar(ident_new("k", here())), guard: NoExpr(), body: body, span: here() };
+    arm
+}
+
+/// A walk where `x` is a handle variable bound before the join.
+fn x_bound() -> HandleWalk { handle_bind(handle_walk_start(Nil()), "x", true) }
+
+fn value_yields(construct: Expr) -> Bool { handle_join_value_yields(x_bound(), maker_decls(), construct) }
+
+fn number() -> Expr { ExprIntLit(1, here()) }
+
+/// ADR 16.10.26f AC 4: a join's value is a handle when some arm pairs one — a
+/// maker, an outer handle variable, or an annotated maker — over an `if`, a
+/// `match` and a bare block; and not when no arm does, nor through an arm that
+/// is not a pairing block, nor through `if let`'s pass-through `()`.
+fn test_a_join_value_is_a_handle_when_an_arm_pairs_one() -> Unit {
+    let annotated = ExprAnnot(made(), ty("StringBuilder"), here());
+    let arms = Cons(match_arm(pairing_arm(number())), Cons(match_arm(pairing_arm(made())), Nil()));
+    let pass_through = SomeExpr(pairing_arm(ExprUnit(here())));
+    let _ = assert_eq_bool(value_yields(if_join(pairing_arm(made()), pairing_arm(made()))), true);
+    let _ = assert_eq_bool(value_yields(if_join(pairing_arm(number()), pairing_arm(var("x")))), true);
+    let _ = assert_eq_bool(value_yields(if_join(pairing_arm(annotated), pairing_arm(number()))), true);
+    let _ = assert_eq_bool(value_yields(ExprMatch(var("k"), arms, here())), true);
+    let _ = assert_eq_bool(value_yields(pairing_arm(made())), true);
+    let _ = assert_eq_bool(value_yields(if_join(pairing_arm(number()), pairing_arm(var("y")))), false);
+    let _ = assert_eq_bool(value_yields(if_join(made(), made())), false);
+    let _ = assert_eq_bool(value_yields(ExprIfLet(PatVar(ident_new("p", here())), var("k"), pairing_arm(number()), pass_through, here())), false);
+    assert_eq_bool(value_yields(ExprIfLet(PatVar(ident_new("p", here())), var("k"), pairing_arm(made()), NoExpr(), here())), true)
+}
+

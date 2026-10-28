@@ -1,0 +1,20 @@
+// == conversion unfolds exactly what termination admits (ADR 28.9.26d)
+#[partial]
+fn spin(n: Nat) -> Nat { if n == 0 { 2 } else { spin(n - 1) } }
+
+fn two() -> Nat { 2 }
+
+// The ASYMMETRY is the assertion. Conversion is δ-free while bodies elaborate
+// (admission has not run yet), so a failure a global could change is deferred
+// and discharged after admission, with only `Total`, effect-free definitions
+// in scope. `two` is certified total, so it unfolds and the first proof checks.
+// `spin` is `#[partial]`, so it is absent from that scope, stays folded, and
+// its E0071 is byte-identical to the δ-opaque days. The last proof is the
+// must-fail twin: `two` unfolds, and the note shows what it unfolded to.
+fn total_unfolds() -> two() == 2 { refl }
+
+fn partial_is_opaque() -> spin(1) == 2 { refl }
+
+fn total_but_false() -> two() == 3 { refl }
+
+fn main() -> Nat { 0 }

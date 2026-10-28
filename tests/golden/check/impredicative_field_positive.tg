@@ -1,0 +1,5 @@
+// ADR 28.9.26c § 2.4: the positive twin of
+// tests/golden/error/positivity_impredicative_field.tg. `Pos` occurs only to
+// the right of the arrow under the `forall`, so it is strictly positive and
+// must check clean: the gate does not reject every `forall`-field.
+type Pos = Leaf | Node(forall x. x -> Pos)

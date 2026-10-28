@@ -1,0 +1,94 @@
+// `ring` re-proves the library's semiring laws (ADR 4.10.26g D7, AC 4).
+//
+// `ring` reads each side of an `Eq<Nat, a, b>` goal as a polynomial over its
+// atoms, and rewrites both into one normal form, one `nat_arith` lemma per
+// step, each cited with all its arguments; then `refl` closes the goal (D2,
+// D3). Each proof below is a lemma of nat_arith.tg, or a goal its hand
+// proofs would need a chain for, proved by `ring` alone.
+//
+// Steps per proof (P0.2): one for each of the six library laws and D5's
+// three; 2 for `n * 2`, 3 for `2 * n`, 5 for the square, 1 for the atom.
+//
+// Every proof below also goes through the kernel's `check_proof` at the
+// admission boundary — a refusal is E0081 and would fail this file. Each
+// theorem is cited by a typed `let`, at literals.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_tactic_ring.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+// `ring` cites the library by qualified path (D4).
+mod nat_arith;
+
+// ── The library's commutativity, associativity and distributivity ──────────
+
+pub theorem ring_add_comm(n: Nat, m: Nat) -> Eq<Nat, n + m, m + n> by { ring }
+
+pub theorem ring_add_assoc(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n + m) + k, n + (m + k)> by {
+    ring
+}
+
+pub theorem ring_mul_comm(n: Nat, m: Nat) -> Eq<Nat, n * m, m * n> by { ring }
+
+pub theorem ring_mul_assoc(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n * m) * k, n * (m * k)> by {
+    ring
+}
+
+pub theorem ring_mul_add(n: Nat, m: Nat, k: Nat) -> Eq<Nat, n * (m + k), n * m + n * k> by {
+    ring
+}
+
+pub theorem ring_add_mul(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n + m) * k, n * k + m * k> by {
+    ring
+}
+
+// ── D5's three ──────────────────────────────────────────────────────────────
+
+pub theorem ring_mul_one_left(n: Nat) -> Eq<Nat, 1 * n, n> by { ring }
+
+pub theorem ring_add_left_comm(n: Nat, m: Nat, k: Nat)
+    -> Eq<Nat, n + (m + k), m + (n + k)> by { ring }
+
+pub theorem ring_mul_left_comm(n: Nat, m: Nat, k: Nat)
+    -> Eq<Nat, n * (m * k), m * (n * k)> by { ring }
+
+// ── Coefficients, a square, an atom ─────────────────────────────────────────
+
+// Spelling (i): a coefficient is repeated monomials (D2).
+pub theorem ring_coefficient_right(n: Nat) -> Eq<Nat, n * 2, n + n> by { ring }
+
+// A numeral on the left is moved right first: conversion leaves `2 * n` stuck.
+pub theorem ring_coefficient_left(n: Nat) -> Eq<Nat, 2 * n, n + n> by { ring }
+
+pub theorem ring_square(n: Nat, m: Nat)
+    -> Eq<Nat, (n + m) * (n + m), n * n + (n * m + (n * m + m * m))> by { ring }
+
+// `n - 1` is an atom: `ring` does not look inside it (D1).
+pub theorem ring_with_an_atom(n: Nat, m: Nat) -> Eq<Nat, (n - 1) + m, m + (n - 1)> by { ring }
+
+// ── Each one cited ──────────────────────────────────────────────────────────
+
+fn test_the_library_laws_by_ring_are_cited() -> Unit {
+    let _add_comm: Eq<Nat, 2 + 5, 5 + 2> = ring_add_comm(2, 5);
+    let _add_assoc: Eq<Nat, (1 + 2) + 3, 1 + (2 + 3)> = ring_add_assoc(1, 2, 3);
+    let _mul_comm: Eq<Nat, 2 * 5, 5 * 2> = ring_mul_comm(2, 5);
+    let _mul_assoc: Eq<Nat, (1 * 2) * 3, 1 * (2 * 3)> = ring_mul_assoc(1, 2, 3);
+    let _mul_add: Eq<Nat, 2 * (3 + 4), 2 * 3 + 2 * 4> = ring_mul_add(2, 3, 4);
+    let _add_mul: Eq<Nat, (2 + 3) * 4, 2 * 4 + 3 * 4> = ring_add_mul(2, 3, 4);
+    ()
+}
+
+fn test_the_new_lemmas_by_ring_are_cited() -> Unit {
+    let _one: Eq<Nat, 1 * 7, 7> = ring_mul_one_left(7);
+    let _add_left: Eq<Nat, 1 + (2 + 3), 2 + (1 + 3)> = ring_add_left_comm(1, 2, 3);
+    let _mul_left: Eq<Nat, 1 * (2 * 3), 2 * (1 * 3)> = ring_mul_left_comm(1, 2, 3);
+    ()
+}
+
+fn test_coefficients_squares_and_atoms_by_ring_are_cited() -> Unit {
+    let _right: Eq<Nat, 3 * 2, 3 + 3> = ring_coefficient_right(3);
+    let _left: Eq<Nat, 2 * 3, 3 + 3> = ring_coefficient_left(3);
+    let _square: Eq<Nat, (1 + 2) * (1 + 2), 1 * 1 + (1 * 2 + (1 * 2 + 2 * 2))> = ring_square(1, 2);
+    let _atom: Eq<Nat, (4 - 1) + 2, 2 + (4 - 1)> = ring_with_an_atom(4, 2);
+    ()
+}

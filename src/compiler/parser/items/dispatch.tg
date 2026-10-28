@@ -1,0 +1,88 @@
+// src/compiler/parser/items/dispatch.tg
+// Main item dispatch and top-level parsing loop.
+
+use lexer::token::{TokenKind, Token, TokPub, TokFn, TokType, TokExtern,
+    TokMod, TokUse, TokTheorem, TokLemma, TokAxiom, TokEof};
+use lexer::span::{Span, span_empty};
+use parser::error::{ParseError, parse_error_expected, parse_error_unexpected_eof};
+use parser::cursor::{Cursor, cursor_peek, cursor_peek_kind, cursor_peek_span, cursor_check, cursor_advance,
+    cursor_is_eof, token_kind_name};
+use parser::option::{Option, None, Some};
+use parser::ast::nodes::Item;
+use parser::items::result::{item_list_reverse};
+use parser::items::shared::visibility::{parse_visibility};
+use parser::items::shared::attributes::{parse_attributes, item_attach_attributes};
+use parser::items::decls::functions::{parse_fn};
+use parser::types::{parse_type_item};
+use parser::items::decls::theorems::{parse_theorem, parse_lemma, parse_axiom};
+use parser::items::decls::extern_fn::{parse_extern};
+use parser::items::use_decl::{parse_mod, parse_use_item};
+use parser::items::recovery::{synchronize};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Result, Ok, Err};
+
+// ===========================================================================
+// SINGLE ITEM PARSING
+// ===========================================================================
+//
+// THE ITEM *LOOP* IS NOT HERE. `parse_file` in `parser/lib.tg` drives
+// `parse_items_with_recovery`, which accumulates errors and guarantees
+// progress; this file owns dispatch for ONE item and nothing above it.
+//
+// It used to also carry a second loop, `parse_items`/`parse_items_acc`, that
+// nothing called — and ADR 12.8.26b's §1.2 was written against that one,
+// diagnosing a bug in a function the compiler never runs. The retrospective
+// deleted it rather than keep two loops that can disagree. If you want a
+// whole-file parse, call `parse_file`.
+//
+// The general lesson, now a command: an export is not a call, and in `.tg` the
+// `pub use` is usually in a different file from both the definition and any
+// call site, so grep cannot tell them apart. Ask
+// `albite info def <name> <file> --callers`.
+
+/// Parse a single top-level item.
+///
+/// Grammar:
+///   Item = Visibility? ItemKind
+///   ItemKind = FnDef | TypeDef | Theorem | Lemma | Axiom | Extern | Mod | Use
+pub fn parse_item(cur: Cursor) -> Result<(Item, Cursor), ParseError> {
+    let start_span = cursor_peek_span(cur);
+
+    // Parse leading `#[…]` attributes (ADR 12.8.26b P1). Attaching them AFTER
+    // dispatch keeps every existing item parser's signature unchanged — the
+    // alternative, threading an attribute list through all eight of them, is a
+    // much wider blast radius for the same result.
+    let (attrs, cur_a) = parse_attributes(cur)?;
+
+    // Parse optional visibility modifier
+    let vis_result = parse_visibility(cur_a);
+    let (vis, cur2) = vis_result?;
+    let (item, cur3) = dispatch_item(cur2, vis, start_span)?;
+    let annotated = item_attach_attributes(item, attrs)?;
+    Ok((annotated, cur3))
+}
+
+/// Dispatch to the appropriate item parser based on keyword.
+fn dispatch_item(cur: Cursor, vis: Visibility, start_span: Span) -> Result<(Item, Cursor), ParseError> {
+    match cursor_peek_kind(cur) {
+        None() => Err(parse_error_unexpected_eof(start_span)),
+        Some(kind) => dispatch_item_kind(cur, vis, start_span, kind)
+    }
+}
+
+fn dispatch_item_kind(cur: Cursor, vis: Visibility, start_span: Span, kind: TokenKind) -> Result<(Item, Cursor), ParseError> {
+    match kind {
+        TokFn() => parse_fn(cur, vis, start_span),
+        TokType() => parse_type_item(cur, vis, start_span),
+        TokTheorem() => parse_theorem(cur, vis, start_span),
+        TokLemma() => parse_lemma(cur, vis, start_span),
+        TokAxiom() => parse_axiom(cur, vis, start_span),
+        TokExtern() => parse_extern(cur, vis, start_span),
+        TokMod() => parse_mod(cur, vis, start_span),
+        TokUse() => parse_use_item(cur, vis, start_span),
+        _ => {
+            let found = token_kind_name(kind);
+            Err(parse_error_expected("item", found, cursor_peek_span(cur)))
+        }
+    }
+}

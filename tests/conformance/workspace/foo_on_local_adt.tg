@@ -1,0 +1,10 @@
+// A constructor pattern naming a constructor that exists nowhere, over a
+// local ADT (ADR 3.10.26l §2.4): no sibling at all, so only the pattern
+// resolver can refuse it. The bootstrap says E0003.
+type OptFoo = NadaFoo | AlgoFoo(Nat)
+
+fn pick(o: OptFoo) -> Nat {
+    match o { Foo(k) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(AlgoFoo(1)) }

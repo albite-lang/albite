@@ -1,0 +1,283 @@
+// Deep type equality and record field checking.
+
+use lexer::span::Span;
+use parser::ast::{Expr, Ident, ident_name, FieldInit, MaybeExpr, NoExpr, SomeExpr};
+use driver::ffi::{List, Nil, Cons, string_len, string_char_at_internal, cstring_to_string};
+use driver::util::list_is_empty;
+use elab::ffi::{
+    TermHandle, TypeHandle, INVALID_HANDLE,
+    tg_term_pair, tg_term_unit,
+    tg_type_is_product, tg_type_get_product_left, tg_type_get_product_right,
+    tg_type_product,
+    tg_type_is_tyvar, tg_type_get_tyvar_name,
+    tg_type_is_app, tg_type_get_app_name,
+    tg_type_is_sum, tg_type_get_sum_left, tg_type_get_sum_right, tg_type_sum,
+    tg_type_is_arrow, tg_type_get_arrow_domain, tg_type_get_arrow_codomain, tg_type_arrow,
+    tg_type_is_dependent,
+    tg_type_is_mu, tg_type_get_mu_body, tg_type_get_mu_var, tg_type_mu,
+    tg_type_is_forall, tg_type_get_forall_body, tg_type_get_forall_var, tg_type_forall,
+    tg_string_to_cstr,
+    tg_types_equal,
+    tg_cstr_eq
+};
+use elab::env::{
+    Env, env_lookup_type_def, env_global_lookup_type_def, env_is_type_var,
+    MaybeTypeDef, NoTypeDef, SomeTypeDef,
+    MaybeRecordFields, NoRecordFields, SomeRecordFields,
+    MaybeRecordField, NoRecordField, SomeRecordField,
+    record_field_lookup
+};
+use driver::util::{list_contains_string};
+use elab::exprs::forms::result::{
+    ElabExprResult, ElabExprOk, ElabExprErr, elab_expr_error_coded,
+    add_expected_because, TermInfo
+};
+use elab::error::ExpFieldType;
+use elab::cir::{CodegenIR, CIRUnit, CIRPair};
+use elab::exprs::{synth, check};
+use elab::exprs::records::get_type_name;
+use elab::exprs::records::type_shape::{
+    same_pair_former, pair_former_left, pair_former_right,
+    same_binder, binder_body, tyvar_meets_mu_binder
+};
+
+// ===========================================================================
+// RECORD UPDATE
+// ===========================================================================
+
+/// Synthesize record update with field overlays.
+pub fn synth_record_update(
+    env: Env,
+    base: TermInfo,
+    fields: List<FieldInit>,
+    span: Span
+) -> ElabExprResult {
+    match fields {
+        Nil() => ElabExprOk(env, base.term, base.ty, base.cir),
+        Cons(field, rest) =>
+            ElabExprErr(elab_expr_error_coded(
+                "record update not yet fully implemented",
+                span, "E0902"
+            ))
+    }
+}
+
+/// Check record update against expected type.
+pub fn check_record_update(
+    env: Env,
+    base: TermInfo,
+    fields: List<FieldInit>,
+    span: Span
+) -> ElabExprResult {
+    synth_record_update(env, base, fields, span)
+}
+
+// ===========================================================================
+// RECORD FIELD CHECKING
+// ===========================================================================
+
+/// Build a record from field values checked against expected type.
+pub fn check_record_fields(
+    env: Env,
+    expected: TypeHandle,
+    fields: List<FieldInit>,
+    span: Span
+) -> ElabExprResult {
+    let structural_ty = get_structural_type(env, expected);
+    match check_record_fields_helper(env, structural_ty, fields, span) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, term, _, cir) =>
+            ElabExprOk(env2, term, expected, cir)
+    }
+}
+
+/// Get the structural type for a type. If ty is a TyVar, look up its encoded_type.
+pub fn get_structural_type(env: Env, ty: TypeHandle) -> TypeHandle {
+    let type_name = get_type_name(ty);
+    if type_name == "" {
+        ty
+    } else {
+        match env_lookup_type_def(env, type_name) {
+            NoTypeDef() => ty,
+            SomeTypeDef(type_info) =>
+                type_info.encoded_type
+        }
+    }
+}
+
+fn check_record_fields_helper(
+    env: Env,
+    ty: TypeHandle,
+    fields: List<FieldInit>,
+    span: Span
+) -> ElabExprResult {
+    match fields {
+        Nil() =>
+            ElabExprOk(env, tg_term_unit(), ty, CIRUnit()),
+        Cons(field, rest) =>
+            if list_is_empty(rest) {
+                check_single_record_field(env, field, ident_name(field.name), span, ty)
+            } else {
+                check_multi_record_field(env, field, rest, ty, span)
+            }
+    }
+}
+
+fn check_single_record_field(
+    env: Env,
+    field: FieldInit,
+    field_name: String,
+    field_span: Span,
+    ty: TypeHandle
+) -> ElabExprResult {
+    match check(env, field.value, ty) {
+        ElabExprErr(e) => ElabExprErr(add_expected_because(e, ExpFieldType(field_name, field_span))),
+        ElabExprOk(env2, term, ty2, cir) => ElabExprOk(env2, term, ty2, cir)
+    }
+}
+
+fn check_multi_record_field(
+    env: Env,
+    field: FieldInit,
+    rest: List<FieldInit>,
+    ty: TypeHandle,
+    span: Span
+) -> ElabExprResult {
+    let field_name = ident_name(field.name);
+    if tg_type_is_product(ty) {
+        let left_ty = tg_type_get_product_left(ty);
+        let right_ty = tg_type_get_product_right(ty);
+        match check(env, field.value, left_ty) {
+            ElabExprErr(e) => ElabExprErr(add_expected_because(e, ExpFieldType(field_name, span))),
+            ElabExprOk(env2, left_term, _, left_cir) =>
+                match check_record_fields_helper(env2, right_ty, rest, span) {
+                    ElabExprErr(e) => ElabExprErr(e),
+                    ElabExprOk(env3, right_term, _, right_cir) =>
+                        let pair = tg_term_pair(left_term, right_term);
+                        let pair_cir = CIRPair(left_cir, right_cir);
+                        ElabExprOk(env3, pair, ty, pair_cir)
+                }
+        }
+    } else {
+        ElabExprErr(elab_expr_error_coded(
+            "too many fields for record type",
+            span, "E0305"
+        ))
+    }
+}
+
+// ===========================================================================
+// DEEP TYPE EQUALITY
+// ===========================================================================
+
+/// Deep type equality comparison with on-the-fly TyVar resolution.
+pub fn deep_types_equal(env: Env, a: TypeHandle, b: TypeHandle) -> Bool {
+    deep_types_equal_aux(env, a, b, Nil, 0)
+}
+
+// Partial (ADR 11.8.26b): the recursive call rebuilds its argument rather
+// than passing a strict subterm — a measure recursion, which Non-Goals defers to
+// v2.1. Executable compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn deep_types_equal_aux(
+    env: Env,
+    a: TypeHandle,
+    b: TypeHandle,
+    resolving: List<String>,
+    depth: Nat
+) -> Bool {
+    if depth > 100 {
+        false
+    } else if tg_types_equal(a, b) {
+        true
+    } else {
+        let a2 = try_resolve_tyvar_global(env, a, resolving);
+        let b2 = try_resolve_tyvar_global(env, b, resolving);
+
+        let resolving2 = add_resolved_name(a, a2, resolving);
+        let resolving3 = add_resolved_name(b, b2, resolving2);
+
+        if (a2 != a) || (b2 != b) {
+            deep_types_equal_aux(env, a2, b2, resolving3, depth + 1)
+        } else if tg_type_is_dependent(a) || tg_type_is_dependent(b) {
+            // tg_types_equal compared the binders and said no; splitting a
+            // dependent pair would compare two open codomains (ADR 2.10.26f D13)
+            false
+        } else if same_pair_former(a, b) {
+            deep_types_equal_aux(env, pair_former_left(a), pair_former_left(b), resolving3, depth + 1)
+            && deep_types_equal_aux(env, pair_former_right(a), pair_former_right(b), resolving3, depth + 1)
+        } else if same_binder(a, b) {
+            deep_types_equal_aux(env, binder_body(a), binder_body(b), resolving3, depth + 1)
+        } else {
+            // Two binders with different names land here too, and still answer
+            // false: both cross cases need one side to be a type variable.
+            tyvar_meets_mu_binder(a, b)
+        }
+    }
+}
+
+fn try_resolve_tyvar_global(env: Env, ty: TypeHandle, resolving: List<String>) -> TypeHandle {
+    if tg_type_is_tyvar(ty) {
+        let name = get_type_name(ty);
+        if name == "" {
+            ty
+        } else if list_contains_string(resolving, name) {
+            ty
+        } else {
+            match env_global_lookup_type_def(env, name) {
+                NoTypeDef() => ty,
+                SomeTypeDef(info) =>
+                    if info.encoded_type == INVALID_HANDLE {
+                        ty
+                    } else if info.encoded_type == ty {
+                        ty
+                    } else {
+                        info.encoded_type
+                    }
+            }
+        }
+    } else {
+        ty
+    }
+}
+
+fn add_resolved_name(original: TypeHandle, resolved: TypeHandle, list: List<String>) -> List<String> {
+    if original == resolved {
+        list
+    } else {
+        let name = get_type_name(original);
+        if name == "" {
+            list
+        } else {
+            Cons(name, list)
+        }
+    }
+}
+
+// ===========================================================================
+// HELPERS
+// ===========================================================================
+
+pub fn is_numeric_string(s: String) -> Bool {
+    let len = string_len(s);
+    if len == 0 {
+        false
+    } else {
+        let first = string_char_at_internal(s, 0);
+        first >= 48 && first <= 57
+    }
+}
+
+pub fn parse_field_index(s: String) -> Nat {
+    let len = string_len(s);
+    if len == 0 {
+        0
+    } else {
+        let first = string_char_at_internal(s, 0);
+        if first >= 48 && first <= 57 {
+            (first - 48)
+        } else {
+            0
+        }
+    }
+}

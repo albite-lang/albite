@@ -1,0 +1,5 @@
+// ADR 30.9.26g twin: `eval` computes the sum and still refuses. Both
+// compilers must refuse it.
+fn closed_sum(k: Nat) -> Nat { let _p: Eq<Nat, 2 + 2, 5> = refl; 0 }
+
+fn main() -> Nat { 0 }

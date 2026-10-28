@@ -1,0 +1,35 @@
+// Negative control for the dependent function type (ADR 7.10.26n D4, AC 2).
+//
+// Each definition below misuses `(x: A) -> B` and must be refused.
+// `check-mustfail-fixtures` (make/quality/tg-tests.mk) requires this file to
+// fail with exactly
+//
+//   albite test src/compiler/mustfail_dependent_function_type.tg --require-tests
+//     -> aborting due to 3 errors
+//
+// The cases, in the bootstrap's codes:
+//
+//   1. `h: (n: Nat) -> P<n>` applied to a `Bool` (E0010)
+//   2. `(e: Eq<Nat, 0, 0>) -> Eq<Eq<Nat, 0, 0>, e, e>`, a binder over a proof
+//      that the body uses (E0065)
+//   3. a record field `f: (n: Nat) -> Eq<Nat, n, n>` (E0025)
+//
+// The two parse refusals (`(n: Nat)` with no arrow, and a telescope) stop a
+// file at its first error, so they are Rust parser tests in
+// `bootstrap/src/parser/tests/dependent/function_type.rs`.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+pub theorem applied_to_a_bool<P: Nat -> Prop>(h: (n: Nat) -> P<n>) -> P<0> { h(true) }
+
+fn test_a_binder_over_a_proof_is_refused() -> Unit {
+    let _f: (e: Eq<Nat, 0, 0>) -> Eq<Eq<Nat, 0, 0>, e, e> = |e: Eq<Nat, 0, 0>| refl;
+    ()
+}
+
+pub type Holder = { f: (n: Nat) -> Eq<Nat, n, n> }
+
+fn test_holder_is_named() -> Unit {
+    ()
+}

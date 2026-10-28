@@ -1,0 +1,27 @@
+// Golden test (ADR 13.10.26o D4; was compile_error/region_crossing_try): a
+// `try` lowers to a function boundary, so a `?` inside a `try` inside a region
+// returns from the `try` and does not cross the region. The region's value is
+// a `Nat`. The `try` allocates (a string), and its closure environment is
+// region memory too. a = 4 (half(8)), b = 100 (half(7) fails), so main is 104.
+type Result<T, E> = Ok(T) | Err(E)
+
+fn half(n: Nat) -> Result<Nat, String> {
+    if n % 2 == 0 { Ok(n / 2) } else { Err("odd") }
+}
+
+fn halved_in_region(n: Nat) -> Nat {
+    region {
+        let r: Result<Nat, String> = try {
+            let tag = "ha" ++ "lf";
+            if tag == "half" { half(n)? } else { 0 }
+        };
+        match r {
+            Ok(m) => m,
+            Err(_) => 100
+        }
+    }
+}
+
+fn main() -> Nat {
+    halved_in_region(8) + halved_in_region(7)
+}

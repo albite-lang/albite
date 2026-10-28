@@ -1,0 +1,163 @@
+// src/compiler/parser/exprs/pratt.tg
+// Core Pratt parsing for expression precedence.
+
+use lexer::token::{TokenKind, TokColon,
+    TokEqEq, TokBangEq, TokLAngle, TokRAngle, TokLe, TokGe,
+    TokPlus, TokPlusPlus, TokMinus, TokStar, TokSlash, TokPercent,
+    TokAmpAmp, TokPipePipe, TokPipeRight, TokBang};
+use lexer::span::span_merge;
+use parser::error::ParseError;
+use parser::cursor::{Cursor, cursor_peek_kind, cursor_check, cursor_check_ahead, cursor_advance};
+use parser::option::{Option, None, Some};
+use parser::ast::common::{BinOp, OpAdd, OpSub, OpMul, OpDiv, OpMod, OpEq, OpNe, OpLt, OpLe, OpGt, OpGe,
+    OpAnd, OpOr, OpPipe, OpConcat,
+    binop_precedence, binop_is_right_assoc,
+    UnaryOp, OpNot, OpNeg};
+use parser::ast::nodes::{Expr, ExprBinary, ExprUnary, ExprAnnot, TypeExpr, expr_span, type_expr_span};
+use parser::exprs::result::{MaybeBinOp, NoBinOp, SomeBinOp, cursor_peek_span};
+use parser::exprs::postfix::{parse_postfix, parse_postfix_loop};
+use parser::types::{parse_type};
+use driver::util::{Result, Ok, Err};
+
+// ===========================================================================
+// EXPRESSION PARSING - ENTRY POINT
+// ===========================================================================
+
+/// Parse an expression.
+/// 
+/// This is the main entry point for expression parsing.
+/// Handles binary operators with Pratt parsing and type annotations.
+pub fn parse_expr(cur: Cursor) -> Result<(Expr, Cursor), ParseError> {
+    parse_expr_prec(cur, 0)
+}
+
+/// Parse an expression with a minimum precedence level.
+/// 
+/// This is the core Pratt parser. It parses:
+/// 1. Unary operators and atoms (highest precedence)
+/// 2. Postfix operators (function calls, field access, type application)
+/// 3. Binary operators (with precedence climbing)
+/// 4. Type annotation (lowest precedence, after binary ops)
+pub fn parse_expr_prec(cur: Cursor, min_prec: Nat) -> Result<(Expr, Cursor), ParseError> {
+    let (left, cur2) = parse_unary(cur)?;
+    parse_expr_prec_postfix(left, cur2, min_prec)
+}
+
+fn parse_expr_prec_postfix(left: Expr, cur: Cursor, min_prec: Nat) -> Result<(Expr, Cursor), ParseError> {
+    let (left2, cur2) = parse_postfix_loop(left, cur)?;
+    parse_infix_loop(left2, cur2, min_prec)
+}
+
+// ===========================================================================
+// BINARY OPERATOR LOOKUP
+// ===========================================================================
+
+/// Peek at the current token and return the corresponding binary operator.
+/// Returns NoBinOp if current token is not a binary operator.
+pub fn peek_binop(cur: Cursor) -> MaybeBinOp {
+    match cursor_peek_kind(cur) {
+        None() => NoBinOp,
+        Some(kind) => match kind {
+            TokPipePipe() => SomeBinOp(OpOr()),
+            TokAmpAmp() => SomeBinOp(OpAnd()),
+            TokEqEq() => SomeBinOp(OpEq()),
+            TokBangEq() => SomeBinOp(OpNe()),
+            TokLAngle() => SomeBinOp(OpLt()),
+            TokLe() => SomeBinOp(OpLe()),
+            TokRAngle() => SomeBinOp(OpGt()),
+            TokGe() => SomeBinOp(OpGe()),
+            TokPlus() => SomeBinOp(OpAdd()),
+            TokMinus() => SomeBinOp(OpSub()),
+            TokPlusPlus() => SomeBinOp(OpConcat()),
+            TokStar() => SomeBinOp(OpMul()),
+            TokSlash() => SomeBinOp(OpDiv()),
+            TokPercent() => SomeBinOp(OpMod()),
+            TokPipeRight() => SomeBinOp(OpPipe()),
+            _ => NoBinOp
+        }
+    }
+}
+
+// ===========================================================================
+// PRATT PARSER - INFIX LOOP
+// ===========================================================================
+
+/// Parse binary operators using precedence climbing (Pratt parsing).
+/// 
+/// This is the core infix loop. It:
+/// 1. Checks if current token is a binary operator
+/// 2. If operator precedence >= min_prec, consumes it and parses RHS
+/// 3. Builds binary expression and continues looping
+/// 4. Otherwise, handles type annotation and returns
+fn parse_infix_loop(lhs: Expr, cur: Cursor, min_prec: Nat) -> Result<(Expr, Cursor), ParseError> {
+    match peek_binop(cur) {
+        NoBinOp() =>
+            parse_type_annotation(lhs, cur),
+        SomeBinOp(op) => {
+            let prec = binop_precedence(op);
+            if prec < min_prec {
+                parse_type_annotation(lhs, cur)
+            } else {
+                let cur2 = cursor_advance(cur);
+                let next_prec = if binop_is_right_assoc(op) { prec } else { prec + 1 };
+                parse_infix_rhs(lhs, cur2, min_prec, op, next_prec)
+            }
+        }
+    }
+}
+
+fn parse_infix_rhs(lhs: Expr, cur: Cursor, min_prec: Nat, op: BinOp, next_prec: Nat) -> Result<(Expr, Cursor), ParseError> {
+    let (rhs, cur2) = parse_expr_prec(cur, next_prec)?;
+    let span = span_merge(expr_span(lhs), expr_span(rhs));
+    let new_lhs = ExprBinary(op, lhs, rhs, span);
+    parse_infix_loop(new_lhs, cur2, min_prec)
+}
+
+/// Parse optional type annotation `: T` at lowest precedence.
+/// 
+/// Type annotation binds looser than all operators:
+/// `x + y : Nat` parses as `(x + y) : Nat`
+fn parse_type_annotation(expr: Expr, cur: Cursor) -> Result<(Expr, Cursor), ParseError> {
+    // Check for `:` but not `::` (path separator)
+    if cursor_check(cur, TokColon()) {
+        if cursor_check_ahead(cur, TokColon()) {
+            // It's `::`, not a type annotation
+            Ok((expr, cur))
+        } else {
+            // It's `:`, parse type annotation
+            let cur2 = cursor_advance(cur);  // consume `:`
+            let (ty, cur3) = parse_type(cur2)?;
+            let span = span_merge(expr_span(expr), type_expr_span(ty));
+            Ok((ExprAnnot(expr, ty, span), cur3))
+        }
+    } else {
+        Ok((expr, cur))
+    }
+}
+
+// ===========================================================================
+// UNARY OPERATORS
+// ===========================================================================
+
+/// Parse unary operators: `!` (not), `-` (negate).
+/// 
+/// Unary operators have high precedence and right-associate:
+/// `!!x` parses as `!(!x)`
+pub fn parse_unary(cur: Cursor) -> Result<(Expr, Cursor), ParseError> {
+    let start_span = cursor_peek_span(cur);
+    
+    match cursor_peek_kind(cur) {
+        Some(TokBang()) =>
+            parse_unary_op(cur, start_span, OpNot()),
+        Some(TokMinus()) =>
+            parse_unary_op(cur, start_span, OpNeg()),
+        _ => parse_postfix(cur)
+    }
+}
+
+fn parse_unary_op(cur: Cursor, start_span: Span, op: UnaryOp) -> Result<(Expr, Cursor), ParseError> {
+    let cur2 = cursor_advance(cur);
+    let (inner, cur3) = parse_unary(cur2)?;
+    let span = span_merge(start_span, expr_span(inner));
+    Ok((ExprUnary(op, inner, span), cur3))
+}

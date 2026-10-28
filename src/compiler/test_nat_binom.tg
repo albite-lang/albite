@@ -1,0 +1,95 @@
+// The Tier 4 binomial library is citable and computes (ADR 7.10.26k AC 2, D5).
+//
+// Each lemma of nat_binom.tg cited in a typed `let`, at variables and at
+// numerals; closed values of `binom` checked by `refl` against Pascal's
+// triangle; plus `expect_error` over a citation at the wrong arguments.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_nat_binom.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+mod nat_binom;
+
+// A `let` binding is opaque, so each variable citation states the lemma's
+// conclusion at the variable itself; a citation at numerals states it at the
+// numerals, which conversion computes.
+fn test_binom_zero_succ_is_cited() -> Unit {
+    let x: Nat = 3;
+    let _r: Eq<Nat, nat_binom::binom(0, x + 1), 0> = nat_binom::binom_zero_succ(x);
+    let _n: Eq<Nat, nat_binom::binom(0, 4), 0> = nat_binom::binom_zero_succ(3);
+    ()
+}
+
+fn test_binom_succ_zero_is_cited() -> Unit {
+    let x: Nat = 4;
+    let _r: Eq<Nat, nat_binom::binom(x + 1, 0), 1> = nat_binom::binom_succ_zero(x);
+    let _n: Eq<Nat, nat_binom::binom(5, 0), 1> = nat_binom::binom_succ_zero(4);
+    ()
+}
+
+fn test_binom_succ_is_cited() -> Unit {
+    let x: Nat = 3;
+    let y: Nat = 1;
+    let _r: Eq<Nat, nat_binom::binom(x + 1, y + 1),
+               nat_binom::binom(x, y) + nat_binom::binom(x, y + 1)> = nat_binom::binom_succ(x, y);
+    let _n: Eq<Nat, nat_binom::binom(4, 2), 3 + 3> = nat_binom::binom_succ(3, 1);
+    ()
+}
+
+fn test_binom_zero_right_is_cited() -> Unit {
+    let x: Nat = 6;
+    let _r: Eq<Nat, nat_binom::binom(x, 0), 1> = nat_binom::binom_zero_right(x);
+    let _n: Eq<Nat, nat_binom::binom(6, 0), 1> = nat_binom::binom_zero_right(6);
+    ()
+}
+
+fn test_binom_one_right_is_cited() -> Unit {
+    let x: Nat = 7;
+    let _r: Eq<Nat, nat_binom::binom(x, 1), x> = nat_binom::binom_one_right(x);
+    let _n: Eq<Nat, nat_binom::binom(7, 1), 7> = nat_binom::binom_one_right(7);
+    ()
+}
+
+// ADR 9.10.26j D3: the zero above the diagonal, cited curried, and the diagonal.
+fn test_binom_zero_above_is_cited() -> Unit {
+    let x: Nat = 3;
+    let y: Nat = 2;
+    let _r: Eq<Nat, nat_binom::binom(x, x + y + 1), 0> = nat_binom::binom_zero_above(x, y);
+    let _n: Eq<Nat, nat_binom::binom(3, 6), 0> = nat_binom::binom_zero_above(3, 2);
+    ()
+}
+
+fn test_binom_self_is_cited() -> Unit {
+    let x: Nat = 5;
+    let _r: Eq<Nat, nat_binom::binom(x, x), 1> = nat_binom::binom_self(x);
+    let _n: Eq<Nat, nat_binom::binom(5, 5), 1> = nat_binom::binom_self(5);
+    ()
+}
+
+// The absorption identity (ADR 9.10.26k D4): `2 * binom(4, 2)` and
+// `4 * binom(3, 1)` are both 12.
+fn test_binom_absorb_is_cited() -> Unit {
+    let x: Nat = 4;
+    let y: Nat = 2;
+    let _r: Eq<Nat, (y + 1) * nat_binom::binom(x + 1, y + 1), (x + 1) * nat_binom::binom(x, y)> =
+        nat_binom::binom_absorb(x, y);
+    let _n: Eq<Nat, 2 * nat_binom::binom(4, 2), 4 * nat_binom::binom(3, 1)> = nat_binom::binom_absorb(3, 1);
+    ()
+}
+
+// Pascal's triangle, row 4 and its edges: the definition computes.
+fn test_binom_closed_values() -> Unit {
+    let _mid: Eq<Nat, nat_binom::binom(4, 2), 6> = refl;
+    let _edge: Eq<Nat, nat_binom::binom(5, 0), 1> = refl;
+    let _above: Eq<Nat, nat_binom::binom(3, 5), 0> = refl;
+    ()
+}
+
+// A citation whose stated value is not the lemma's conclusion is refused.
+fn test_wrong_citation_is_refused() -> Unit {
+    expect_error(
+        { let _r: Eq<Nat, nat_binom::binom(3, 1), 4> = nat_binom::binom_one_right(3); () },
+        "E0010",
+    );
+    ()
+}

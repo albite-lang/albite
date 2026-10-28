@@ -1,0 +1,170 @@
+// The Tier 4 binomial library, first slice (ADR 7.10.26k): `binom` and
+// Pascal's rule, with the base cases Tier 4's later lemmas cite.
+//
+// A FLAT sibling of nat_arith.tg, imported with `mod nat_binom;` from any file
+// in this directory (7.10.26k D1). It is NOT folded into nat_arith.tg: that
+// file is a row of `make selfcompiled-dependent-signature-check` that both
+// compilers must accept, and `binom_succ`'s `refl` needs the bootstrap to
+// unfold `binom`. Nor into nat_divides.tg: divisibility of `binom` is
+// 7.10.26o's design, and a library per subject keeps each one's census
+// separate.
+//
+// WHY `natrec` AND NOT A `match` (7.10.26k D2): the surface has no successor
+// pattern on `Nat` (`Succ(p) =>` is E0003, `p + 1 =>` is E0110), and
+// recursion through `n - 1` is refused by termination (E0062). A `#[partial]`
+// `binom` would be opaque to the kernel's δ and inadmissible in a theorem.
+// So `binom` uses the core recursor at motive `Nat -> Nat`: the outer
+// `natrec` over `n` returns a function of `k`, and the inner one over `k`
+// takes Pascal's step. There is no self-call, so termination admits it
+// `Total` and the kernel unfolds it as a non-recursive body. The base case
+// is an inner `natrec` too: a `match k { 0 => 1, _ => 0 }` does not reduce
+// at an open `k + 1`, and `natrec` does.
+//
+// `binom` is exponential at run time, like the textbook recurrence: it is a
+// proof-visible definition, not a function for programs.
+//
+// `binom_zero_above` and `binom_self` (ADR 9.10.26j D3) close 7.10.26k § 3's
+// deferral: the first's induction quantifies its motive over `j` (7.10.26n).
+//
+// `binom_absorb` (ADR 9.10.26k D4), the absorption identity, is at the end.
+//
+// Suite: test_nat_binom.tg, with its must-fail twin mustfail_nat_binom.tg.
+
+// `binom_one_right` cites `add_comm`.
+mod nat_arith;
+
+pub fn binom(n: Nat, k: Nat) -> Nat {
+    natrec(Nat -> Nat,
+        fn(k: Nat) => natrec(Nat, 1, fn(j: Nat, acc: Nat) => 0, k),
+        fn(p: Nat, rec: Nat -> Nat) => fn(k: Nat) =>
+            natrec(Nat, 1, fn(j: Nat, acc: Nat) => rec(j) + rec(j + 1), k),
+        n)(k)
+}
+
+// The three below are `refl`: `+` computes on its right operand, so `k + 1`
+// and `n + 1` are successors, and `natrec` takes its step on each.
+pub theorem binom_zero_succ(k: Nat) -> Eq<Nat, binom(0, k + 1), 0> { refl }
+
+pub theorem binom_succ_zero(n: Nat) -> Eq<Nat, binom(n + 1, 0), 1> { refl }
+
+// Pascal's rule.
+pub theorem binom_succ(n: Nat, k: Nat) -> Eq<Nat, binom(n + 1, k + 1), binom(n, k) + binom(n, k + 1)> { refl }
+
+pub theorem binom_zero_right(n: Nat) -> Eq<Nat, binom(n, 0), 1> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    refl
+}
+
+// The step is term mode, not `rewrite [binom_succ(j, 0), …]`: the cited
+// rule's left side is `binom(j + 1, 0 + 1)` and the goal's `binom(j + 1, 1)`,
+// and `rewrite` matches syntactically (E0085). Conversion sees through it.
+pub theorem binom_one_right(n: Nat) -> Eq<Nat, binom(n, 1), n> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact trans(cong(|x: Nat| binom(j, 0) + x, ih),
+                trans(cong(|x: Nat| x + j, binom_zero_right(j)),
+                      nat_arith::add_comm(1, j)))
+}
+
+// Zero above the diagonal. `n + j + 1`, not `(n + 1) + j`: `+` computes on
+// its right operand, so this is a successor and the inner `natrec` steps.
+// The step is Pascal's rule by conversion, `add_succ_left` turning
+// `(i + 1) + j` into `(i + j) + 1`, and the hypothesis at `j` and `j + 1`.
+pub theorem binom_zero_above(n: Nat) -> (j: Nat) -> Eq<Nat, binom(n, n + j + 1), 0> by {
+    induction n;
+    intro j;
+    refl;
+    intro i;
+    intro ih;
+    intro j;
+    exact trans(cong(|x: Nat| binom(i, x) + binom(i, x + 1), nat_arith::add_succ_left(i, j)),
+                trans(cong(|x: Nat| x + binom(i, i + j + 1 + 1), ih(j)),
+                      cong(|x: Nat| 0 + x, ih(j + 1))))
+}
+
+// The diagonal. Term mode, not `rewrite`: the zero above it is cited as
+// `binom(j, j + 0 + 1)`, which conversion meets as the goal's `binom(j, j + 1)`
+// and `rewrite` would not (E0085), as `binom_one_right`.
+pub theorem binom_self(n: Nat) -> Eq<Nat, binom(n, n), 1> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact trans(cong(|x: Nat| x + binom(j, j + 1), ih),
+                cong(|x: Nat| 1 + x, binom_zero_above(j, 0)))
+}
+
+// ── Absorption ──────────────────────────────────────────────────────────────
+//
+// `(k + 1) * binom(n + 1, k + 1) == (n + 1) * binom(n, k)` (ADR 9.10.26k D4),
+// which turns `binom(p, k)` into a multiple of `p` for 9.10.26l. Induction on
+// `n` with the hypothesis held for every `k` (7.10.26n), then a case on `k`:
+// `k = 0` is `binom_one_right` and `binom_zero_right`; `k = j + 1` unfolds
+// Pascal's rule, applies the hypothesis at `j` and `j + 1`, and folds Pascal's
+// rule back. At `n = 0` both sides compute, so each arm is `refl`.
+
+// The step's three rearrangements are `ring` goals over variables, so each
+// binomial term is an atom and the numerals are spelled `j + 1 + 1`
+// throughout (H8). Against a hand proof by `mul_add`, `mul_succ_left` and
+// the associativity and commutativity laws, `nat_binom.tg` checked in the
+// same time cold and warm (D6, the ADR's Outcome), so `ring` stays.
+pub theorem absorb_regroup(j: Nat, b: Nat, d: Nat) -> Eq<Nat, (j + 1 + 1) * (b + d), ((j + 1) * b + (j + 1 + 1) * d) + b> by {
+    ring
+}
+
+pub theorem absorb_collect(i: Nat, a: Nat, c: Nat, b: Nat) -> Eq<Nat, ((i + 1) * a + (i + 1) * c) + b, (i + 1) * (a + c) + b> by {
+    ring
+}
+
+pub theorem absorb_finish(i: Nat, b: Nat) -> Eq<Nat, (i + 1) * b + b, (i + 1 + 1) * b> by {
+    ring
+}
+
+pub theorem binom_absorb_zero(n: Nat) -> Eq<Nat, (0 + 1) * binom(n + 1, 0 + 1), (n + 1) * binom(n, 0)> {
+    trans(nat_arith::mul_one_left(binom(n + 1, 1)),
+          trans(binom_one_right(n + 1),
+                sym(trans(cong(|x: Nat| (n + 1) * x, binom_zero_right(n)), nat_arith::mul_one_right(n + 1)))))
+}
+
+pub theorem binom_absorb_step(i: Nat, j: Nat, ih: (k: Nat) -> Eq<Nat, (k + 1) * binom(i + 1, k + 1), (i + 1) * binom(i, k)>)
+    -> Eq<Nat, (j + 1 + 1) * binom(i + 1 + 1, j + 1 + 1), (i + 1 + 1) * binom(i + 1, j + 1)> {
+    trans(absorb_regroup(j, binom(i + 1, j + 1), binom(i + 1, j + 1 + 1)),
+    trans(cong(|x: Nat| x + binom(i + 1, j + 1),
+               trans(cong(|x: Nat| x + (j + 1 + 1) * binom(i + 1, j + 1 + 1), ih(j)),
+                     cong(|x: Nat| (i + 1) * binom(i, j) + x, ih(j + 1)))),
+    trans(absorb_collect(i, binom(i, j), binom(i, j + 1), binom(i + 1, j + 1)),
+    trans(cong(|x: Nat| (i + 1) * x + binom(i + 1, j + 1), sym(binom_succ(i, j))),
+          absorb_finish(i, binom(i + 1, j + 1))))))
+}
+
+pub theorem binom_absorb_succ(i: Nat, ih: (k: Nat) -> Eq<Nat, (k + 1) * binom(i + 1, k + 1), (i + 1) * binom(i, k)>)
+    -> (k: Nat) -> Eq<Nat, (k + 1) * binom(i + 1 + 1, k + 1), (i + 1 + 1) * binom(i + 1, k)> by {
+    intro k;
+    induction k;
+    exact binom_absorb_zero(i + 1);
+    intro j;
+    intro ihk;
+    exact binom_absorb_step(i, j, ih)
+}
+
+pub theorem binom_absorb_all(n: Nat) -> (k: Nat) -> Eq<Nat, (k + 1) * binom(n + 1, k + 1), (n + 1) * binom(n, k)> by {
+    induction n;
+    intro k;
+    induction k;
+    refl;
+    intro j;
+    intro ihk;
+    refl;
+    intro i;
+    intro ih;
+    exact binom_absorb_succ(i, ih)
+}
+
+pub theorem binom_absorb(n: Nat, k: Nat) -> Eq<Nat, (k + 1) * binom(n + 1, k + 1), (n + 1) * binom(n, k)> {
+    binom_absorb_all(n)(k)
+}

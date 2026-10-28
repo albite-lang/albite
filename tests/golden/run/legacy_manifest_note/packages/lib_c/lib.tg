@@ -1,0 +1,5 @@
+pub type Length = Meters(Nat)
+
+pub fn base() -> Nat { 10 }
+
+pub fn double(n: Nat) -> Nat { n + n }

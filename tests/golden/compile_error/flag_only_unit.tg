@@ -1,0 +1,4 @@
+// Golden test (ADR 30.9.26j): `--only-unit` without `--emit-llvm` — E0141.
+fn main() -> Nat {
+    0
+}

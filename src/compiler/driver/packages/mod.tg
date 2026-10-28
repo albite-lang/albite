@@ -1,0 +1,16 @@
+// src/compiler/driver/packages/mod.tg
+// Local path dependencies for the self-host (ADR 6.10.26j): the shared
+// planner's FFI and the mount `check`, `run` and `test` prepare a project with.
+
+pub mod ffi;
+pub mod table;
+pub mod collisions;
+pub mod mount;
+pub mod notes;
+
+pub use driver::packages::mount::{
+    ProjectTree, ProjectFailure, ProjectUnparsed, ProjectRefused,
+    parse_project_tree, mount_packages, sibling_root_for, package_problem_kind,
+    project_module_info
+};
+pub use driver::packages::notes::{report_package_notes, package_note_line};

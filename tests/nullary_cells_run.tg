@@ -1,0 +1,160 @@
+// tests/nullary_cells_run.tg — ADR 1.10.26g AC 4 parity fixture
+//
+// After 1.10.26g an empty constructor of a recursive type is not allocated:
+// every fold of one returns the address of a shared read-only cell
+// (`__tg_nullary.*`). A cell whose bytes were wrong — a tag at the wrong
+// offset, a nested tag in the wrong byte order — reads back as a different
+// constructor, and a cell something writes through faults. The evaluator
+// allocates no cells, so `tungsten diff exec` compares a changed native side
+// against an unchanged reference. Run twice by
+// `bootstrap/tests/diff_exec_e2e.rs`: `ALBITE_ARENA` unset, and `bump:1`.
+//
+// It covers:
+//   - `LNil` built in many functions and compared;
+//   - a non-escaping let-bound `LNil` (escape analysis would stack-fold it);
+//   - `TEmpty`, tag 2 of a recursive ADT with three constructors (flat);
+//   - `Leaf(Red)`/`Leaf(Blue)`: a nested nullary constructor under a
+//     two-constructor recursive type, which encodes as a binary sum;
+//   - empty values stored inside non-empty ones and matched back out.
+//
+// Standalone, like `arena_mode_run.tg`: it declares its own externs.
+
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+pub fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+/// Render a Nat in decimal, so a count can be printed and compared.
+#[partial]
+fn nat_to_string(n: Nat) -> String {
+    if n < 10 {
+        digit(n)
+    } else {
+        nat_to_string(n / 10) ++ digit(n % 10)
+    }
+}
+
+fn digit(d: Nat) -> String {
+    if d == 0 { "0" } else if d == 1 { "1" } else if d == 2 { "2" }
+    else if d == 3 { "3" } else if d == 4 { "4" } else if d == 5 { "5" }
+    else if d == 6 { "6" } else if d == 7 { "7" } else if d == 8 { "8" }
+    else { "9" }
+}
+
+fn bool_to_string(b: Bool) -> String {
+    if b { "true" } else { "false" }
+}
+
+// --- LNil from many functions --------------------------------------------
+
+type NatList = LNil | LCons(Nat, NatList)
+
+fn empty_a() -> NatList { LNil }
+fn empty_b() -> NatList { LNil }
+
+fn is_empty(xs: NatList) -> Bool {
+    match xs {
+        LNil => true,
+        LCons(_, _) => false
+    }
+}
+
+fn length(xs: NatList) -> Nat {
+    match xs {
+        LNil => 0,
+        LCons(_, rest) => 1 + length(rest)
+    }
+}
+
+/// `count` nodes, descending; every tail ends in the shared `LNil`.
+#[partial]
+fn build(count: Nat) -> NatList {
+    if count == 0 { LNil } else { LCons(count, build(count - 1)) }
+}
+
+/// A non-escaping let-bound `LNil`: only its emptiness leaves the frame.
+fn local_nil_is_empty() -> Bool {
+    let local = LNil;
+    is_empty(local)
+}
+
+// --- A flat three-constructor recursive ADT --------------------------------
+
+type Tri = TLeaf(Nat) | TNode(Tri, Tri) | TEmpty
+
+fn tri_sum(t: Tri) -> Nat {
+    match t {
+        TLeaf(n) => n,
+        TNode(l, r) => tri_sum(l) + tri_sum(r),
+        TEmpty => 100
+    }
+}
+
+fn tri_empties(t: Tri) -> Nat {
+    match t {
+        TLeaf(_) => 0,
+        TNode(l, r) => tri_empties(l) + tri_empties(r),
+        TEmpty => 1
+    }
+}
+
+// --- A nested nullary constructor under a binary-sum recursive type --------
+
+type Color = Red | Blue
+
+type Painted = Leaf(Color) | Pair(Painted, Painted)
+
+fn reds(p: Painted) -> Nat {
+    match p {
+        Leaf(c) => match c {
+            Red => 1,
+            Blue => 0
+        },
+        Pair(l, r) => reds(l) + reds(r)
+    }
+}
+
+fn blues(p: Painted) -> Nat {
+    match p {
+        Leaf(c) => match c {
+            Red => 0,
+            Blue => 1
+        },
+        Pair(l, r) => blues(l) + blues(r)
+    }
+}
+
+// Emits exactly:
+//   "true" "true" "true"  — LNil from two functions and a let, all empty
+//   "false"               — a cons is not empty
+//   "5"                   — build(5) has five nodes over one LNil
+//   "0"                   — empty_a() and empty_b() both have length 0
+//   "206"                 — TLeaf 1 + TLeaf 5 + two TEmpty (100 each)
+//   "2"                   — the two TEmpty, matched back out of TNodes
+//   "2" "1"               — two Leaf(Red) and one Leaf(Blue)
+fn emit() -> Unit {
+    println(bool_to_string(is_empty(empty_a())));
+    println(bool_to_string(is_empty(empty_b())));
+    println(bool_to_string(local_nil_is_empty()));
+    println(bool_to_string(is_empty(LCons(1, empty_a()))));
+    println(nat_to_string(length(build(5))));
+    println(nat_to_string(length(empty_a()) + length(empty_b())));
+    let tree = TNode(TNode(TLeaf(1), TEmpty), TNode(TEmpty, TLeaf(5)));
+    println(nat_to_string(tri_sum(tree)));
+    println(nat_to_string(tri_empties(tree)));
+    let painted = Pair(Pair(Leaf(Red), Leaf(Blue)), Leaf(Red));
+    println(nat_to_string(reds(painted)));
+    println(nat_to_string(blues(painted)))
+}
+
+fn main() -> Nat {
+    emit();
+    0
+}

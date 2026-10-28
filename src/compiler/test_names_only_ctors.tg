@@ -1,0 +1,287 @@
+// Unit tests for names-only constructor and type stubs (ADR 2.10.26g AC 1–2):
+// an undeclared sibling's constructor and type stubs carry a shape no other
+// stub has, the import check still finds them, and the lookups that reach
+// another module skip them — while a declared module's stubs, Stub
+// Registration's constructors and Type-Name Registration's placeholders are
+// never mistaken for them. Every subject is a pure function over hand-built
+// `ModuleInfo` and `Env` values; nothing here lists a directory or parses a file.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_bool, assert_eq_string, assert_eq_nat};
+use driver::util::{Option, None};
+use parser::ast::common::{Visibility, VisPublic, Ident, ident_new, Path, MkPath};
+use lexer::span::{Span, span_new};
+use driver::modules::path::{ModulePath, module_path_single};
+use driver::modules::info::{
+    ModuleInfo, ModuleRegInfo, ModuleItemNames, module_info_empty, module_info_register_module,
+    module_info_register_item, module_item_names_empty, module_item_names_add_type,
+    module_item_names_add_ctor
+};
+use driver::modules::workspace::merge::{merge_module_info};
+use elab::ffi::{INVALID_HANDLE, STUB_KIND_UNSET};
+use elab::env::{env_new, populate_module_info, Env};
+use elab::env::ops::{
+    env_add_import, env_enter_module, env_leave_module, env_register_constructor
+};
+use elab::env::module::{
+    ElabModulePath, import_new, module_map_lookup, SomeModuleContents, NoModuleContents
+};
+use elab::env::module::path::{elab_module_path_new};
+use elab::env::defs::{
+    ConstructorInfo, CtorIdentity, constructor_info_new, constructor_list_lookup,
+    constructor_is_names_only, SomeConstructor, NoConstructor,
+    TypeDefInfo, TypeDefCore, TypeDefMeta, type_def_info_new, type_def_list_lookup,
+    type_def_is_names_only, SomeTypeDef, NoTypeDef,
+    MaybeResolvedValue, NoResolvedValue, SomeResolvedValue, ResolvedValue, ResolvedConstructor,
+    MaybeResolvedType, NoResolvedType, SomeResolvedType, ResolvedType, ResolvedTypeDef,
+    ValuePathOk, ValuePathErr, TypePathOk, TypePathErr
+};
+use elab::env::resolve::{env_resolve_value, env_resolve_type};
+use elab::env::resolve_path::{env_resolve_value_path, env_resolve_type_path};
+use elab::items::imports::lookup::{lookup_in_module};
+
+// --- Builders and probes ---------------------------------------------------
+
+/// What a probe reports when it finds nothing; no stub or parent is named this.
+fn ABSENT_NAME() -> String { "<absent>" }
+
+/// What a handle probe reports when it finds nothing; a found handle never collides.
+fn ABSENT() -> Nat { 777 }
+
+fn no_span() -> Span { span_new(0, 0, "") }
+
+fn boxes_path() -> ModulePath { module_path_single("boxes") }
+fn shapes_path() -> ModulePath { module_path_single("shapes") }
+fn boxes_elab_path() -> ElabModulePath { elab_module_path_new(Cons("boxes", Nil)) }
+fn shapes_elab_path() -> ElabModulePath { elab_module_path_new(Cons("shapes", Nil)) }
+
+/// `type Box = MkBox(..)` at the names level: one type, one constructor.
+fn box_names() -> ModuleItemNames {
+    module_item_names_add_ctor(module_item_names_add_type(module_item_names_empty(), "Box"), "MkBox")
+}
+
+/// `info` plus a module at `path` from `file` exporting `Box` and `MkBox`.
+fn with_box_module(info: ModuleInfo, path: ModulePath, file: String) -> ModuleInfo {
+    let no_parent: Option<ModulePath> = None;
+    let registration: ModuleRegInfo = { path: path, contents: box_names(), visibility: VisPublic, parent: no_parent };
+    module_info_register_item(module_info_register_module(info, registration, file), "MkBox", path)
+}
+
+/// Main declares `shapes` (shapes.tg); an undeclared sibling contributes `boxes`.
+fn workspace_info() -> ModuleInfo {
+    let main = with_box_module(module_info_empty(), shapes_path(), "shapes.tg");
+    let sibling = with_box_module(module_info_empty(), boxes_path(), "boxes.tg");
+    merge_module_info(main, sibling)
+}
+
+fn workspace_env() -> Env {
+    populate_module_info(env_new(), workspace_info())
+}
+
+/// `env` with `use <module>::{<name>};` registered in the current module.
+fn importing(env: Env, module: ElabModulePath, name: String) -> Env {
+    env_add_import(env, import_new(module, name, name, VisPublic, no_span()))
+}
+
+/// The front-most constructor stub `name` in module `path`, or one whose
+/// every field reads ABSENT.
+fn front_ctor(env: Env, path: ElabModulePath, name: String) -> ConstructorInfo {
+    match module_map_lookup(env.modules, path) {
+        NoModuleContents() => absent_ctor(),
+        SomeModuleContents(contents) => front_ctor_in(contents.constructors.all, name)
+    }
+}
+
+fn front_ctor_in(ctors: List<ConstructorInfo>, name: String) -> ConstructorInfo {
+    match constructor_list_lookup(ctors, name) {
+        SomeConstructor(found) => found,
+        NoConstructor() => absent_ctor()
+    }
+}
+
+fn absent_ctor() -> ConstructorInfo {
+    let missing: CtorIdentity = { name: ABSENT_NAME(), parent_type: ABSENT_NAME(), index: 0, arity: 0 };
+    constructor_info_new(missing, ABSENT(), ABSENT(), VisPublic, no_span())
+}
+
+/// The front-most type stub `name` in module `path`, or one whose every
+/// field reads ABSENT.
+fn front_type(env: Env, path: ElabModulePath, name: String) -> TypeDefInfo {
+    match module_map_lookup(env.modules, path) {
+        NoModuleContents() => absent_type(),
+        SomeModuleContents(contents) => front_type_in(contents.types, name)
+    }
+}
+
+fn front_type_in(types: List<TypeDefInfo>, name: String) -> TypeDefInfo {
+    match type_def_list_lookup(types, name) {
+        SomeTypeDef(found) => found,
+        NoTypeDef() => absent_type()
+    }
+}
+
+fn absent_type() -> TypeDefInfo {
+    let core: TypeDefCore = { name: ABSENT_NAME(), arity: 0, params: Nil };
+    let meta: TypeDefMeta = { kind: ABSENT(), vis: VisPublic, span: no_span(), encoded_type: ABSENT() };
+    type_def_info_new(core, meta)
+}
+
+/// The parent type of the constructor a value resolution produced, or ABSENT_NAME.
+fn resolved_ctor_parent(resolved: MaybeResolvedValue) -> String {
+    match resolved {
+        NoResolvedValue() => ABSENT_NAME(),
+        SomeResolvedValue(value) => ctor_parent(value)
+    }
+}
+
+fn ctor_parent(value: ResolvedValue) -> String {
+    match value {
+        ResolvedConstructor(info) => info.parent_type,
+        _ => "<not a constructor>"
+    }
+}
+
+/// The encoding of the type a type resolution produced, or ABSENT.
+fn resolved_type_encoding(resolved: MaybeResolvedType) -> Nat {
+    match resolved {
+        NoResolvedType() => ABSENT(),
+        SomeResolvedType(found) => type_def_encoding(found)
+    }
+}
+
+fn type_def_encoding(found: ResolvedType) -> Nat {
+    match found {
+        ResolvedTypeDef(def) => def.encoded_type,
+        _ => ABSENT()
+    }
+}
+
+/// `<module>::<name>` as a parsed path.
+fn qualified(module: String, name: String) -> Path {
+    let segments: List<Ident> = Cons(ident_new(module, no_span()), Cons(ident_new(name, no_span()), Nil));
+    MkPath(segments, no_span())
+}
+
+fn qualified_value_message(env: Env, path: Path) -> String {
+    match env_resolve_value_path(env, path) {
+        ValuePathOk(value) => "<resolved " ++ ctor_parent(value) ++ ">",
+        ValuePathErr(err) => err.message
+    }
+}
+
+fn qualified_type_message(env: Env, path: Path) -> String {
+    match env_resolve_type_path(env, path) {
+        TypePathOk(_) => "<resolved>",
+        TypePathErr(err) => err.message
+    }
+}
+
+/// A constructor of `Box` with handles `handle`, as Stub Registration (handle
+/// `INVALID_HANDLE()`) or collection (a real handle) writes one.
+fn box_ctor(handle: Nat) -> ConstructorInfo {
+    let id: CtorIdentity = { name: "MkBox", parent_type: "Box", index: 0, arity: 1 };
+    constructor_info_new(id, handle, handle, VisPublic, no_span())
+}
+
+/// `env` with `ctor` written in front of module `name`'s constructor stubs.
+fn with_ctor_in(env: Env, name: String, ctor: ConstructorInfo) -> Env {
+    env_leave_module(env_register_constructor(env_enter_module(env, name), ctor))
+}
+
+// --- AC 1: a names-only constructor imports but does not resolve (D1, D2) --
+
+pub fn test_names_only_ctor_has_the_names_only_shape() -> Unit {
+    let stub = front_ctor(workspace_env(), boxes_elab_path(), "MkBox");
+    assert_eq_string(stub.name, "MkBox");
+    assert_eq_string(stub.parent_type, "");
+    assert_eq_nat(stub.field_types, INVALID_HANDLE());
+    assert_eq_nat(stub.result_type, INVALID_HANDLE())
+}
+
+pub fn test_declared_ctor_stub_keeps_handle_zero() -> Unit {
+    let stub = front_ctor(workspace_env(), shapes_elab_path(), "MkBox");
+    assert_eq_string(stub.parent_type, "");
+    assert_eq_nat(stub.field_types, 0);
+    assert_eq_nat(stub.result_type, 0);
+    assert_eq_bool(constructor_is_names_only(stub), false)
+}
+
+pub fn test_names_only_ctor_satisfies_import_lookup() -> Unit {
+    assert_eq_bool(lookup_in_module(workspace_env(), boxes_elab_path(), "MkBox"), true)
+}
+
+pub fn test_names_only_ctor_does_not_resolve_unqualified() -> Unit {
+    let env = importing(workspace_env(), boxes_elab_path(), "MkBox");
+    assert_eq_string(resolved_ctor_parent(env_resolve_value(env, "MkBox")), ABSENT_NAME())
+}
+
+pub fn test_names_only_ctor_does_not_resolve_qualified() -> Unit {
+    assert_eq_string(qualified_value_message(workspace_env(), qualified("boxes", "MkBox")),
+                     "unknown value: MkBox")
+}
+
+/// A Stub Registration constructor (real parent, `INVALID_HANDLE` handles) in a
+/// declared module is not names-only, so the import walk still resolves it.
+pub fn test_registration_ctor_stub_still_resolves_via_import() -> Unit {
+    let env = with_ctor_in(workspace_env(), "shapes", box_ctor(INVALID_HANDLE()));
+    let importing_env = importing(env, shapes_elab_path(), "MkBox");
+    assert_eq_string(resolved_ctor_parent(env_resolve_value(importing_env, "MkBox")), "Box")
+}
+
+pub fn test_registration_ctor_stub_still_resolves_qualified() -> Unit {
+    let env = with_ctor_in(workspace_env(), "shapes", box_ctor(INVALID_HANDLE()));
+    assert_eq_string(qualified_value_message(env, qualified("shapes", "MkBox")), "<resolved Box>")
+}
+
+/// A real constructor written in front of the names-only stub is what
+/// resolves: the guard tests only the front-most entry.
+pub fn test_real_ctor_beats_names_only_stub() -> Unit {
+    let env = with_ctor_in(workspace_env(), "boxes", box_ctor(42));
+    let importing_env = importing(env, boxes_elab_path(), "MkBox");
+    assert_eq_string(resolved_ctor_parent(env_resolve_value(importing_env, "MkBox")), "Box")
+}
+
+// --- AC 2: a names-only type imports but does not resolve (D3) -------------
+
+pub fn test_names_only_type_has_the_names_only_shape() -> Unit {
+    let env = workspace_env();
+    let stub = front_type(env, boxes_elab_path(), "Box");
+    assert_eq_nat(stub.kind, STUB_KIND_UNSET());
+    assert_eq_nat(stub.encoded_type, INVALID_HANDLE());
+    assert_eq_bool(lookup_in_module(env, boxes_elab_path(), "Box"), true);
+    assert_eq_nat(front_type(env, shapes_elab_path(), "Box").encoded_type, 0)
+}
+
+pub fn test_names_only_type_does_not_resolve_via_import() -> Unit {
+    let env = importing(workspace_env(), boxes_elab_path(), "Box");
+    assert_eq_nat(resolved_type_encoding(env_resolve_type(env, "Box")), ABSENT());
+    // A declared module's stub is no type either, since ADR 4.10.26l D2: the
+    // name falls through to the global table, which this env does not seed,
+    // rather than resolving at the stub's handle `0`.
+    let declared = importing(workspace_env(), shapes_elab_path(), "Box");
+    assert_eq_nat(resolved_type_encoding(env_resolve_type(declared, "Box")), ABSENT())
+}
+
+pub fn test_names_only_type_does_not_resolve_qualified() -> Unit {
+    assert_eq_string(qualified_type_message(workspace_env(), qualified("boxes", "Box")),
+                     "unknown type: Box");
+    assert_eq_string(qualified_type_message(workspace_env(), qualified("shapes", "Box")),
+                     "<resolved>")
+}
+
+/// Type-Name Registration's in-flight placeholder (`kind` and `encoding` both
+/// `INVALID_HANDLE`) and a declared stub (encoding `0`) are not names-only.
+pub fn test_in_flight_type_placeholder_is_not_names_only() -> Unit {
+    let core: TypeDefCore = { name: "Box", arity: 0, params: Nil };
+    let in_flight: TypeDefMeta = { kind: INVALID_HANDLE(), vis: VisPublic, span: no_span(), encoded_type: INVALID_HANDLE() };
+    let declared: TypeDefMeta = { kind: STUB_KIND_UNSET(), vis: VisPublic, span: no_span(), encoded_type: 0 };
+    let names_only: TypeDefMeta = { kind: STUB_KIND_UNSET(), vis: VisPublic, span: no_span(), encoded_type: INVALID_HANDLE() };
+    assert_eq_bool(type_def_is_names_only(type_def_info_new(core, in_flight)), false);
+    assert_eq_bool(type_def_is_names_only(type_def_info_new(core, declared)), false);
+    assert_eq_bool(type_def_is_names_only(type_def_info_new(core, names_only)), true)
+}

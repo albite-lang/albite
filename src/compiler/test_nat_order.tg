@@ -1,0 +1,177 @@
+// The Tier 2 order library is citable (ADR 6.10.26g AC 2, D5).
+//
+// Each lemma of nat_order.tg cited in a typed `let`, at variables and at
+// numerals, plus `expect_error` over a citation at the wrong arguments.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_nat_order.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+mod nat_order;
+
+// A `let` binding is opaque, so each variable citation below keeps its
+// arguments in a shape whose witness holds whatever `x` is.
+//
+// A citation at numerals states its bound as a plain numeral: a closed sum
+// in a family argument converts when two types are compared (ADR 7.10.26i).
+fn test_le_refl_is_cited() -> Unit {
+    let x: Nat = 3;
+    let _r: nat_order::Le<x, x> = nat_order::le_refl(x);
+    let _n: nat_order::Le<4, 4> = nat_order::le_refl(4);
+    ()
+}
+
+fn test_le_add_right_is_cited() -> Unit {
+    let x: Nat = 1;
+    let y: Nat = 2;
+    let _r: nat_order::Le<x, x + y> = nat_order::le_add_right(x, y);
+    let _n: nat_order::Le<2, 5> = nat_order::le_add_right(2, 3);
+    ()
+}
+
+fn test_le_succ_self_is_cited() -> Unit {
+    let x: Nat = 7;
+    let _r: nat_order::Le<x, x + 1> = nat_order::le_succ_self(x);
+    let _n: nat_order::Le<7, 8> = nat_order::le_succ_self(7);
+    ()
+}
+
+fn test_zero_le_is_cited() -> Unit {
+    let x: Nat = 9;
+    let _r: nat_order::Le<0, x> = nat_order::zero_le(x);
+    let _n: nat_order::Le<0, 9> = nat_order::zero_le(9);
+    ()
+}
+
+fn test_le_trans_is_cited() -> Unit {
+    let h1: nat_order::Le<2, 3> = nat_order::le_add_right(2, 1);
+    let h2: nat_order::Le<3, 5> = nat_order::le_add_right(3, 2);
+    let _r: nat_order::Le<2, 5> = nat_order::le_trans(2, 3, 5, h1, h2);
+    let x: Nat = 1;
+    let h: nat_order::Le<x, x> = nat_order::le_refl(x);
+    let _v: nat_order::Le<x, x> = nat_order::le_trans(x, x, x, h, h);
+    ()
+}
+
+fn test_succ_le_succ_is_cited() -> Unit {
+    let x: Nat = 4;
+    let h: nat_order::Le<x, x> = nat_order::le_refl(x);
+    let _r: nat_order::Le<x + 1, x + 1> = nat_order::succ_le_succ(x, x, h);
+    let h: nat_order::Le<2, 5> = nat_order::le_add_right(2, 3);
+    // The left bound stays `2 + 1`: `Le` puts it in the open endpoint
+    // `n + k`, which is compared structurally (ADR 7.10.26i D2).
+    let _n: nat_order::Le<2 + 1, 6> = nat_order::succ_le_succ(2, 5, h);
+    ()
+}
+
+fn test_le_antisymm_is_cited() -> Unit {
+    let x: Nat = 2;
+    let h: nat_order::Le<x, x> = nat_order::le_refl(x);
+    let _r: Eq<Nat, x, x> = nat_order::le_antisymm(x, x, h, h);
+    ()
+}
+
+fn test_lt_succ_self_is_cited() -> Unit {
+    let x: Nat = 5;
+    let _r: nat_order::Lt<x, x + 1> = nat_order::lt_succ_self(x);
+    let _n: nat_order::Lt<5, 6> = nat_order::lt_succ_self(5);
+    ()
+}
+
+// The closed instance as a theorem statement, so the kernel re-checks the
+// conversion the elaborator accepted (ADR 7.10.26i D5, AC 2).
+pub theorem le_two_five() -> nat_order::Le<2, 5> { nat_order::le_add_right(2, 3) }
+
+fn test_le_two_five_is_cited() -> Unit {
+    let _n: nat_order::Le<2, 5> = le_two_five();
+    ()
+}
+
+fn test_le_of_lt_is_cited() -> Unit {
+    let x: Nat = 6;
+    let h: nat_order::Lt<x, x + 1> = nat_order::lt_succ_self(x);
+    let _r: nat_order::Le<x, x + 1> = nat_order::le_of_lt(x, x + 1, h);
+    ()
+}
+
+fn test_lt_of_lt_of_le_is_cited() -> Unit {
+    let h1: nat_order::Lt<1, 2> = (0, refl);
+    let h2: nat_order::Le<2, 4> = (2, refl);
+    let _r: nat_order::Lt<1, 4> = nat_order::lt_of_lt_of_le(1, 2, 4, h1, h2);
+    ()
+}
+
+fn test_lt_of_le_of_lt_is_cited() -> Unit {
+    let h1: nat_order::Le<1, 3> = (2, refl);
+    let h2: nat_order::Lt<3, 4> = (0, refl);
+    let _r: nat_order::Lt<1, 4> = nat_order::lt_of_le_of_lt(1, 3, 4, h1, h2);
+    ()
+}
+
+fn test_lt_trans_is_cited() -> Unit {
+    let h1: nat_order::Lt<1, 2> = (0, refl);
+    let h2: nat_order::Lt<2, 3> = (0, refl);
+    let _r: nat_order::Lt<1, 3> = nat_order::lt_trans(1, 2, 3, h1, h2);
+    ()
+}
+
+// A citation whose stated bound is not the lemma's conclusion is refused.
+fn test_wrong_citation_is_refused() -> Unit {
+    expect_error(
+        { let _r: nat_order::Le<2, 3> = nat_order::le_refl(2); () },
+        "E0010",
+    );
+    ()
+}
+
+// `le_total` states a disjunction (ADR 7.10.26l D5, AC 3).
+fn test_le_total_is_cited() -> Unit {
+    let x: Nat = 3;
+    let y: Nat = 8;
+    let _r: nat_order::Le<x, y> + nat_order::Le<y, x> = nat_order::le_total(x, y);
+    let _n: nat_order::Le<2, 5> + nat_order::Le<5, 2> = nat_order::le_total(2, 5);
+    ()
+}
+
+fn test_le_step_cases_is_cited() -> Unit {
+    let x: Nat = 4;
+    let e: Eq<Nat, x + 0, x> = refl;
+    let _r: nat_order::Le<x + 1, x> + nat_order::Le<x, x + 1> =
+        nat_order::le_step_cases(x, x, 0)(e);
+    let _n: nat_order::Le<2 + 1, 5> + nat_order::Le<5, 2 + 1> =
+        nat_order::le_step_cases(2, 5, 3)(refl);
+    ()
+}
+
+// The refutations (ADR 7.10.26m D5, AC 3). Each conclusion is `Void`, so
+// each is cited in a helper whose parameters carry the hypothesis, and the
+// test names the helper; elaborating the file checks every citation.
+fn cite_true_ne_false(h: Eq<Bool, true, false>) -> Void { nat_order::true_ne_false(h) }
+
+fn cite_succ_ne_zero(x: Nat, h: Eq<Nat, x + 1, 0>) -> Void { nat_order::succ_ne_zero(x, h) }
+
+fn cite_succ_add_ne_self(x: Nat, y: Nat, h: Eq<Nat, (x + y) + 1, x>) -> Void {
+    nat_order::succ_add_ne_self(x, y)(h)
+}
+
+fn cite_lt_irrefl(x: Nat, h: nat_order::Lt<x, x>) -> Void { nat_order::lt_irrefl(x, h) }
+
+fn cite_not_succ_le_self(x: Nat, h: nat_order::Le<x + 1, x>) -> Void {
+    nat_order::not_succ_le_self(x, h)
+}
+
+fn test_refutations_are_cited() -> Unit {
+    let _a = cite_true_ne_false;
+    let _b = cite_succ_ne_zero;
+    let _c = cite_succ_add_ne_self;
+    let _d = cite_lt_irrefl;
+    let _e = cite_not_succ_le_self;
+    ()
+}
+
+// `absurd` refutes only `Void` and `true == false`; a citation at a
+// satisfiable hypothesis is refused.
+fn test_absurd_refuses_a_satisfiable_equation() -> Unit {
+    expect_error({ let h: Eq<Bool, true, true> = refl; let _v: Void = absurd(h); () }, "E0010");
+    ()
+}

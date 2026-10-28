@@ -1,0 +1,37 @@
+// tests/i3_reach_probe.tg — ADR 3.10.26n AC 1 (D1): what a program reaches.
+//
+// Declares NO `extern`. Every runtime symbol in this program's emitted IR is
+// therefore one a code generator introduced on its own initiative: `++`
+// (concatenation), `substring`, checked `Int` arithmetic (the trap path), the
+// main wrapper's argument set-up and its result printing. D1 defines I3 as
+// exactly that set, measured by listing the symbols the emitted `.ll` files
+// CALL (a `declare` alone does not count):
+//
+//   tungsten compile tests/i3_reach_probe.tg --emit-llvm -o <dir>
+//   grep -hoE 'call [^@]*@(tg|__tungsten)_[A-Za-z0-9_]+' <dir>/**/*.ll
+//
+// Not a test suite and not run by any gate: it is the input of a measurement
+// the ADR's §6 records.
+
+fn greet(name: String) -> String {
+    "hello, " ++ name
+}
+
+fn signed_sum(a: Int, b: Int) -> Int {
+    a + b
+}
+
+fn three() -> Int { 3 }
+
+fn four() -> Int { 4 }
+
+fn shout(s: String) -> String {
+    let owned = s ++ "!";
+    owned ++ "!"
+}
+
+pub fn main() -> String {
+    let greeting = greet("world");
+    let head = substring(greeting, 0, 5);
+    if signed_sum(three(), four()) < 8 { shout(head) } else { head }
+}

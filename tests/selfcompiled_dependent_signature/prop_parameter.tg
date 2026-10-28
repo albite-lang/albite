@@ -1,0 +1,7 @@
+// ADR 4.10.26i D4: moved from `accepted.tg`, where both compilers accepted a
+// `Prop`-typed parameter the signature does not mention. `Prop` is a sort now,
+// so both refuse it, with the one sentence they share.
+
+fn f(p: Prop) -> Nat { 0 }
+
+fn main() -> Nat { 0 }

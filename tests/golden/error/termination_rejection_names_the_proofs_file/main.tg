@@ -1,0 +1,8 @@
+// == a termination rejection names the proof's own file (ADR 3.10.26r AC1)
+// The axiom is in `b.tg` and the partial constant it names in `a.tg`; the
+// rejection's span is `b.tg`'s, so it must be rendered under `b.tg`, not here.
+
+pub mod a;
+pub mod b;
+
+fn main() -> Nat { 0 }

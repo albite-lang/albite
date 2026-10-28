@@ -1,0 +1,33 @@
+// Negative control for test_nat_pow_sum.tg (ADR 9.10.26j D6, AC 3).
+//
+// Each function below states a nat_pow.tg or nat_sum.tg fact at a value it
+// does not have, and each must be refused. `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_nat_pow_sum.tg --require-tests
+//     -> aborting due to 3 errors
+//
+// The cases, in the bootstrap's codes:
+//
+//   1. `refl` at `pow(2, 3) == 9`: the closed value is 8 (E0071)
+//   2. sum_succ(f, n) stated with the new summand at `n + 1` (E0010)
+//   3. `ring` at `pow(x, 2) == x + x`: `x * x` is not `x + x` (E0087)
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+mod nat_arith;
+mod nat_pow;
+mod nat_sum;
+
+fn test_pow_closed_value_off_by_one() -> Unit {
+    let _r: Eq<Nat, nat_pow::pow(2, 3), 9> = refl;
+    ()
+}
+
+fn test_sum_succ_with_the_summand_one_too_far(f: Nat -> Nat, n: Nat) -> Unit {
+    let _r: Eq<Nat, nat_sum::sum_below(f, n + 1), nat_sum::sum_below(f, n) + f(n + 1)> = nat_sum::sum_succ(f, n);
+    ()
+}
+
+theorem ring_pow_square_is_not_a_double(x: Nat) -> Eq<Nat, nat_pow::pow(x, 2), x + x> by { ring }

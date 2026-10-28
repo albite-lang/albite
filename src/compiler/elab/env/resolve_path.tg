@@ -1,0 +1,234 @@
+// src/compiler/elab/env/resolve_path.tg
+// Path-based name resolution: single-segment paths here, qualified ones
+// (module::Type, module::value) in resolve_qualified.tg.
+// Also provides lookup wrappers and constructor counting.
+
+use parser::ast::{
+    Ident, ident_name,
+    Path, MkPath,
+    ident_list_len,
+    VisPrivate, VisCrate, VisPublic
+};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::INVALID_HANDLE;
+use elab::env::types::{Env, env_current_module_contents};
+use elab::env::defs::{
+    TypeDefInfo, type_def_list_lookup,
+    ValueDefInfo, value_def_info_new,
+    constructor_list_max_index_plus_one,
+    MaybeTypeDef, NoTypeDef, SomeTypeDef,
+    MaybeValueDef, NoValueDef, SomeValueDef
+};
+use elab::env::defs::{
+    MaybeResolvedValue, NoResolvedValue, SomeResolvedValue,
+    MaybeResolvedType, NoResolvedType, SomeResolvedType,
+    ResolvedValue, ResolvedLocal, ResolvedGlobal, ResolvedConstructor,
+    ResolvedType, ResolvedTypeDef, ResolvedTypeVar,
+    TypePathResult, TypePathOk, TypePathErr,
+    ValuePathResult, ValuePathOk, ValuePathErr,
+    env_error_coded
+};
+use elab::env::module::{
+    ModuleMap, ModuleMapNil, ModuleMapCons,
+    SomeModuleContents, module_map_lookup, elab_module_path_to_string,
+    module_contents_lookup_import, SomeImport
+};
+use elab::env::defs::{EnvError};
+use elab::env::ops::{env_check_visibility};
+use elab::env::resolve::fallback::{constructor_count_with_fallback};
+use elab::env::resolve::reach::{imported_value_package_privacy};
+use elab::env::resolve::ambiguity::{bare_value_ambiguity};
+use driver::util::{Option, Some, None};
+use lexer::span::{Span};
+
+// Import single-name resolution from sibling module
+use elab::env::resolve::{env_resolve_type, env_resolve_value};
+use elab::env::resolve_qualified::{
+    env_resolve_qualified_type_path, env_resolve_qualified_value_path
+};
+
+// ===========================================================================
+// PATH RESOLUTION
+// ===========================================================================
+
+/// Resolve a path to a type.
+pub fn env_resolve_type_path(env: Env, path: Path) -> TypePathResult {
+    match path {
+        MkPath(segments, span) =>
+            if ident_list_len(segments) == 1 {
+                // Simple name
+                resolve_bare_type_path(env, ident_list_head_name(segments), span)
+            } else {
+                // Qualified path: resolve module path, then look up name
+                env_resolve_qualified_type_path(env, segments, span)
+            }
+    }
+}
+
+/// A bare type name: refused if imported from a module that keeps it private.
+fn resolve_bare_type_path(env: Env, name: String, span: Span) -> TypePathResult {
+    match imported_type_privacy_error(env, name, span) {
+        SomeEnvError(err) => TypePathErr(err),
+        NoEnvError() => resolve_bare_type_unchecked(env, name, span)
+    }
+}
+
+fn resolve_bare_type_unchecked(env: Env, name: String, span: Span) -> TypePathResult {
+    match env_resolve_type(env, name) {
+        SomeResolvedType(resolved) => TypePathOk(resolved),
+        NoResolvedType() => TypePathErr(env_error_coded("unknown type: " ++ name, span, "E0100"))
+    }
+}
+
+/// Alias for env_resolve_type (legacy name).
+pub fn env_lookup_type(env: Env, name: String) -> MaybeResolvedType {
+    env_resolve_type(env, name)
+}
+
+/// Alias for env_resolve_value (legacy name).
+pub fn env_lookup_value(env: Env, name: String) -> MaybeResolvedValue {
+    env_resolve_value(env, name)
+}
+
+/// Look up a value and return its definition info (if it's a global value).
+pub fn env_lookup_value_def(env: Env, name: String) -> MaybeValueDef {
+    let result = env_resolve_value(env, name);
+    match result {
+        NoResolvedValue() => NoValueDef,
+        SomeResolvedValue(resolved) =>
+            env_resolved_value_to_def(resolved)
+    }
+}
+
+fn env_resolved_value_to_def(resolved: ResolvedValue) -> MaybeValueDef {
+    match resolved {
+        ResolvedGlobal(def_name, ty) =>
+            SomeValueDef(value_def_info_new(def_name, ty, VisPublic, { start: 0, end: 0, file: "" })),
+        ResolvedLocal(_, ty, src_name) =>
+            SomeValueDef(value_def_info_new(src_name, ty, VisPrivate, { start: 0, end: 0, file: "" })),
+        ResolvedConstructor(_) =>
+            NoValueDef
+    }
+}
+
+/// Look up a type and return its definition info.
+pub fn env_lookup_type_def(env: Env, name: String) -> MaybeTypeDef {
+    let SomeResolvedType(resolved) = env_resolve_type(env, name) else { return NoTypeDef };
+    match resolved {
+        ResolvedTypeDef(info) => SomeTypeDef(info),
+        ResolvedTypeVar(_) => NoTypeDef
+    }
+}
+
+/// Global type definition lookup: searches ALL modules, not just current module & imports.
+pub fn env_global_lookup_type_def(env: Env, name: String) -> MaybeTypeDef {
+    match env_lookup_type_def(env, name) {
+        SomeTypeDef(info) => SomeTypeDef(info),
+        NoTypeDef() =>
+            search_all_modules_for_type(env.modules, name)
+    }
+}
+
+/// Search all modules in the module map for a type definition by name.
+fn search_all_modules_for_type(map: ModuleMap, name: String) -> MaybeTypeDef {
+    match map {
+        ModuleMapNil() => NoTypeDef,
+        ModuleMapCons(_, contents, rest) =>
+            let SomeTypeDef(info) = type_def_list_lookup(contents.types, name) else {
+                return search_all_modules_for_type(rest, name)
+            };
+            if info.encoded_type == INVALID_HANDLE {
+                search_all_modules_for_type(rest, name)
+            } else {
+                SomeTypeDef(info)
+            }
+    }
+}
+
+/// Resolve a path to a value.
+pub fn env_resolve_value_path(env: Env, path: Path) -> ValuePathResult {
+    match path {
+        MkPath(segments, span) =>
+            if ident_list_len(segments) == 1 {
+                let name = ident_list_head_name(segments);
+                match env_resolve_value(env, name) {
+                    SomeResolvedValue(resolved) => bare_value_path(env, name, resolved, span),
+                    NoResolvedValue() => ValuePathErr(env_error_coded("unknown value: " ++ name, span, "E0101"))
+                }
+            } else {
+                env_resolve_qualified_value_path(env, segments, span)
+            }
+    }
+}
+
+/// A resolved bare value, unless imported across a package that keeps it
+/// `pub(crate)` (ADR 6.10.26p D6 (a)).
+fn bare_value_path(env: Env, name: String, resolved: ResolvedValue, span: Span) -> ValuePathResult {
+    match imported_value_package_privacy(env, name, span) {
+        Some(err) => ValuePathErr(err),
+        None() => unambiguous_bare_value(env, name, resolved, span)
+    }
+}
+
+/// A global value is refused when two reachable, visible modules define it
+/// and the module neither defines nor imports it (ADR 7.10.26e, `E0105`).
+fn unambiguous_bare_value(env: Env, name: String, resolved: ResolvedValue, span: Span) -> ValuePathResult {
+    match resolved {
+        ResolvedGlobal(_, _) => refuse_if_ambiguous(bare_value_ambiguity(env, name, span), resolved),
+        ResolvedLocal(_, _, _) => ValuePathOk(resolved),
+        ResolvedConstructor(_) => ValuePathOk(resolved)
+    }
+}
+
+fn refuse_if_ambiguous(ambiguity: Option<EnvError>, resolved: ResolvedValue) -> ValuePathResult {
+    match ambiguity {
+        Some(err) => ValuePathErr(err),
+        None() => ValuePathOk(resolved)
+    }
+}
+
+/// Helper: get head name from ident list.
+pub fn ident_list_head_name(list: List<Ident>) -> String {
+    match list {
+        Nil() => "",
+        Cons(id, _) => ident_name(id)
+    }
+}
+
+/// Count the total number of constructors for a given ADT type.
+/// Uses max(index) + 1 to be resilient to duplicate constructor registration
+/// across elaboration phases (ADR 7.5.26a, reinstated by 10.5.26e).
+/// Another module's type is counted in the global table (ADR 4.10.26l D2).
+pub fn env_count_constructors(env: Env, parent_type: String) -> Nat {
+    constructor_count_with_fallback(env, env_current_module_contents(env), parent_type)
+}
+
+/// The refusal for a bare type name imported from a module that keeps it
+/// private (ADR 4.10.26l D7, `private_item_access`): `use helper::Secret;` is
+/// admitted, as the bootstrap admits it, and the use is refused. A type the
+/// module defines itself shadows the import, so it is never checked.
+fn imported_type_privacy_error(env: Env, name: String, span: Span) -> MaybeEnvError {
+    let contents = env_current_module_contents(env);
+    let NoTypeDef() = type_def_list_lookup(contents.types, name) else { return NoEnvError };
+    let SomeImport(imp) = module_contents_lookup_import(contents, name) else { return NoEnvError };
+    let SomeModuleContents(source) = module_map_lookup(env.modules, imp.source_path) else { return NoEnvError };
+    // The front entry may be the source's Type-Name Registration stub, since
+    // folding its exports in reverses them; a stub carries the declared
+    // visibility too, and a layer-2 one is `VisPublic`, so none is skipped.
+    let SomeTypeDef(def) = type_def_list_lookup(source.types, imp.source_name) else { return NoEnvError };
+    if env_check_visibility(env, def.visibility, imp.source_path) {
+        NoEnvError
+    } else {
+        SomeEnvError(env_error_coded(
+            "type `" ++ name ++ "` is private (defined in `" ++ elab_module_path_to_string(imp.source_path)
+                ++ "`) and cannot be accessed from `" ++ elab_module_path_to_string(env.current_module) ++ "`",
+            span,
+            "E0104"
+        ))
+    }
+}
+
+/// An optional resolution error.
+type MaybeEnvError =
+    | NoEnvError
+    | SomeEnvError(EnvError)

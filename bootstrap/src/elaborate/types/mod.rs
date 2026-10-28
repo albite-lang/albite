@@ -1,0 +1,173 @@
+//! Type Elaboration
+//!
+//! This module elaborates surface syntax types (`ast::TypeExpr`) into
+//! core calculus types (`albite_core::Type`).
+//!
+//! # Organization
+//!
+//! - `mod.rs` — Entry point (`elab_type`), re-exports
+//! - `paths/` — Path and name resolution for types, and type application
+//! - `encoding.rs` — ADT and record type encoding
+//! - `normalize/` — Type normalization for structural comparison (see normalize/mod.rs)
+//! - `ref_walk.rs` — unified structural walker behind the Phase-1d and
+//!   encoding-path reference resolvers (ADR 23.7.26a)
+
+mod dependent_function; // `(x: A) -> B` (ADR 7.10.26n)
+pub(crate) mod encoding;
+mod encoding_utils;
+mod exists;
+pub(in crate::elaborate) mod families;
+pub(in crate::elaborate) mod kinds; // predicate parameters (ADR 6.10.26h)
+mod normalize;
+mod paths;
+pub(crate) mod ref_walk;
+pub(crate) mod resolve_refs;
+
+#[cfg(test)]
+mod tests;
+
+use crate::ast::TypeExpr;
+use crate::elaborate::error::{ElabError, ElabErrorKind, SortErrorKind};
+use crate::elaborate::ElabResult;
+use crate::elaborate::Elaborator;
+use crate::span::Spanned;
+use albite_core::Type;
+
+/// `Prop` or `Type` in a type position: E0066 (ADR 4.10.26i D3).
+pub(super) fn sort_used_as_type(span: crate::span::Span, word: &str) -> ElabError {
+    ElabError::new(
+        span,
+        ElabErrorKind::Sort(SortErrorKind::SortUsedAsType {
+            word: word.to_string(),
+        }),
+    )
+}
+
+impl<'a> Elaborator<'a> {
+    /// Elaborate a surface syntax type expression into a Core type.
+    ///
+    /// This is the main entry point for type elaboration.
+    pub fn elab_type(&mut self, ty: &TypeExpr) -> ElabResult<Type> {
+        match ty {
+            // `Type` spells `Type₀` only in a family's sort position (D3, D5).
+            TypeExpr::Path(path) if path.is_simple() && path.item_name().name == "Type" => {
+                Err(sort_used_as_type(path.span, "Type"))
+            }
+            TypeExpr::Path(path) => self.elab_type_path(path),
+
+            TypeExpr::Arrow(a, b, _span)
+            | TypeExpr::Product(a, b, _span)
+            | TypeExpr::Sum(a, b, _span) => self.elab_binary_type(ty, a, b),
+
+            TypeExpr::Forall(param, body, _span) => self.elab_forall_type(param, body),
+            TypeExpr::Exists(binder, binder_ty, body, _span) => {
+                self.elab_exists_type(binder, binder_ty, body)
+            }
+            TypeExpr::Pi(binder, domain, codomain, _span) => {
+                self.elab_dependent_function_type(binder, domain, codomain)
+            }
+
+            TypeExpr::App(base, args, span) => self.elab_type_app(base, args, *span),
+
+            // `Prop` is a sort, never a type (ADR 4.10.26i D3); the token
+            // survives for a family's `: Prop` annotation only.
+            TypeExpr::Prop(span) => Err(sort_used_as_type(*span, "Prop")),
+            TypeExpr::Unit(_span) => Ok(Type::Unit),
+            TypeExpr::Void(_span) => Ok(Type::Void),
+
+            TypeExpr::Eq(left, right, span) => self.elab_type_eq(left, right, *span),
+
+            TypeExpr::EqExplicit(ty, left, right, span) => {
+                self.elab_type_eq_explicit(ty, left, right, *span)
+            }
+
+            TypeExpr::Paren(inner, _span) => self.elab_type(inner),
+            TypeExpr::Ptr(inner, _span) | TypeExpr::Ref(inner, _span) => {
+                let inner_ty = self.elab_type(inner)?;
+                Ok(if matches!(ty, TypeExpr::Ptr(..)) {
+                    Type::ptr(inner_ty)
+                } else {
+                    Type::ref_ty(inner_ty)
+                })
+            }
+
+            // A term argument only a family reads (ADR 6.10.26d D3): `List<0>`.
+            TypeExpr::Term(_) => Err(families::term_type_confusion(
+                ty,
+                crate::elaborate::error::ConfusedSlot::Type,
+            )),
+
+            // Defensive: the parser aborts compilation before elaboration
+            // when it emitted an `Error` placeholder, so this stays an
+            // uncoded `Other` rather than minting an untriggerable code
+            // (ADR 15.8.26b).
+            TypeExpr::Error(_span) => Err(ElabError::new(
+                ty.span(),
+                ElabErrorKind::Other("cannot elaborate error type".to_string()),
+            )),
+        }
+    }
+
+    /// Elaborate a binary type constructor (Arrow, Product, Sum).
+    fn elab_binary_type(&mut self, ty: &TypeExpr, a: &TypeExpr, b: &TypeExpr) -> ElabResult<Type> {
+        let left = self.elab_type(a)?;
+        let right = self.elab_type(b)?;
+        Ok(match ty {
+            TypeExpr::Arrow(..) => Type::arrow(left, right),
+            TypeExpr::Product(..) => Type::product(left, right),
+            _ => Type::sum(left, right),
+        })
+    }
+
+    /// Elaborate a universally quantified type.
+    fn elab_forall_type(&mut self, param: &crate::ast::Ident, body: &TypeExpr) -> ElabResult<Type> {
+        // Popped before the `?`, so a failed body leaks no binder (ADR 6.10.26b D1).
+        self.env.push_type_var(param.name.clone());
+        let body_ty = self.elab_type(body);
+        self.env.pop_type_var();
+        Ok(Type::forall(&param.name, body_ty?))
+    }
+
+    /// Elaborate an equality type `Eq<left, right>`.
+    fn elab_type_eq(
+        &mut self,
+        left: &crate::ast::Expr,
+        right: &crate::ast::Expr,
+        span: crate::span::Span,
+    ) -> ElabResult<Type> {
+        let (left_term, left_ty) = self.infer(left)?;
+        let (right_term, right_ty) = self.infer(right)?;
+
+        if !self.types_equal(&left_ty, &right_ty) {
+            return Err(ElabError::type_mismatch(span, left_ty, right_ty)
+                .with_note("both sides of equality must have the same type"));
+        }
+
+        Ok(Type::eq(left_ty, left_term, right_term))
+    }
+
+    /// Elaborate an explicit equality type `Eq<T, a, b>`.
+    fn elab_type_eq_explicit(
+        &mut self,
+        ty: &TypeExpr,
+        left: &crate::ast::Expr,
+        right: &crate::ast::Expr,
+        span: crate::span::Span,
+    ) -> ElabResult<Type> {
+        let base_ty = self.elab_type(ty)?;
+        let (left_term, left_ty) = self.infer(left)?;
+        let (right_term, right_ty) = self.infer(right)?;
+
+        if !self.types_equal(&left_ty, &base_ty) {
+            return Err(ElabError::type_mismatch(span, base_ty, left_ty)
+                .with_note("left side of Eq does not match the declared type"));
+        }
+
+        if !self.types_equal(&right_ty, &base_ty) {
+            return Err(ElabError::type_mismatch(span, base_ty, right_ty)
+                .with_note("right side of Eq does not match the declared type"));
+        }
+
+        Ok(Type::eq(base_ty, left_term, right_term))
+    }
+}

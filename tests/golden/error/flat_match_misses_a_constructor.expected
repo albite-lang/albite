@@ -1,0 +1,11 @@
+[E0020] Error: non-exhaustive match patterns
+   ╭─[tests/golden/error/flat_match_misses_a_constructor.tg:8:5]
+   │
+ 8 │     match c { Red() => true, Green() => true }
+   │     ─────────────────────┬────────────────────  
+   │                          ╰────────────────────── 
+   │ 
+   │ Note: expected 3 arms for 3 constructors, or use a catch-all `_` pattern
+───╯
+
+error: aborting due to 1 error

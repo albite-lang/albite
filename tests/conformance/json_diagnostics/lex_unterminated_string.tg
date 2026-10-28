@@ -1,0 +1,4 @@
+// ADR 30.9.26h: one `Lexical` error (an unterminated string literal).
+fn main() -> String {
+    "never closed
+}

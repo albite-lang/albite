@@ -1,0 +1,11 @@
+// Payload constructors of two types in one match (ADR 4.10.26d D1 a, D6):
+// `AlgoWrong` fixes the match's type, so `PickWrong` would fill index 0 from
+// another type. Both compilers refuse it — the bootstrap with E0022.
+type OptMixed = NadaMixed | AlgoMixed(Nat)
+type OtherMixed = PickMixed(Nat) | SkipMixed
+
+fn pick(o: OptMixed) -> Nat {
+    match o { AlgoMixed(n) => n, PickMixed(k) => k }
+}
+
+fn main() -> Nat { pick(AlgoMixed(1)) }

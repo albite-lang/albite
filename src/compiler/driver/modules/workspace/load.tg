@@ -1,0 +1,127 @@
+// src/compiler/driver/modules/workspace/load.tg
+// The sibling pipeline: discover, parse each file once, register names,
+// merge under main (ADR 30.9.26i D5, D7).
+//
+// What the merge buys is NAMES, not definitions (D1): a sibling is parsed and
+// registered in `ModuleInfo`, and never elaborated — on either compiler. So
+// it changes which error a failing import gets (value-not-found rather than
+// module-not-found) and which of two same-named modules a `use` sees, and it
+// changes no passing program's result or definition count.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Result, Ok, Err, Option, Some, None, list_append, list_reverse};
+use driver::modules::path::{module_path_single};
+use driver::modules::info::{ModuleInfo, module_info_empty};
+use driver::modules::tree::parsed::{ParsedModule};
+use driver::modules::tree::parse::{parse_sibling_tree};
+use driver::modules::build::{build_module_info, build_module_info_recursive, get_module_name};
+use driver::modules::build::reexports::{process_reexports};
+use driver::modules::build::warn::{WarnQuiet};
+use driver::modules::workspace::{find_workspace_root, discover_sibling_modules};
+use driver::modules::workspace::paths::{normalize_file_path, already_parsed};
+use driver::modules::workspace::merge::{merge_module_info};
+
+/// The `ModuleInfo` `check`, `run` and `test` elaborate against: main's own,
+/// with the workspace siblings' names merged underneath (D7). `compile`
+/// inherits it through `run_check`.
+///
+/// A sibling's parse errors are never reported, and a sibling that cannot be
+/// read or forms a cycle is skipped — both as the bootstrap does
+/// (`parse_workspace_modules` skips `Err`; `collect_parse_errors` walks only
+/// the main tree).
+pub fn workspace_module_info(entry: String, module: ParsedModule) -> ModuleInfo {
+    workspace_module_info_from(entry, module, build_module_info(module))
+}
+
+/// `workspace_module_info` over main's `own` info, already built: `test`
+/// plans its harness from `own` and must not see the siblings' names
+/// (ADR 1.10.26f D5, wired by 3.10.26l D4).
+pub fn workspace_module_info_from(entry: String, module: ParsedModule, own: ModuleInfo) -> ModuleInfo {
+    workspace_module_info_in(find_workspace_root(entry), module, own)
+}
+
+/// `workspace_module_info_from` with the siblings discovered in
+/// `sibling_root`: the manifest's directory when a manifest governs the
+/// project (ADR 6.10.26j D4, the bootstrap's `sibling_root`).
+pub fn workspace_module_info_in(sibling_root: String, module: ParsedModule, own: ModuleInfo) -> ModuleInfo {
+    let sibling_paths = discover_sibling_modules(sibling_root);
+    let siblings = parse_siblings(sibling_paths, parsed_module_files(module), Nil);
+    merge_module_info(own, build_workspace_module_info(siblings))
+}
+
+/// Sibling info in the bootstrap's two passes: register every sibling at its
+/// own top-level path, merging in order so the first sibling wins a shared key
+/// (D2); then run the re-export pass over all of them, QUIETLY (D7).
+pub fn build_workspace_module_info(modules: List<ParsedModule>) -> ModuleInfo {
+    let registered = register_sibling_modules(modules, module_info_empty());
+    reexport_sibling_modules(modules, registered)
+}
+
+fn register_sibling_modules(modules: List<ParsedModule>, acc: ModuleInfo) -> ModuleInfo {
+    match modules {
+        Nil() => acc,
+        Cons(module, rest) =>
+            let path = module_path_single(get_module_name(module));
+            let own = build_module_info_recursive(module, path, None, module_info_empty());
+            register_sibling_modules(rest, merge_module_info(acc, own))
+    }
+}
+
+fn reexport_sibling_modules(modules: List<ParsedModule>, info: ModuleInfo) -> ModuleInfo {
+    match modules {
+        Nil() => info,
+        Cons(module, rest) =>
+            let path = module_path_single(get_module_name(module));
+            reexport_sibling_modules(rest, process_reexports(WarnQuiet, module, path, info))
+    }
+}
+
+/// Parse each sibling not already `known` (normalised files), threading the
+/// list so a later sibling skips what an earlier one parsed (D5).
+#[partial]
+fn parse_siblings(paths: List<String>, known: List<String>,
+                  acc: List<ParsedModule>) -> List<ParsedModule> {
+    match paths {
+        Nil() => list_reverse(acc),
+        Cons(path, rest) =>
+            if already_parsed(path, known) {
+                parse_siblings(rest, known, acc)
+            } else {
+                parse_one_sibling(parse_sibling_tree(path, known), rest, known, acc)
+            }
+    }
+}
+
+/// Fold one sibling's parse result into the walk: an `Err` (unreadable, a
+/// cycle) is skipped with `known` unchanged.
+// Partial (ADR 11.8.26b): mutual recursion with `parse_siblings` over the same
+// `rest`, which the checker cannot see as a descent. E0063 guards that.
+#[partial]
+fn parse_one_sibling(parsed: Result<(ParsedModule, List<String>), String>, rest: List<String>,
+                     known: List<String>, acc: List<ParsedModule>) -> List<ParsedModule> {
+    match parsed {
+        Err(_) => parse_siblings(rest, known, acc),
+        Ok(result) => {
+            let (module, known2) = result;
+            parse_siblings(rest, known2, Cons(module, acc))
+        }
+    }
+}
+
+/// Every file of a parsed tree, normalised: the known list the sibling parse
+/// starts from (D5).
+// Partial (ADR 11.8.26b): mutual recursion between a module and its submodule
+// list has no single parameter the checker can descend on. Executable compiler
+// code no proof reaches; E0063 guards that.
+#[partial]
+pub fn parsed_module_files(module: ParsedModule) -> List<String> {
+    Cons(normalize_file_path(module.path), parsed_submodule_files(module.submodules))
+}
+
+#[partial]
+fn parsed_submodule_files(submodules: List<ParsedModule>) -> List<String> {
+    match submodules {
+        Nil() => Nil,
+        Cons(sub, rest) => list_append(parsed_module_files(sub), parsed_submodule_files(rest))
+    }
+}

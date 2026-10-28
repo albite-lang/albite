@@ -1,0 +1,3 @@
+// ADR 6.10.26b D3: a type parameter applied to arguments is refused. Before,
+// `F<T>` silently elaborated to `F` and the argument was dropped.
+type Ap<F, T> = Mk(F<T>)

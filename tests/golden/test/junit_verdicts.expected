@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="albite test" tests="5" failures="3" errors="0" skipped="0" time="0.000">
+  <testsuite name="tests/golden/test/junit_verdicts.tg" tests="5" failures="3" errors="0" skipped="0" time="0.000">
+    <testcase name="test_passes" classname="junit_verdicts" file="tests/golden/test/junit_verdicts.tg" assertions="1" time="0.000"/>
+    <testcase name="test_fails" classname="junit_verdicts" file="tests/golden/test/junit_verdicts.tg" assertions="1" time="0.000">
+      <failure message="assertion failed" type="failed">  assertion failed: assert_eq_nat
+    left:  2
+    right: 3
+</failure>
+    </testcase>
+    <testcase name="test_asserts_nothing" classname="junit_verdicts" file="tests/golden/test/junit_verdicts.tg" assertions="0" time="0.000">
+      <failure message="asserted_nothing" type="asserted_nothing"></failure>
+    </testcase>
+    <testcase name="test_does_not_finish" classname="junit_verdicts" file="tests/golden/test/junit_verdicts.tg" assertions="1" time="0.000">
+      <failure message="after 1 assertion(s)" type="did_not_finish"></failure>
+    </testcase>
+    <testcase name="test_prints_markup" classname="junit_verdicts" file="tests/golden/test/junit_verdicts.tg" assertions="1" time="0.000">
+      <system-out>hello &lt;b&gt; &amp; ]]&gt; from a test body
+</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,298 @@
+// The Tier 3 division library (ADR 9.10.26i): `nat_beq`, `nat_div` and
+// `nat_mod` as definitions the kernel unfolds, the equality test's lemmas,
+// decidable equality, and `mod_def` for every nonzero divisor.
+//
+// A FLAT sibling of nat_arith.tg and nat_order.tg, imported with
+// `mod nat_divmod;` from any file in this directory (9.10.26i D1). It imports
+// both siblings, two paths to the arithmetic core, which 9.10.26p admits. It
+// is NOT folded into nat_divides.tg: that file needs no order, and a library
+// per subject keeps each census and battery row apart.
+//
+// WHY NOT `/` AND `%` (arithmetic_library.md § H2, H3): conversion computes
+// the primitives only on literals, so `n % m` is neutral at an open `n` and
+// no induction can step through it. Each definition is a `natrec` with no
+// self-call, admitted `Total` and unfolded by the kernel; the remainder step
+// tests `nat_beq`, itself a `natrec`, as the primitive `==` stays neutral at
+// an open operand. The outer `natrec` on `m` is the zero guard: both are `0`
+// at `m = 0`, as `/` and `%` are on the evaluator, the kernel and (since
+// 9.10.26g) compiled code. Agreement at open terms is v2.1. At run time they
+// are linear `natrec`s, for proofs, not programs.
+//
+// THE `Bool` SPLIT (9.10.26i D3, overturning 7.10.26o H2's `bool_cases`):
+// `cases` refuses a `Bool` scrutinee (E0082), so a test is split by
+// `nat_beq_cases(a, b)`, an induction on `Nat` whose every leaf is `refl`.
+// `cases` refuses a compound scrutinee too, so each split happens in a
+// helper that takes the disjunction as a parameter.
+//
+// THE STEP LEMMAS: `rewrite` matches syntactically, and the `if` sits inside
+// the unfolded `nat_mod`, never in a goal's spelling. `cong` over a
+// `Bool -> Nat` lambda reaches it through conversion instead.
+//
+// `mod_def`'s core is at `p + 1`, where the zero guard reduces by ι at an
+// open `p`; `mod_def` and `mod_lt` transport it along `m == k + 1`, which
+// `Lt<0, m>`'s witness gives. `Lt` is spelled `nat_order::Lt`: unqualified,
+// it resolves when this file is checked alone but not when a suite imports it.
+//
+// Suite: test_nat_divmod.tg, with its must-fail twin mustfail_nat_divmod.tg.
+
+// `add_comm` turns `Lt<0, m>`'s equation into `m == k + 1`.
+mod nat_arith;
+// `Lt`, `true_ne_false`. Re-exported, so a suite reaches `Lt` as
+// `nat_divmod::nat_order::Lt` rather than importing nat_order.tg again: a
+// family-declaring file reached by two paths loses its families (E0023,
+// `Lt<0, m>`'s `0` "is a term"), which 9.10.26p's fix does not cover.
+pub mod nat_order;
+
+pub fn nat_beq(a: Nat, b: Nat) -> Bool {
+    natrec(Nat -> Bool,
+        fn(b: Nat) => natrec(Bool, true, fn(j: Nat, acc: Bool) => false, b),
+        fn(p: Nat, rec: Nat -> Bool) => fn(b: Nat) =>
+            natrec(Bool, false, fn(j: Nat, acc: Bool) => rec(j), b),
+        a)(b)
+}
+
+// The zero guard is the outer `natrec` on `m`.
+pub fn nat_mod(n: Nat, m: Nat) -> Nat {
+    natrec(Nat, 0, fn(p: Nat, unused: Nat) =>
+        natrec(Nat, 0, fn(j: Nat, r: Nat) => if nat_beq(r + 1, p + 1) { 0 } else { r + 1 }, n), m)
+}
+
+pub fn nat_div(n: Nat, m: Nat) -> Nat {
+    natrec(Nat, 0, fn(p: Nat, unused: Nat) =>
+        natrec(Nat, 0, fn(j: Nat, q: Nat) =>
+            if nat_beq(nat_mod(j, p + 1) + 1, p + 1) { q + 1 } else { q }, n), m)
+}
+
+// ── The equality test ───────────────────────────────────────────────────────
+
+pub theorem nat_beq_succ_succ(a: Nat, b: Nat) -> Eq<Bool, nat_beq(a + 1, b + 1), nat_beq(a, b)> { refl }
+
+pub theorem nat_beq_refl(a: Nat) -> Eq<Bool, nat_beq(a, a), true> by {
+    induction a;
+    refl;
+    intro j;
+    intro ih;
+    exact ih
+}
+
+// `nat_beq_eq`'s two halves, each an induction on `b` under a hypothesis
+// quantified over `b` (7.10.26n). A mismatched base is `false == true`.
+pub theorem nat_beq_eq_zero(b: Nat) -> Eq<Bool, nat_beq(0, b), true> -> Eq<Nat, 0, b> by {
+    induction b;
+    intro e;
+    refl;
+    intro i;
+    intro ih;
+    intro e;
+    exact absurd(nat_order::true_ne_false(sym(e)))
+}
+
+pub theorem nat_beq_eq_succ(j: Nat, ih: (b: Nat) -> Eq<Bool, nat_beq(j, b), true> -> Eq<Nat, j, b>, b: Nat)
+    -> Eq<Bool, nat_beq(j + 1, b), true> -> Eq<Nat, j + 1, b> by {
+    induction b;
+    intro e;
+    exact absurd(nat_order::true_ne_false(sym(e)));
+    intro i;
+    intro hi;
+    intro e;
+    exact cong(|x: Nat| x + 1, ih(i, e))
+}
+
+pub theorem nat_beq_eq_all(a: Nat) -> (b: Nat) -> Eq<Bool, nat_beq(a, b), true> -> Eq<Nat, a, b> by {
+    induction a;
+    intro b;
+    exact nat_beq_eq_zero(b);
+    intro j;
+    intro ih;
+    intro b;
+    exact nat_beq_eq_succ(j, ih, b)
+}
+
+pub theorem nat_beq_eq(a: Nat, b: Nat, h: Eq<Bool, nat_beq(a, b), true>) -> Eq<Nat, a, b> {
+    nat_beq_eq_all(a)(b, h)
+}
+
+// `nat_beq_cases`'s two halves, as `nat_beq_eq`'s. The step goes through
+// `nat_beq_cases_succ_succ` because the elaborator compares a disjunction's
+// sides without unfolding `nat_beq`, while an equation's it does unfold.
+pub theorem nat_beq_cases_succ_succ(a: Nat, b: Nat,
+    s: Eq<Bool, nat_beq(a, b), true> + Eq<Bool, nat_beq(a, b), false>)
+    -> Eq<Bool, nat_beq(a + 1, b + 1), true> + Eq<Bool, nat_beq(a + 1, b + 1), false> by {
+    cases s {
+        inl(h) => { left; exact h },
+        inr(h) => { right; exact h }
+    }
+}
+
+pub theorem nat_beq_cases_zero(b: Nat) -> Eq<Bool, nat_beq(0, b), true> + Eq<Bool, nat_beq(0, b), false> by {
+    induction b;
+    left;
+    refl;
+    intro i;
+    intro ih;
+    right;
+    refl
+}
+
+pub theorem nat_beq_cases_succ(j: Nat,
+    ih: (b: Nat) -> Eq<Bool, nat_beq(j, b), true> + Eq<Bool, nat_beq(j, b), false>, b: Nat)
+    -> Eq<Bool, nat_beq(j + 1, b), true> + Eq<Bool, nat_beq(j + 1, b), false> by {
+    induction b;
+    right;
+    refl;
+    intro i;
+    intro hi;
+    exact nat_beq_cases_succ_succ(j, i, ih(i))
+}
+
+pub theorem nat_beq_cases_all(a: Nat) -> (b: Nat) -> Eq<Bool, nat_beq(a, b), true> + Eq<Bool, nat_beq(a, b), false> by {
+    induction a;
+    intro b;
+    exact nat_beq_cases_zero(b);
+    intro j;
+    intro ih;
+    intro b;
+    exact nat_beq_cases_succ(j, ih, b)
+}
+
+pub theorem nat_beq_cases(a: Nat, b: Nat) -> Eq<Bool, nat_beq(a, b), true> + Eq<Bool, nat_beq(a, b), false> {
+    nat_beq_cases_all(a)(b)
+}
+
+// `true == nat_beq(a, a) == nat_beq(a, b) == false` refutes `a == b`.
+pub theorem nat_beq_false_ne(a: Nat, b: Nat, h: Eq<Bool, nat_beq(a, b), false>, e: Eq<Nat, a, b>) -> Void {
+    nat_order::true_ne_false(trans(sym(nat_beq_refl(a)), trans(cong(|x: Nat| nat_beq(a, x), e), h)))
+}
+
+pub theorem nat_eq_dec_split(a: Nat, b: Nat, s: Eq<Bool, nat_beq(a, b), true> + Eq<Bool, nat_beq(a, b), false>)
+    -> Eq<Nat, a, b> + (Eq<Nat, a, b> -> Void) by {
+    cases s {
+        inl(h) => { left; exact nat_beq_eq(a, b, h) },
+        inr(h) => { right; intro e; exact nat_beq_false_ne(a, b, h, e) }
+    }
+}
+
+pub theorem nat_eq_dec(a: Nat, b: Nat) -> Eq<Nat, a, b> + (Eq<Nat, a, b> -> Void) {
+    nat_eq_dec_split(a, b, nat_beq_cases(a, b))
+}
+
+// ── Division by zero ────────────────────────────────────────────────────────
+
+pub theorem nat_mod_zero_left(p: Nat) -> Eq<Nat, nat_mod(0, p + 1), 0> { refl }
+
+pub theorem nat_mod_zero_right(n: Nat) -> Eq<Nat, nat_mod(n, 0), 0> { refl }
+
+pub theorem nat_div_zero_right(n: Nat) -> Eq<Nat, nat_div(n, 0), 0> { refl }
+
+// ── One step of the remainder and the quotient ──────────────────────────────
+
+pub theorem nat_mod_step_wrap(j: Nat, p: Nat, h: Eq<Bool, nat_beq(nat_mod(j, p + 1) + 1, p + 1), true>)
+    -> Eq<Nat, nat_mod(j + 1, p + 1), 0> {
+    cong(|b: Bool| if b { 0 } else { nat_mod(j, p + 1) + 1 }, h)
+}
+
+pub theorem nat_mod_step_keep(j: Nat, p: Nat, h: Eq<Bool, nat_beq(nat_mod(j, p + 1) + 1, p + 1), false>)
+    -> Eq<Nat, nat_mod(j + 1, p + 1), nat_mod(j, p + 1) + 1> {
+    cong(|b: Bool| if b { 0 } else { nat_mod(j, p + 1) + 1 }, h)
+}
+
+pub theorem nat_div_step_wrap(j: Nat, p: Nat, h: Eq<Bool, nat_beq(nat_mod(j, p + 1) + 1, p + 1), true>)
+    -> Eq<Nat, nat_div(j + 1, p + 1), nat_div(j, p + 1) + 1> {
+    cong(|b: Bool| if b { nat_div(j, p + 1) + 1 } else { nat_div(j, p + 1) }, h)
+}
+
+pub theorem nat_div_step_keep(j: Nat, p: Nat, h: Eq<Bool, nat_beq(nat_mod(j, p + 1) + 1, p + 1), false>)
+    -> Eq<Nat, nat_div(j + 1, p + 1), nat_div(j, p + 1)> {
+    cong(|b: Bool| if b { nat_div(j, p + 1) + 1 } else { nat_div(j, p + 1) }, h)
+}
+
+// ── The bound ───────────────────────────────────────────────────────────────
+
+// The elaborator compares a family's expansion, an `exists`, without
+// unfolding `nat_mod`, so `mod_lt_succ`'s base case is transported along
+// `nat_mod_zero_left` rather than converted.
+pub theorem zero_lt_succ(p: Nat) -> nat_order::Lt<0, p + 1> by { omega }
+
+// The witness `k = 0` is `r + 1 == m`, which the test's `false` refutes;
+// `k = k' + 1` is the bound.
+pub theorem lt_succ_of_beq_false_step(r: Nat, m: Nat, k: Nat)
+    -> Eq<Nat, (r + 1) + k, m> -> Eq<Bool, nat_beq(r + 1, m), false> -> nat_order::Lt<r + 1, m> by {
+    induction k;
+    intro e;
+    intro hb;
+    exact absurd(nat_beq_false_ne(r + 1, m, hb, e));
+    intro i;
+    intro ih;
+    intro e;
+    intro hb;
+    omega
+}
+
+pub theorem lt_succ_of_beq_false(r: Nat, m: Nat, h: nat_order::Lt<r, m>, hb: Eq<Bool, nat_beq(r + 1, m), false>)
+    -> nat_order::Lt<r + 1, m> by {
+    cases h { (k, e) => exact lt_succ_of_beq_false_step(r, m, k)(e, hb) }
+}
+
+pub theorem mod_lt_succ_split(j: Nat, p: Nat, ih: nat_order::Lt<nat_mod(j, p + 1), p + 1>,
+    s: Eq<Bool, nat_beq(nat_mod(j, p + 1) + 1, p + 1), true> + Eq<Bool, nat_beq(nat_mod(j, p + 1) + 1, p + 1), false>)
+    -> nat_order::Lt<nat_mod(j + 1, p + 1), p + 1> by {
+    cases s {
+        inl(h) => exact subst(sym(nat_mod_step_wrap(j, p, h)), |x: Nat| nat_order::Lt<x, p + 1>, zero_lt_succ(p)),
+        inr(h) => exact subst(sym(nat_mod_step_keep(j, p, h)), |x: Nat| nat_order::Lt<x, p + 1>,
+                              lt_succ_of_beq_false(nat_mod(j, p + 1), p + 1, ih, h))
+    }
+}
+
+pub theorem mod_lt_succ(n: Nat, p: Nat) -> nat_order::Lt<nat_mod(n, p + 1), p + 1> by {
+    induction n;
+    exact subst(sym(nat_mod_zero_left(p)), |x: Nat| nat_order::Lt<x, p + 1>, zero_lt_succ(p));
+    intro j;
+    intro ih;
+    exact mod_lt_succ_split(j, p, ih, nat_beq_cases(nat_mod(j, p + 1) + 1, p + 1))
+}
+
+// ── Quotient times divisor plus remainder ───────────────────────────────────
+
+// Wrap: `r + 1 == p + 1`, so `(p + 1) * (d + 1) ≡ (p + 1) * d + (p + 1)` is
+// `((p + 1) * d + r) + 1`. Keep: `(p + 1) * d + (r + 1) ≡ ((p + 1) * d + r) + 1`.
+pub theorem mod_def_succ_split(j: Nat, p: Nat,
+    ih: Eq<Nat, (p + 1) * nat_div(j, p + 1) + nat_mod(j, p + 1), j>,
+    s: Eq<Bool, nat_beq(nat_mod(j, p + 1) + 1, p + 1), true> + Eq<Bool, nat_beq(nat_mod(j, p + 1) + 1, p + 1), false>)
+    -> Eq<Nat, (p + 1) * nat_div(j + 1, p + 1) + nat_mod(j + 1, p + 1), j + 1> by {
+    cases s {
+        inl(h) => exact trans(cong(|x: Nat| (p + 1) * x + nat_mod(j + 1, p + 1), nat_div_step_wrap(j, p, h)),
+                        trans(cong(|x: Nat| (p + 1) * (nat_div(j, p + 1) + 1) + x, nat_mod_step_wrap(j, p, h)),
+                        trans(cong(|x: Nat| (p + 1) * nat_div(j, p + 1) + x,
+                                   sym(nat_beq_eq(nat_mod(j, p + 1) + 1, p + 1, h))),
+                              cong(|x: Nat| x + 1, ih)))),
+        inr(h) => exact trans(cong(|x: Nat| (p + 1) * x + nat_mod(j + 1, p + 1), nat_div_step_keep(j, p, h)),
+                        trans(cong(|x: Nat| (p + 1) * nat_div(j, p + 1) + x, nat_mod_step_keep(j, p, h)),
+                              cong(|x: Nat| x + 1, ih)))
+    }
+}
+
+pub theorem mod_def_succ(n: Nat, p: Nat) -> Eq<Nat, (p + 1) * nat_div(n, p + 1) + nat_mod(n, p + 1), n> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact mod_def_succ_split(j, p, ih, nat_beq_cases(nat_mod(j, p + 1) + 1, p + 1))
+}
+
+// `Lt<0, m>`'s witness gives `(0 + 1) + k == m`, stuck at an open `k`;
+// `add_comm(1, k)` turns it into `k + 1 == m`, along which the `p + 1` form
+// is transported.
+pub theorem nonzero_is_succ(k: Nat, m: Nat, e: Eq<Nat, (0 + 1) + k, m>) -> Eq<Nat, k + 1, m> {
+    trans(sym(nat_arith::add_comm(1, k)), e)
+}
+
+pub theorem mod_lt(n: Nat, m: Nat, h: nat_order::Lt<0, m>) -> nat_order::Lt<nat_mod(n, m), m> by {
+    cases h { (k, e) => exact subst(nonzero_is_succ(k, m, e), |x: Nat| nat_order::Lt<nat_mod(n, x), x>, mod_lt_succ(n, k)) }
+}
+
+pub theorem mod_def(n: Nat, m: Nat, h: nat_order::Lt<0, m>) -> Eq<Nat, m * nat_div(n, m) + nat_mod(n, m), n> by {
+    cases h {
+        (k, e) => exact subst(nonzero_is_succ(k, m, e), |x: Nat| Eq<Nat, x * nat_div(n, x) + nat_mod(n, x), n>,
+                              mod_def_succ(n, k))
+    }
+}

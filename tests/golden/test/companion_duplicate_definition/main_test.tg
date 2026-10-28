@@ -1,0 +1,5 @@
+// Redefines main.tg's `helper`.
+
+fn helper() -> Nat { 2 }
+
+pub fn test_helper() -> Unit { () }

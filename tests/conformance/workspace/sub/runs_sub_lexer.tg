@@ -1,0 +1,5 @@
+// The declared `lexer` wins at run time too (ADR 30.9.26i §2.5): prints 2.
+mod lexer;
+use lexer::{sub_only};
+
+fn main() -> Nat { sub_only() }

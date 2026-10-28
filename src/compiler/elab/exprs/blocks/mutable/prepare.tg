@@ -1,0 +1,111 @@
+// src/compiler/elab/exprs/blocks/mutable/prepare.tg
+// A block's statements, made ready for the existing pipelines (ADR 13.10.26r
+// D3, D5): joins lowered over the environment's scope, then each `let mut` and
+// each rebinding turned into plain `let`s, so none of the three statement
+// pipelines (Core lets, CIR collecting, legacy) gains an arm:
+//
+//   let mut x [: T] = e;   →   let x#mut = (); let x [: T] = e;
+//   x = e;                 →   let x#mut = (); let x = if false { x } else { e };
+//
+// The marker `x#mut` makes `x` mutable for a later assignment (`env.tg`), and
+// the `if` makes the rebinding's value meet the type `x` has in scope
+// (MUT-ASSIGN): a mismatch is the existing type error, and `e` is checked
+// against `x`'s type, so a `Nil` value takes it. The `if` reduces at once.
+
+use lexer::span::Span;
+use parser::ast::{
+    Expr, ExprBlock, ExprIf, ExprIfLet, ExprMatch, ExprPath, ExprUnit, ExprBoolLit,
+    Stmt, StmtLet, StmtLetElse, StmtExpr, StmtItem, StmtLetMut, StmtAssign, MatchArm,
+    PatVar, MaybeExpr, NoExpr, SomeExpr, NoTypeExpr, ident_new, path_simple
+};
+use lexer::span::{span_start};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Result, Ok, Err};
+use elab::env::{Env};
+use elab::exprs::forms::result::{ElabExprError};
+use elab::exprs::blocks::mutable::env::{ScopeFromEnv};
+use elab::exprs::blocks::mutable::{lower_joins, Lowered};
+
+/// The block's statements and tail, lowered and desugared.
+pub fn prepare_block(env: Env, stmts: List<Stmt>, tail: MaybeExpr, span: Span) -> Result<(List<Stmt>, MaybeExpr), ElabExprError> {
+    if needs_lowering(stmts, tail) {
+        let lowered = lower_joins(stmts, tail, ScopeFromEnv(env), span_start(span))?;
+        Ok((desugar(lowered.stmts), lowered.tail))
+    } else {
+        Ok((desugar(stmts), tail))
+    }
+}
+
+/// Whether the block, or a construct in one of its join positions, holds an
+/// assignment — the only case `lower_joins` changes anything.
+pub fn needs_lowering(stmts: List<Stmt>, tail: MaybeExpr) -> Bool {
+    stmts_assign(stmts) || maybe_construct_assigns(tail)
+}
+
+fn stmts_assign(stmts: List<Stmt>) -> Bool {
+    match stmts {
+        Nil() => false,
+        Cons(stmt, rest) => stmt_assigns(stmt) || stmts_assign(rest)
+    }
+}
+
+fn stmt_assigns(stmt: Stmt) -> Bool {
+    match stmt {
+        StmtAssign(_, _, _) => true,
+        StmtLet(_, _, value, _) => construct_assigns(value),
+        StmtLetMut(_, _, value, _) => construct_assigns(value),
+        StmtExpr(value, _) => construct_assigns(value),
+        _ => false
+    }
+}
+
+fn maybe_construct_assigns(e: MaybeExpr) -> Bool {
+    match e {
+        NoExpr() => false,
+        SomeExpr(inner) => construct_assigns(inner)
+    }
+}
+
+/// Whether `e` is a join-position construct one of whose arms assigns.
+// Partial: mutual recursion over the expression tree through list helpers.
+#[partial]
+fn construct_assigns(e: Expr) -> Bool {
+    match e {
+        ExprBlock(stmts, tail, _) => needs_lowering(stmts, tail),
+        ExprIf(_, then_e, else_e, _) => construct_assigns(then_e) || construct_assigns(else_e),
+        ExprIfLet(_, _, then_e, other, _) => construct_assigns(then_e) || maybe_construct_assigns(other),
+        ExprMatch(_, arms, _) => arms_assign(arms),
+        _ => false
+    }
+}
+
+#[partial]
+fn arms_assign(arms: List<MatchArm>) -> Bool {
+    match arms {
+        Nil() => false,
+        Cons(arm, rest) => construct_assigns(arm.body) || arms_assign(rest)
+    }
+}
+
+fn marker(name: String, span: Span) -> Stmt {
+    StmtLet(PatVar(ident_new(name ++ "#mut", span)), NoTypeExpr, ExprUnit(span), span)
+}
+
+fn desugar(stmts: List<Stmt>) -> List<Stmt> {
+    match stmts {
+        Nil() => Nil(),
+        Cons(stmt, rest) => desugar_one(stmt, desugar(rest))
+    }
+}
+
+fn desugar_one(stmt: Stmt, rest: List<Stmt>) -> List<Stmt> {
+    match stmt {
+        StmtLetMut(name, ty, value, span) =>
+            Cons(marker(name, span), Cons(StmtLet(PatVar(ident_new(name, span)), ty, value, span), rest)),
+        StmtAssign(name, value, span) =>
+            let current = ExprPath(path_simple(ident_new(name, span)));
+            let rebound = ExprIf(ExprBoolLit(false, span), current, value, span);
+            Cons(marker(name, span), Cons(StmtLet(PatVar(ident_new(name, span)), NoTypeExpr, rebound, span), rest)),
+        _ => Cons(stmt, rest)
+    }
+}

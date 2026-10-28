@@ -1,0 +1,5 @@
+// Imports a sibling's value and never uses it (ADR 1.10.26f §2.4): the name
+// exists, so the import resolves, and nothing asks for its value (D1).
+use doubling::{double};
+
+fn main() -> Nat { 0 }

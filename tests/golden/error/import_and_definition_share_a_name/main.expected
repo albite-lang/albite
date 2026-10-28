@@ -1,0 +1,14 @@
+[E0004] Error: the name `helper` is defined multiple times
+   ╭─[tests/golden/error/import_and_definition_share_a_name/main.tg:6:4]
+   │
+ 5 │ use imported::{helper};
+   │                ───┬──  
+   │                   ╰──── `helper` is first defined here
+ 6 │ fn helper() -> Nat { 2 }
+   │    ───┬──  
+   │       ╰──── 
+   │ 
+   │ Help: a name is defined once per file; rename or remove one of them
+───╯
+
+error: aborting due to 1 error

@@ -1,0 +1,7 @@
+// Golden test (ADR 13.10.26r AC 5): a closure that mentions an outer `let mut`
+// is E0105 (M3). The self-host raises E0741 at the same mention.
+fn main() -> Nat {
+    let mut x = 1;
+    let g = |y: Nat| x + y;
+    g(1)
+}

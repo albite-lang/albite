@@ -1,0 +1,9 @@
+// E0019 (ADR 4.10.26j D3): `x` and `y` both define `pub fn helper`, and
+// this module neither defines nor imports one, so a bare `helper` is
+// ambiguous; the help line names both qualified paths.
+mod x;
+mod y;
+
+fn main() -> Nat {
+    helper(1)
+}

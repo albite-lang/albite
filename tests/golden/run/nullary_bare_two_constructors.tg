@@ -1,0 +1,10 @@
+// A two-constructor match with bare arms out of declaration order is read
+// by name (ADR 6.10.26k D2). The fallback once bound the arms by position,
+// so `f(Yes())` was 3 and this printed 310.
+type B = Yes | No
+
+fn f(b: B) -> Nat {
+    match b { No => 3, Yes => 10 }
+}
+
+fn main() -> Nat { f(Yes()) * 100 + f(No()) }

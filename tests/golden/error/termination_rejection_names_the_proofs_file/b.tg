@@ -1,0 +1,3 @@
+use main::a::h;
+
+pub axiom ax(): Eq<Nat, h(0), h(0)>

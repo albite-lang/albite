@@ -1,0 +1,268 @@
+// Unit tests for the self-host's JSON diagnostics (ADR 30.9.26h): the
+// per-file source choice (AC 1), the dedup key (AC 2), the `--flag=value`
+// form and `--error-format` (AC 3), and the schema-1 record shapes (D6). ADR
+// 1.10.26h AC 5 adds the coded human lines and the I/O exit.
+//
+// Cost 5: every subject is a pure function over injected values — a
+// `SourceInfo` literal instead of a read file, an argument list instead of
+// argv — and reaches only evaluator-executable externs, so
+// `--assertion-census` proves each comparison ran. `SourceInfo`s are built as
+// literals because `source_info_new` reaches `tg_string_drop`, which the
+// evaluator does not execute.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_string, assert_eq_nat, assert_eq_bool};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Result, Ok, Err, option_unwrap_or, is_none, list_len, ends_with};
+use parser::option::{Option, Some, None};
+use lexer::span::{Span, span_new};
+use lexer::error::{err_reserved_keyword, err_unterminated_string, format_lex_error};
+use parser::error::{parse_error_expected, format_parse_error_coded};
+use driver::ffi::{FfiOk, FfiErr};
+use driver::modules::{TreeFailure, TreeUnreadable, TreeInvalid, tree_failure_message, tree_source_from_read};
+use driver::pipeline::{PipelineIoErr, PipelineErr, pipeline_exit_code, pipeline_tree_failure};
+use elab::error::{
+    SourceInfo, ElabError, source_for_file, errors_deduplicate,
+    elab_error_unresolved_value, elab_error_internal, elab_error_with_note, elab_error_with_help,
+    json_elab_error_record, json_parse_error_record, json_lex_error_record, json_failure_record
+};
+use elab::error::render::json::{json_span_value};
+use driver::cli::{Command, CmdCheck, ParseState, initial_state, parse_options, is_cmd_error};
+use driver::cli::format::{ErrorFormat, error_format_is_json};
+use driver::cli::commands::{parse_check_command};
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+/// `ab\n é z\n`: line 2 holds a two-byte `é`, so byte and character columns
+/// part company after it. Line starts are 0, 3 and 9.
+fn source_a() -> SourceInfo {
+    { path: "a.tg", contents: "ab\n é z\n", lines: Cons(0, Cons(3, Cons(9, Nil))) } : SourceInfo
+}
+
+fn source_b() -> SourceInfo {
+    { path: "b.tg", contents: "only b\n", lines: Cons(0, Cons(7, Nil)) } : SourceInfo
+}
+
+fn source_missing() -> SourceInfo {
+    { path: "<none>", contents: "", lines: Cons(0, Nil) } : SourceInfo
+}
+
+fn args2(a: String, b: String) -> List<String> {
+    Cons(a, Cons(b, Nil))
+}
+
+fn args3(a: String, b: String, c: String) -> List<String> {
+    Cons(a, Cons(b, Cons(c, Nil)))
+}
+
+fn parsed(args: List<String>) -> ParseState {
+    parse_options(initial_state(args))
+}
+
+fn state_format_is_json(state: ParseState) -> Bool {
+    match state.error_format {
+        Ok(format) => error_format_is_json(format),
+        Err(_) => false
+    }
+}
+
+fn state_format_is_refused(state: ParseState) -> Bool {
+    match state.error_format {
+        Ok(_) => false,
+        Err(_) => true
+    }
+}
+
+fn check_command_is_json(cmd: Command) -> Bool {
+    match cmd {
+        CmdCheck(opts) => error_format_is_json(opts.error_format),
+        _ => false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AC 1: each error against its own file's source
+// ---------------------------------------------------------------------------
+
+// 30.9.26h AC1: the error's own file is picked from an injected list.
+pub fn test_source_for_file_picks_the_errors_own_file() -> Unit {
+    let sources = Cons(source_a(), Cons(source_b(), Nil));
+    let picked = option_unwrap_or(source_for_file(sources, "b.tg"), source_missing());
+    assert_eq_string(picked.path, "b.tg");
+    assert_eq_string(picked.contents, "only b\n");
+    let first = option_unwrap_or(source_for_file(sources, "a.tg"), source_missing());
+    assert_eq_string(first.path, "a.tg")
+}
+
+// 30.9.26h AC1: a file the list lacks is None, not the first source.
+pub fn test_source_for_file_absent_file_is_none() -> Unit {
+    let sources = Cons(source_a(), Cons(source_b(), Nil));
+    assert_eq_bool(is_none(source_for_file(sources, "c.tg")), true);
+    assert_eq_bool(is_none(source_for_file(Nil, "a.tg")), true);
+    assert_eq_bool(is_none(source_for_file(sources, "a.tg")), false)
+}
+
+// ---------------------------------------------------------------------------
+// AC 2: the dedup key is (start, end, file, code)
+// ---------------------------------------------------------------------------
+
+// 30.9.26h AC2: equal spans in different files both survive; equal span,
+// file and code collapse; a different code at the same span survives.
+pub fn test_dedup_keys_on_file_and_code() -> Unit {
+    let in_a = elab_error_unresolved_value("q", span_new(7, 8, "a.tg"));
+    let in_b = elab_error_unresolved_value("q", span_new(7, 8, "b.tg"));
+    let other_code = elab_error_internal("x", span_new(7, 8, "a.tg"));
+    let other_end = elab_error_unresolved_value("q", span_new(7, 9, "a.tg"));
+    assert_eq_nat(list_len(errors_deduplicate(Cons(in_a, Cons(in_b, Nil)))), 2);
+    assert_eq_nat(list_len(errors_deduplicate(Cons(in_a, Cons(in_a, Nil)))), 1);
+    assert_eq_nat(list_len(errors_deduplicate(Cons(in_a, Cons(other_code, Nil)))), 2);
+    assert_eq_nat(list_len(errors_deduplicate(Cons(in_a, Cons(other_end, Nil)))), 2);
+    assert_eq_nat(list_len(errors_deduplicate(Cons(in_a, Cons(in_b, Cons(in_a, Cons(other_code, Nil)))))), 3)
+}
+
+// ---------------------------------------------------------------------------
+// AC 3: the equals form, and --error-format
+// ---------------------------------------------------------------------------
+
+// 30.9.26h AC3: `--flag=value` equals `--flag value` for each known flag.
+pub fn test_equals_form_matches_spaced_form() -> Unit {
+    assert_eq_nat(parsed(args2("--max-errors=0", "f.tg")).max_errors, 0);
+    assert_eq_nat(parsed(args3("--max-errors", "0", "f.tg")).max_errors, 0);
+    assert_eq_nat(parsed(args2("--max-errors=7", "f.tg")).max_errors, 7);
+    assert_eq_bool(state_format_is_json(parsed(args2("--error-format=json", "f.tg"))), true);
+    assert_eq_bool(state_format_is_json(parsed(args3("--error-format", "json", "f.tg"))), true);
+    assert_eq_bool(state_format_is_json(parsed(args2("--error-format=human", "f.tg"))), false);
+    assert_eq_string(parsed(args2("--output=x", "f.tg")).output, "x");
+    assert_eq_string(parsed(args3("--output", "x", "f.tg")).output, "x");
+    assert_eq_string(option_unwrap_or(parsed(args2("--dump-core=p", "f.tg")).dump_core, "-"), "p");
+    assert_eq_string(option_unwrap_or(parsed(args2("--dump-core-terms=a=b", "f.tg")).dump_core_terms, "-"), "a=b");
+    assert_eq_string(option_unwrap_or(parsed(args2("--max-errors=0", "f.tg")).file, "-"), "f.tg")
+}
+
+// 30.9.26h AC3: the format value lands in the format, never the output path.
+pub fn test_error_format_is_not_the_output_path() -> Unit {
+    assert_eq_string(parsed(args2("--error-format=json", "f.tg")).output, "");
+    assert_eq_string(parsed(args3("--error-format", "json", "f.tg")).output, "");
+    assert_eq_bool(state_format_is_json(parsed(args2("f.tg", "--output=json"))), false);
+    assert_eq_bool(check_command_is_json(parse_check_command(args2("--error-format=json", "f.tg"))), true);
+    assert_eq_bool(check_command_is_json(parse_check_command(Cons("f.tg", Nil))), false)
+}
+
+// 30.9.26h AC3: a format that is neither human nor json is a CLI error.
+pub fn test_bad_error_format_is_refused() -> Unit {
+    assert_eq_bool(state_format_is_refused(parsed(args2("--error-format=xml", "f.tg"))), true);
+    assert_eq_bool(state_format_is_refused(parsed(Cons("f.tg", Nil))), false);
+    assert_eq_bool(is_cmd_error(parse_check_command(args2("--error-format=xml", "f.tg"))), true);
+    assert_eq_bool(is_cmd_error(parse_check_command(args3("--error-format", "xml", "f.tg"))), true);
+    assert_eq_bool(is_cmd_error(parse_check_command(args2("--error-format=json", "f.tg"))), false)
+}
+
+// 30.9.26h AC3: an unknown `--name=value` is skipped whole, value and all.
+pub fn test_unknown_equals_flag_is_skipped_whole() -> Unit {
+    assert_eq_string(option_unwrap_or(parsed(args2("--foo=1", "f.tg")).file, "-"), "f.tg");
+    assert_eq_bool(is_none(parsed(Cons("--foo=bar.tg", Nil)).file), true);
+    assert_eq_nat(parsed(args2("--foo=0", "f.tg")).max_errors, 20);
+    assert_eq_string(parsed(args2("--foo=x", "f.tg")).output, "")
+}
+
+// ---------------------------------------------------------------------------
+// D6: record shapes, per error class
+// ---------------------------------------------------------------------------
+
+// 30.9.26h AC6: a parse record carries its syntax code and CHARACTER columns
+// (col 4, not byte col 5, after the two-byte `é`).
+pub fn test_parse_error_record_shape() -> Unit {
+    let err = parse_error_expected("')'", "';'", span_new(7, 8, "a.tg"));
+    assert_eq_string(json_parse_error_record(err, source_a()),
+        "{\"schema\":1,\"kind\":\"diagnostic\",\"level\":\"error\",\"code\":\"E0800\",\"message\":\"expected ')', found ';'\",\"primary_span\":{\"file\":\"a.tg\",\"byte_start\":7,\"byte_end\":8,\"line_start\":2,\"col_start\":4,\"line_end\":2,\"col_end\":5,\"label\":\"expected ')', found ';'\",\"text\":\" é z\"},\"notes\":[],\"help\":[],\"diagnostic_hints\":[]}")
+}
+
+// 30.9.26h AC6: each lex error is one located record with its code.
+pub fn test_lex_error_record_shape() -> Unit {
+    assert_eq_string(json_lex_error_record(err_reserved_keyword("await", 0, 2, "a.tg"), source_a()),
+        "{\"schema\":1,\"kind\":\"diagnostic\",\"level\":\"error\",\"code\":\"E0806\",\"message\":\"`await` is a reserved keyword\",\"primary_span\":{\"file\":\"a.tg\",\"byte_start\":0,\"byte_end\":2,\"line_start\":1,\"col_start\":1,\"line_end\":1,\"col_end\":3,\"label\":\"`await` is a reserved keyword\",\"text\":\"ab\"},\"notes\":[],\"help\":[],\"diagnostic_hints\":[]}");
+    assert_eq_string(json_lex_error_record(err_unterminated_string(3, "a.tg"), source_a()),
+        "{\"schema\":1,\"kind\":\"diagnostic\",\"level\":\"error\",\"code\":\"E0807\",\"message\":\"unterminated string literal\",\"primary_span\":{\"file\":\"a.tg\",\"byte_start\":3,\"byte_end\":3,\"line_start\":2,\"col_start\":1,\"line_end\":2,\"col_end\":1,\"label\":\"unterminated string literal\",\"text\":\" é z\"},\"notes\":[],\"help\":[],\"diagnostic_hints\":[]}")
+}
+
+// 1.10.26h AC5: the human parse header carries its code, once.
+pub fn test_parse_header_carries_its_code() -> Unit {
+    let err = parse_error_expected("')'", "';'", span_new(1, 2, "a.tg"));
+    assert_eq_string(format_parse_error_coded(err, source_a()),
+        "error[E0800]: a.tg:1:2: expected ')', found ';'")
+}
+
+// 1.10.26h AC5: each lex error is its own located, coded human line.
+pub fn test_lex_error_line_is_located() -> Unit {
+    assert_eq_string(format_lex_error(err_unterminated_string(3, "a.tg"), source_a()),
+        "error[E0807]: a.tg:2:1: unterminated string literal")
+}
+
+// 1.10.26h AC5: an unreadable tree is the I/O exit; any other failure stays 1.
+pub fn test_unreadable_entry_exits_three() -> Unit {
+    assert_eq_nat(pipeline_exit_code(PipelineIoErr(1)), 3);
+    assert_eq_nat(pipeline_exit_code(PipelineErr(1)), 1);
+    assert_eq_nat(pipeline_exit_code(pipeline_tree_failure(TreeUnreadable("m"))), 3);
+    assert_eq_nat(pipeline_exit_code(pipeline_tree_failure(TreeInvalid("m"))), 1)
+}
+
+// 1.10.26h AC5, by P0.6's route: `tg_read_file` does not run on the evaluator,
+// so the `Could not read file` site's classification is tested over an
+// injected read result; the in-container run covers the read itself.
+pub fn test_entry_tree_parse_reports_unreadable() -> Unit {
+    assert_eq_bool(is_tree_unreadable(tree_source_from_read(FfiErr("gone"), "does_not_exist.tg")), true);
+    assert_eq_bool(is_tree_unreadable(tree_source_from_read(FfiOk(""), "empty.tg")), false);
+    assert_eq_string(tree_read_message(tree_source_from_read(FfiErr("gone"), "does_not_exist.tg")),
+        "Could not read file: does_not_exist.tg");
+    assert_eq_string(tree_read_message(tree_source_from_read(FfiOk(""), "empty.tg")), "Empty file: empty.tg");
+    assert_eq_string(tree_read_message(tree_source_from_read(FfiOk("fn f"), "f.tg")), "fn f")
+}
+
+fn is_tree_unreadable(read: Result<String, TreeFailure>) -> Bool {
+    match read {
+        Ok(_) => false,
+        Err(failure) => is_unreadable_failure(failure)
+    }
+}
+
+// Flat, not a nested `Err(TreeUnreadable(_))`: a nested pattern's fall-through
+// goes Stuck on the evaluator.
+fn is_unreadable_failure(failure: TreeFailure) -> Bool {
+    match failure {
+        TreeUnreadable(_) => true,
+        TreeInvalid(_) => false
+    }
+}
+
+/// The source on success, the failure's message otherwise.
+fn tree_read_message(read: Result<String, TreeFailure>) -> String {
+    match read {
+        Ok(source) => source,
+        Err(failure) => tree_failure_message(failure)
+    }
+}
+
+// 30.9.26h AC6: an elaboration record carries its code, notes and help.
+pub fn test_elab_error_record_shape() -> Unit {
+    let err = elab_error_with_help(elab_error_with_note(
+        elab_error_unresolved_value("q", span_new(7, 8, "a.tg")), "a note"), "try p");
+    assert_eq_string(json_elab_error_record(err, source_a()),
+        "{\"schema\":1,\"kind\":\"diagnostic\",\"level\":\"error\",\"code\":\"E0101\",\"message\":\"unresolved name: 'q'\",\"primary_span\":{\"file\":\"a.tg\",\"byte_start\":7,\"byte_end\":8,\"line_start\":2,\"col_start\":4,\"line_end\":2,\"col_end\":5,\"label\":\"unresolved name: 'q'\",\"text\":\" é z\"},\"notes\":[{\"message\":\"a note\",\"span\":null}],\"help\":[\"try p\"],\"diagnostic_hints\":[]}")
+}
+
+// 30.9.26h AC6: a pipeline failure has a null code and a null span; a span
+// past the end of its source has a null `text`.
+pub fn test_failure_record_and_out_of_range_text() -> Unit {
+    assert_eq_string(json_failure_record("Could not read file: m.tg"),
+        "{\"schema\":1,\"kind\":\"diagnostic\",\"level\":\"error\",\"code\":null,\"message\":\"Could not read file: m.tg\",\"primary_span\":null,\"notes\":[],\"help\":[],\"diagnostic_hints\":[]}");
+    assert_eq_bool(ends_with(json_span_value(source_a(), span_new(50, 52, "a.tg"), "l"), "\"text\":null}"), true);
+    // A span ending exactly at the source's length is inside it.
+    assert_eq_bool(ends_with(json_span_value(source_a(), span_new(9, 9, "a.tg"), "l"), "\"text\":\"\"}"), true);
+    assert_eq_bool(ends_with(json_span_value(source_a(), span_new(9, 10, "a.tg"), "l"), "\"text\":null}"), true)
+}

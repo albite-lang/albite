@@ -1,0 +1,118 @@
+// src/compiler/elab/exprs/control/region_block.tg
+// (`region` is a keyword, so no module can take the name.)
+// Elaboration of `region { body }` (ADR 9.10.26o D8).
+//
+// The self-host elaborates a region to its body's term: no self-host code
+// generator reads a region (G8), and `albite1 compile` hands lowering to
+// the bootstrap. It refuses what the bootstrap's E0094 refuses on the
+// region's VALUE as E0730, reading the value's type by `tg_type_tag` (the
+// table's authority is `albite_core/src/ffi/types/predicates/mod.rs`).
+// E0731's handle half runs in `elab/items/handles/`, beside `B4.1`'s walk.
+// A region with no return context is in a proof — only a function body sets
+// one, and a closure inherits its function's — so it is E0732, as the
+// bootstrap's E0096.
+
+use lexer::span::Span;
+use parser::ast::{Expr};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{
+    TypeHandle, tg_type_tag, tg_cstr_eq,
+    tg_type_get_sum_left, tg_type_get_sum_right,
+    tg_type_get_product_left, tg_type_get_product_right,
+    tg_type_get_mu_var, tg_type_get_mu_body, tg_type_get_tyvar_name
+};
+use elab::env::{Env, env_return_type, MaybeTypeHandle, NoTypeHandle};
+use elab::exprs::forms::result::{
+    ElabExprResult, ElabExprOk, ElabExprErr, elab_expr_error_coded
+};
+use elab::exprs::{synth, check};
+// A region body may read, not assign, a `let mut` bound outside it (ADR 13.10.26r M6).
+use elab::exprs::blocks::mutable::env::{env_enter_region, restore_env};
+
+/// Synthesize `region { body }`: the body's term and type.
+pub fn synth_region(env: Env, body: Expr, span: Span) -> ElabExprResult {
+    if region_in_proof(env) { region_proof_error(span) } else { region_refuse_value(restore_env(env, synth(env_enter_region(env), body)), span) }
+}
+
+/// Check `region { body }` against `expected`.
+pub fn check_region(env: Env, body: Expr, expected: TypeHandle, span: Span) -> ElabExprResult {
+    if region_in_proof(env) { region_proof_error(span) } else { region_refuse_value(restore_env(env, check(env_enter_region(env), body, expected)), span) }
+}
+
+fn region_in_proof(env: Env) -> Bool {
+    match env_return_type(env) {
+        NoTypeHandle() => true,
+        _ => false
+    }
+}
+
+fn region_proof_error(span: Span) -> ElabExprResult {
+    ElabExprErr(elab_expr_error_coded("a `region` is not allowed in a proof", span, "E0732"))
+}
+
+fn region_refuse_value(result: ElabExprResult, span: Span) -> ElabExprResult {
+    match result {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, term, ty, cir) => {
+            let found = region_violation(ty, Nil());
+            if found == "" {
+                ElabExprOk(env2, term, ty, cir)
+            } else {
+                ElabExprErr(elab_expr_error_coded(
+                    "a region's value must be first-order data, found `" ++ found ++ "`",
+                    span, "E0730"
+                ))
+            }
+        }
+    }
+}
+
+/// The kind of the part of `ty` that is not first-order data, or "" when it
+/// all is. `bound` holds the μ variables in scope, which are not free.
+// Partial: it descends through FFI accessors, not a source-level subterm.
+#[partial]
+pub fn region_violation(ty: TypeHandle, bound: List<Nat>) -> String {
+    let tag = tg_type_tag(ty);
+    if tag == 0 || tag == 1 || tag == 2 || tag == 3 || tag == 17 || tag == 99 {
+        ""
+    } else if tag == 7 {
+        region_first_of(region_violation(tg_type_get_product_left(ty), bound),
+            tg_type_get_product_right(ty), bound)
+    } else if tag == 8 {
+        region_first_of(region_violation(tg_type_get_sum_left(ty), bound),
+            tg_type_get_sum_right(ty), bound)
+    } else if tag == 11 {
+        region_violation(tg_type_get_mu_body(ty), Cons(tg_type_get_mu_var(ty), bound))
+    } else if tag == 9 && region_name_in(tg_type_get_tyvar_name(ty), bound) {
+        ""
+    } else if tag == 15 || tag == 16 {
+        // A named ADT: the self-host has no accessor for its fields, and the
+        // bootstrap, which lowers the region, reads them (E0094).
+        ""
+    } else {
+        region_kind_name(tag)
+    }
+}
+
+#[partial]
+fn region_first_of(first: String, other: TypeHandle, bound: List<Nat>) -> String {
+    if first == "" { region_violation(other, bound) } else { first }
+}
+
+fn region_name_in(name: Nat, names: List<Nat>) -> Bool {
+    match names {
+        Nil() => false,
+        Cons(n, rest) => tg_cstr_eq(n, name) || region_name_in(name, rest)
+    }
+}
+
+fn region_kind_name(tag: Nat) -> String {
+    if tag == 4 { "Void" }
+    else if tag == 6 { "a function type" }
+    else if tag == 9 { "a type variable" }
+    else if tag == 10 { "a polymorphic type" }
+    else if tag == 12 { "an equality" }
+    else if tag == 13 { "a reference" }
+    else if tag == 14 { "a pointer" }
+    else { "a proof type" }
+}

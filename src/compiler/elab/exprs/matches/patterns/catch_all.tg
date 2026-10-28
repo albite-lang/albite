@@ -1,0 +1,85 @@
+// src/compiler/elab/exprs/matches/patterns/catch_all.tg
+// A variable catch-all binds the whole matched value (ADR 9.10.26e D3).
+//
+// A catch-all arm fills a `Case` slot like any other, so its case binder holds
+// whatever that slot carries: a constructor's payload in a middle slot, the
+// remainder sum `_rest` in the last slot of a match over three or more
+// constructors. `get_arm_binding_type` already types the name as the
+// scrutinee; binding the name AS the case binder then gave it a value that is
+// neither, and the Core was ill-typed.
+//
+// The fix mirrors the bootstrap's `catch_all.rs`: the slot takes a fresh
+// binder, and the name is `let`-bound to the pre-unfold scrutinee at the
+// start of the arm body, on the term and the CIR alike:
+//
+//     case s of inl _catch_all => let other = s in <body> | …
+//
+// Every other pattern — a constructor, a wildcard, a tuple — passes through.
+
+use parser::ast::{Pattern, PatVar, MatchArm, ident_name};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{TermHandle, tg_term_let, tg_string_to_cstr};
+use elab::cir::{CodegenIR, CIRLet, CIRVar, type_handle_to_codegen_type};
+use elab::exprs::matches::{ScrutInfo};
+
+/// One `Case` arm, ready for `tg_term_case` and `build_cir_case_from_handles`.
+pub type CatchAllCaseArm = {
+    binder: String,
+    term: TermHandle,
+    cir: CodegenIR
+}
+
+/// The fresh case binder a variable catch-all's slot takes.
+pub fn catch_all_case_binder() -> String {
+    "_catch_all"
+}
+
+/// The arm `p` contributes to a `Case`: a variable catch-all's body behind a
+/// `let` of its name to `scrut`, under a fresh binder; any other arm as it was.
+pub fn bind_catch_all_to_scrutinee(
+    p: Pattern,
+    arm_var: String,
+    scrut: ScrutInfo,
+    body: TermHandle,
+    body_cir: CodegenIR
+) -> CatchAllCaseArm {
+    match p {
+        PatVar(id) =>
+            let name = ident_name(id);
+            {
+                binder: catch_all_case_binder(),
+                term: tg_term_let(tg_string_to_cstr(name), scrut.ty, scrut.term, body),
+                cir: CIRLet(name, type_handle_to_codegen_type(scrut.ty), scrut.cir, body_cir)
+            } : CatchAllCaseArm,
+        _ => { binder: arm_var, term: body, cir: body_cir } : CatchAllCaseArm
+    }
+}
+
+/// Whether any arm is a variable catch-all — the arms that read the scrutinee.
+pub fn arms_have_variable_catch_all(arms: List<MatchArm>) -> Bool {
+    match arms {
+        Nil() => false,
+        Cons(arm, rest) =>
+            if arm_is_variable_catch_all(arm) {
+                true
+            } else {
+                arms_have_variable_catch_all(rest)
+            }
+    }
+}
+
+fn arm_is_variable_catch_all(arm: MatchArm) -> Bool {
+    match arm.pattern {
+        PatVar(_) => true,
+        _ => false
+    }
+}
+
+/// Whether the scrutinee is already a variable, so a catch-all may name it
+/// without evaluating it again.
+pub fn scrutinee_is_variable(scrut: ScrutInfo) -> Bool {
+    match scrut.cir {
+        CIRVar(_, _) => true,
+        _ => false
+    }
+}

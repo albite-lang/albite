@@ -1,0 +1,38 @@
+// Negative control for test_nat_divmod.tg (ADR 9.10.26i D5, AC 2).
+//
+// Each function below states a nat_divmod.tg fact at a value it does not
+// have, and each must be refused. `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_nat_divmod.tg --require-tests
+//     -> aborting due to 3 errors
+//
+// The cases, in the bootstrap's codes:
+//
+//   1. `refl` at `nat_mod(7, 2) == 0`: the closed value is 1 (E0071)
+//   2. mod_def(n, m, h) stated without the remainder (E0010)
+//   3. nat_beq_eq(a, b, h) stated at `a == b + 1` (E0010)
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+mod nat_divmod;
+
+fn test_mod_closed_value_wrong() -> Unit {
+    let _r: Eq<Nat, nat_divmod::nat_mod(7, 2), 0> = refl;
+    ()
+}
+
+fn test_mod_def_without_the_remainder() -> Unit {
+    let x: Nat = 23;
+    let h: nat_divmod::nat_order::Lt<0, 6> = (5, refl);
+    let _r: Eq<Nat, 6 * nat_divmod::nat_div(x, 6), x> = nat_divmod::mod_def(x, 6, h);
+    ()
+}
+
+fn test_nat_beq_eq_mis_stated() -> Unit {
+    let x: Nat = 4;
+    let h: Eq<Bool, nat_divmod::nat_beq(x, x), true> = nat_divmod::nat_beq_refl(x);
+    let _r: Eq<Nat, x, x + 1> = nat_divmod::nat_beq_eq(x, x, h);
+    ()
+}

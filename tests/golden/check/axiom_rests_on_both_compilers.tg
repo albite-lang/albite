@@ -1,0 +1,12 @@
+// ADR 16.10.26g: both compilers print the same `check` line. A theorem citing
+// an axiom one hop (`bad2`), two hops (`bad3`) or through a program definition
+// (`bad4` via `via_fn`) rests on it; `uses_fine` cites a real proof and does
+// not. Axiom-only, because an axiom is the only hole the self-host accepts.
+
+axiom ax(): Void
+theorem bad2(): Void { ax() }
+theorem bad3(): Void { bad2() }
+fn via_fn() -> Void { ax() }
+theorem bad4(): Void { via_fn() }
+theorem fine(): 1 == 1 { refl }
+theorem uses_fine(): 1 == 1 { fine() }

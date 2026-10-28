@@ -1,0 +1,9 @@
+// A theorem that depends on a call to foreign code (ADR 3.10.26c §1.1): both
+// compilers must reject it, because the checker never runs `tg_type_nat`
+// (ADR 3.10.26q AC 6). A self-host change that drops the call from its
+// extern wrappers turns this row into a disagreement.
+extern "C" fn tg_type_nat() -> Nat
+
+theorem handles_equal(): tg_type_nat() == tg_type_nat() { refl }
+
+fn main() -> Nat { 0 }

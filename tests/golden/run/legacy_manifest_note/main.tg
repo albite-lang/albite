@@ -1,0 +1,13 @@
+// Manifests under the old name (ADR 20.10.26i AC1/AC2): the application's
+// and the diamond's shared `lib_c` are `tungsten.toml`, still read this
+// release, and each is noted once — `lib_c`, reached through `lib_a` and
+// `lib_b`, is not noted twice. The program runs as its `albite.toml` twin,
+// `package_transitive_deps`, does.
+
+use lib_a::a;
+use lib_a::double;
+use lib_b::b;
+
+fn main() -> Nat {
+    double(a() + b())
+}

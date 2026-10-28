@@ -1,0 +1,13 @@
+// Golden test (ADR 13.10.26v): a guard on a constructor arm of a match over a
+// user type is refused at that arm by both compilers. Before this ADR the
+// self-host accepted it, ignored the guard, and returned `1` with `b` false
+// where the source says `50`. E0100 (self-host E0308).
+type K = | X(Nat) | Y
+
+fn f(k: K, b: Bool) -> Nat {
+    match k { X(n) if b => n, _ => 50 }
+}
+
+fn main() -> Nat {
+    f(X(1), false)
+}

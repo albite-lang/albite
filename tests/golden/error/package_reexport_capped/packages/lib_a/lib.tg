@@ -1,0 +1,4 @@
+pub mod core;
+pub mod api;
+use api::internal;
+pub fn f() -> Nat { internal() }

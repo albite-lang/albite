@@ -1,0 +1,67 @@
+// src/compiler/driver/pipeline/test/records/stop.tg
+// The early exits of a machine-format `albite1 test` (ADR 1.10.26i D6),
+// mirroring `bootstrap/src/test_runner/stop.rs`. Each function is the pure
+// stdout text for one stop; `records/mod.tg` prints it.
+//
+//   runner failure (exit 2)  JSON: the records so far, then a failure record.
+//                            JUnit: those testcases, then `(runner)`.
+//   empty run (exit 0)       JSON: one `total: 0` summary. JUnit: tests="0".
+//   diagnostics (exit 1)     JSON: nothing more — the diagnostics are already
+//                            records on stdout. JUnit: `(elaboration)`.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Option, Some, None};
+use driver::util::json::{json_line};
+use elab::error::{json_failure_record};
+use driver::cli::format::{TestFormat, TestFormatHuman, TestFormatJson, TestFormatJunit};
+use driver::pipeline::test::records::frames::{TestFrame};
+use driver::pipeline::test::records::json::{json_test_record, json_test_summary};
+use driver::pipeline::test::records::junit::{
+    JunitRunnerStop, JunitDiagnosticsStop, junit_document, junit_stop_document
+};
+
+/// The `(elaboration)` testcase's message: the diagnostics themselves stay
+/// human, on stderr — the bootstrap's `DIAGNOSTICS_STOP_MESSAGE`.
+pub fn records_diagnostics_message() -> String {
+    "the file did not elaborate; diagnostics are on stderr"
+}
+
+/// A runner failure's stdout text; `None` in human mode, where the caller
+/// prints `error: …` on stderr instead.
+pub fn records_runner_stop_text(format: TestFormat, frames: List<TestFrame>,
+                                message: String, entry: String) -> Option<String> {
+    match format {
+        TestFormatHuman() => None,
+        TestFormatJson() =>
+            Some(records_json_lines(frames, entry) ++ json_line(json_failure_record(message))),
+        TestFormatJunit() =>
+            Some(junit_stop_document(frames, JunitRunnerStop(message), entry) ++ "\n")
+    }
+}
+
+/// A passing run with zero tests; `None` in human mode, which keeps its own
+/// `no tests found` line.
+pub fn records_empty_run_text(format: TestFormat, entry: String) -> Option<String> {
+    match format {
+        TestFormatHuman() => None,
+        TestFormatJson() => Some(json_line(json_test_summary(Nil))),
+        TestFormatJunit() => Some(junit_document(Nil, entry, 0) ++ "\n")
+    }
+}
+
+/// What a diagnostics stop adds on stdout: only JUnit adds anything.
+pub fn records_diagnostics_stop_text(format: TestFormat, entry: String) -> Option<String> {
+    match format {
+        TestFormatJunit() =>
+            Some(junit_stop_document(Nil, JunitDiagnosticsStop(records_diagnostics_message()), entry) ++ "\n"),
+        _ => None
+    }
+}
+
+/// One JSONL line per frame, in order.
+pub fn records_json_lines(frames: List<TestFrame>, entry: String) -> String {
+    match frames {
+        Nil() => "",
+        Cons(frame, rest) => json_line(json_test_record(frame, entry)) ++ records_json_lines(rest, entry)
+    }
+}

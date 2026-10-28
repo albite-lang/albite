@@ -1,0 +1,6 @@
+// Golden test (ADR 3.10.26n AC 5): the evaluator's too-large trap line —
+// `error: byte buffer too large`, native `tg_int_trap(11)`. One byte over the
+// 2^32 ceiling refuses before anything is allocated.
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+
+fn main() -> Nat { tg_bytes_new(4294967297) }

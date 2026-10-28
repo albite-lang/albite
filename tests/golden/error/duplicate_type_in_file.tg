@@ -1,0 +1,6 @@
+// Two types of one name in one file are E0004 at the second (ADR 13.10.26f
+// AC 3). Before it, this file checked as `1 definition(s), all OK`.
+type T = A | B
+type T = C(Nat)
+
+fn main() -> Nat { 0 }

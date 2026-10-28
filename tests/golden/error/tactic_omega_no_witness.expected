@@ -1,0 +1,9 @@
+[E0088] Error: `omega`: no witness: `t - s` is `-1`, with a negative term `-1`
+   ╭─[tests/golden/error/tactic_omega_no_witness.tg:5:50]
+   │
+ 5 │ theorem false_omega(n: Nat) -> Le<n + 1, n> by { omega }
+   │                                                  ──┬──  
+   │                                                    ╰──── 
+───╯
+
+error: aborting due to 1 error

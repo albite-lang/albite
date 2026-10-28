@@ -1,0 +1,11 @@
+[E0021] Error: pattern `nested constructor patterns in a multi-field constructor` is not supported
+   ╭─[tests/golden/error/multi_field_nested_lone_arm_is_unsupported.tg:8:15]
+   │
+ 8 │     match l { Cons(x, Nil()) => 1, _ => 0 }
+   │               ───────┬──────  
+   │                      ╰──────── 
+   │ 
+   │ Help: rewrite as an explicit inner match on the nested field of `Cons`
+───╯
+
+error: aborting due to 1 error

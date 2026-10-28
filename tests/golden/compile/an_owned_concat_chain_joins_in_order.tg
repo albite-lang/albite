@@ -1,0 +1,48 @@
+// Golden test: an owned `++` chain joins its pieces in order, natively.
+//
+// A seed is joined to eight pieces in one let-bound chain. The first `++`
+// takes the seed, a live parameter, so it is the ordinary join; each of the
+// seven after it takes the previous join's dead result, so it is the owned
+// join, which grows its left operand's block in place. The program prints the
+// joined text and its length, so a join that dropped, repeated or reordered a
+// piece changes the output. Its output is the same with the arena off and on.
+//
+// The length comes from the runtime through `extern "C"`, not the `string_len`
+// builtin, which only the Rust-hosted compiler knows: the shipped self-hosted
+// compiler must compile this program too.
+
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+
+fn digit(d: Nat) -> String {
+    match d {
+        0 => "0", 1 => "1", 2 => "2", 3 => "3", 4 => "4",
+        5 => "5", 6 => "6", 7 => "7", 8 => "8", _ => "9",
+    }
+}
+
+#[partial]
+fn digits(n: Nat, acc: String) -> String {
+    if n == 0 { acc } else { digits(n / 10, digit(n % 10) ++ acc) }
+}
+
+fn nat_to_string(n: Nat) -> String {
+    if n == 0 { "0" } else { digits(n, "") }
+}
+
+/// One ordinary join, then seven owned ones.
+fn owned_chain(start: String) -> String {
+  let s1 = start ++ "-one";
+  let s2 = s1 ++ "-two";
+  let s3 = s2 ++ "-three";
+  let s4 = s3 ++ "-four";
+  let s5 = s4 ++ "-five";
+  let s6 = s5 ++ "-six";
+  let s7 = s6 ++ "-seven";
+  s7 ++ "-eight"
+}
+
+fn main() -> String {
+    let joined = owned_chain("fox");
+    let length = tg_string_len_internal(joined);
+    joined ++ " (" ++ nat_to_string(length) ++ " bytes)"
+}

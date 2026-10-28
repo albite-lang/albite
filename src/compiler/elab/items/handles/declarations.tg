@@ -1,0 +1,296 @@
+// src/compiler/elab/items/handles/declarations.tg
+// What the affine handle rule reads from declarations (ADR 7.10.26t D2, D3).
+//
+// Elaboration erases a handle's single-field wrapper, so the rule reads the
+// parsed tree, as the bootstrap's `elaborate/handles/mod.rs` does: the fixed
+// handle list by declared name, the "contains a handle" walk over declared
+// type expressions, and D3's function-kind table.
+//
+// "Contains" is computed once per program as a set: the listed names, closed
+// under "a declared type one of whose fields or body mentions a name in the
+// set". That least fixed point is exactly the bootstrap's depth-first walk
+// with a visited set — reachability to a listed name — without a list scan
+// per query, which a per-call-site walk over this compiler's own ~1,000 types
+// would cost.
+
+use parser::ast::{
+    Item, ItemFn, ItemType, ItemTypeAlias, TypeDefBody, TypeDefAlias, TypeDefAdt, TypeDefRecord,
+    Variant, RecordField, Param, TypeExpr, TyPath, TyProduct, TySum, TyApp, TyForall,
+    TyPtr, TyRef, TyParen, MaybeTypeExpr, NoTypeExpr, SomeTypeExpr, ident_name,
+    path_item_name
+};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::lists::{list_len};
+
+// ===========================================================================
+// THE LIST AND THE KINDS (D2, D3)
+// ===========================================================================
+
+/// Whether `name`, a declared type's last path segment, is on the fixed list.
+pub fn is_handle_type_name(name: String) -> Bool {
+    name == "StringBuilder" || name == "Bytes"
+}
+
+/// What a call does to a handle argument (D3).
+pub type HandleFunctionKind =
+    | HandleMaker
+    | HandleObserver
+    | HandleThreader
+    | HandleConsumer
+    | HandleNoKind
+
+/// D3's table, by bare function name alone; `handle_kind_of` adds the
+/// signature condition.
+pub fn handle_kind_by_name(name: String) -> HandleFunctionKind {
+    if handle_is_maker_name(name) {
+        HandleMaker
+    } else if handle_is_observer_name(name) {
+        HandleObserver
+    } else if handle_is_threader_name(name) {
+        HandleThreader
+    } else if handle_is_consumer_name(name) {
+        HandleConsumer
+    } else {
+        HandleNoKind
+    }
+}
+
+fn handle_is_maker_name(name: String) -> Bool {
+    name == "string_builder_new" || name == "string_builder_with_capacity"
+        || name == "bytes_new" || name == "bytes_from_string_grown"
+}
+
+fn handle_is_observer_name(name: String) -> Bool {
+    name == "string_builder_len" || name == "bytes_len" || name == "bytes_get"
+}
+
+fn handle_is_threader_name(name: String) -> Bool {
+    name == "push_str" || name == "push_char" || name == "bytes_set"
+        || name == "bytes_blit_string"
+}
+
+fn handle_is_consumer_name(name: String) -> Bool {
+    name == "to_string" || name == "bytes_into_string"
+        || name == "bytes_into_string_unchecked"
+}
+
+/// A kind's name, for the tier-5 suite's assertions.
+pub fn handle_kind_name(kind: HandleFunctionKind) -> String {
+    match kind {
+        HandleMaker() => "maker",
+        HandleObserver() => "observer",
+        HandleThreader() => "threader",
+        HandleConsumer() => "consumer",
+        HandleNoKind() => "none"
+    }
+}
+
+// ===========================================================================
+// DECLARATIONS
+// ===========================================================================
+
+/// One declared function signature.
+pub type HandleSignature = { name: String, params: List<TypeExpr>, result: MaybeTypeExpr }
+
+/// One declared type's fields or alias body.
+pub type HandleTypeParts = { name: String, parts: List<TypeExpr> }
+
+/// What the rule reads, gathered from every module. `holders` is the closed
+/// set of type names that contain a handle; `returning` the functions some
+/// declaration of which returns one; `mentioning` those some declaration of
+/// which mentions one in a parameter or the result.
+pub type HandleDeclarations = {
+    holders: List<String>,
+    returning: List<String>,
+    mentioning: List<String>
+}
+
+/// Gather `items`' declarations and close them.
+pub fn handle_declarations(items: List<Item>) -> HandleDeclarations {
+    let signatures = handle_collect_signatures(items, Nil());
+    let holders = handle_close_holders(handle_collect_types(items, Nil()), Cons("StringBuilder", Cons("Bytes", Nil())));
+    let decls: HandleDeclarations = {
+        holders: holders,
+        returning: handle_returning_names(signatures, holders, Nil()),
+        mentioning: handle_mentioning_names(signatures, holders, Nil())
+    };
+    decls
+}
+
+fn handle_collect_signatures(items: List<Item>, acc: List<HandleSignature>) -> List<HandleSignature> {
+    match items {
+        Nil() => acc,
+        Cons(item, rest) => handle_collect_signatures(rest, handle_add_signature(item, acc))
+    }
+}
+
+fn handle_add_signature(item: Item, acc: List<HandleSignature>) -> List<HandleSignature> {
+    match item {
+        ItemFn(f) => {
+            let signature: HandleSignature = {
+                name: ident_name(f.name), params: handle_param_types(f.params), result: f.return_type
+            };
+            Cons(signature, acc)
+        },
+        _ => acc
+    }
+}
+
+fn handle_param_types(params: List<Param>) -> List<TypeExpr> {
+    match params {
+        Nil() => Nil(),
+        Cons(param, rest) => Cons(param.ty, handle_param_types(rest))
+    }
+}
+
+fn handle_collect_types(items: List<Item>, acc: List<HandleTypeParts>) -> List<HandleTypeParts> {
+    match items {
+        Nil() => acc,
+        Cons(item, rest) => handle_collect_types(rest, handle_add_type(item, acc))
+    }
+}
+
+fn handle_add_type(item: Item, acc: List<HandleTypeParts>) -> List<HandleTypeParts> {
+    match item {
+        ItemType(t) => Cons(handle_type_parts(ident_name(t.name), handle_body_parts(t.body)), acc),
+        ItemTypeAlias(a) => Cons(handle_type_parts(ident_name(a.name), Cons(a.ty, Nil())), acc),
+        _ => acc
+    }
+}
+
+fn handle_type_parts(name: String, parts: List<TypeExpr>) -> HandleTypeParts {
+    let entry: HandleTypeParts = { name: name, parts: parts };
+    entry
+}
+
+fn handle_body_parts(body: TypeDefBody) -> List<TypeExpr> {
+    match body {
+        TypeDefAlias(ty) => Cons(ty, Nil()),
+        TypeDefAdt(variants) => handle_variant_parts(variants),
+        TypeDefRecord(fields) => handle_field_parts(fields)
+    }
+}
+
+fn handle_variant_parts(variants: List<Variant>) -> List<TypeExpr> {
+    match variants {
+        Nil() => Nil(),
+        Cons(v, rest) => handle_append_types(v.fields, handle_variant_parts(rest))
+    }
+}
+
+fn handle_append_types(front: List<TypeExpr>, back: List<TypeExpr>) -> List<TypeExpr> {
+    match front {
+        Nil() => back,
+        Cons(t, rest) => Cons(t, handle_append_types(rest, back))
+    }
+}
+
+fn handle_field_parts(fields: List<RecordField>) -> List<TypeExpr> {
+    match fields {
+        Nil() => Nil(),
+        Cons(f, rest) => Cons(f.ty, handle_field_parts(rest))
+    }
+}
+
+// ===========================================================================
+// "CONTAINS A HANDLE" (D2)
+// ===========================================================================
+
+/// Whether `ty` mentions a name in `holders`: by name, through a type
+/// application's base or arguments, a product or sum, or a wrapper. A function
+/// type mentions none — a closure is not a handle.
+pub fn handle_type_mentions(ty: TypeExpr, holders: List<String>) -> Bool {
+    match ty {
+        TyPath(p) => handle_string_in(ident_name(path_item_name(p)), holders),
+        TyApp(base, args, _) => handle_type_mentions(base, holders) || handle_types_mention(args, holders),
+        TyProduct(a, b, _) => handle_type_mentions(a, holders) || handle_type_mentions(b, holders),
+        TySum(a, b, _) => handle_type_mentions(a, holders) || handle_type_mentions(b, holders),
+        TyForall(_, inner, _) => handle_type_mentions(inner, holders),
+        TyPtr(inner, _) => handle_type_mentions(inner, holders),
+        TyRef(inner, _) => handle_type_mentions(inner, holders),
+        TyParen(inner, _) => handle_type_mentions(inner, holders),
+        _ => false
+    }
+}
+
+pub fn handle_types_mention(types: List<TypeExpr>, holders: List<String>) -> Bool {
+    match types {
+        Nil() => false,
+        Cons(t, rest) => handle_type_mentions(t, holders) || handle_types_mention(rest, holders)
+    }
+}
+
+pub fn handle_string_in(name: String, names: List<String>) -> Bool {
+    match names {
+        Nil() => false,
+        Cons(n, rest) => n == name || handle_string_in(name, rest)
+    }
+}
+
+/// The least set holding the listed names and every declared type whose parts
+/// mention a member. Grows by at least one name a round, so it ends.
+// Partial: the recursion is on the set's size, a measure, not a descent.
+#[partial]
+pub fn handle_close_holders(types: List<HandleTypeParts>, holders: List<String>) -> List<String> {
+    let grown = handle_close_round(types, holders);
+    if list_len(grown) == list_len(holders) {
+        holders
+    } else {
+        handle_close_holders(types, grown)
+    }
+}
+
+fn handle_close_round(types: List<HandleTypeParts>, holders: List<String>) -> List<String> {
+    match types {
+        Nil() => holders,
+        Cons(t, rest) => {
+            let joins = !handle_string_in(t.name, holders) && handle_types_mention(t.parts, holders);
+            handle_close_round(rest, if joins { Cons(t.name, holders) } else { holders })
+        }
+    }
+}
+
+fn handle_maybe_mentions(ty: MaybeTypeExpr, holders: List<String>) -> Bool {
+    match ty {
+        NoTypeExpr() => false,
+        SomeTypeExpr(t) => handle_type_mentions(t, holders)
+    }
+}
+
+fn handle_returning_names(
+    signatures: List<HandleSignature>,
+    holders: List<String>,
+    acc: List<String>
+) -> List<String> {
+    match signatures {
+        Nil() => acc,
+        Cons(s, rest) => handle_returning_names(rest, holders,
+            if handle_maybe_mentions(s.result, holders) { Cons(s.name, acc) } else { acc })
+    }
+}
+
+fn handle_mentioning_names(
+    signatures: List<HandleSignature>,
+    holders: List<String>,
+    acc: List<String>
+) -> List<String> {
+    match signatures {
+        Nil() => acc,
+        Cons(s, rest) => handle_mentioning_names(rest, holders,
+            if handle_signature_mentions(s, holders) { Cons(s.name, acc) } else { acc })
+    }
+}
+
+fn handle_signature_mentions(s: HandleSignature, holders: List<String>) -> Bool {
+    handle_types_mention(s.params, holders) || handle_maybe_mentions(s.result, holders)
+}
+
+/// `name`'s D3 kind under `decls`: in the table, and some declaration of it
+/// mentions a handle. A same-named function over `String` has none.
+pub fn handle_kind_of(decls: HandleDeclarations, name: String) -> HandleFunctionKind {
+    if handle_string_in(name, decls.mentioning) {
+        handle_kind_by_name(name)
+    } else {
+        HandleNoKind
+    }
+}

@@ -1,0 +1,10 @@
+// Golden test (ADR 13.10.26r AC 5): an assignment in a call argument's block
+// is E0104 (not joined): its effect could not reach later code. The self-host
+// raises E0740 at the same assignment.
+fn id(n: Nat) -> Nat { n }
+
+fn main() -> Nat {
+    let mut x = 1;
+    let y = id({ x = 2; 3 });
+    x + y
+}

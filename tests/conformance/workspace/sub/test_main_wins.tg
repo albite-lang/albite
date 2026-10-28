@@ -1,0 +1,15 @@
+// Runner-parity fixture (ADR 30.9.26i D10): the declared `lexer` wins over the
+// workspace root's same-named sibling, so `sub_only` resolves and returns 2.
+//
+// The self-host REFUSES it, by design, and the parity register expects that:
+// `tungsten1 test` chooses tree mode for any file that declares a `mod`, and
+// tree mode names the compiler's own `driver::ffi::test::test_begin`, which a
+// fixture workspace does not declare ("test_begin is not bound anywhere the
+// harness can reach", exit 2). The bootstrap passes it: 1 passed, exit 0.
+mod lexer;
+use lexer::{sub_only};
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+fn assert_eq_nat(a: Nat, b: Nat) -> Unit { tg_assert_eq_nat(a, b) }
+
+pub fn test_declared_lexer_wins() -> Unit { assert_eq_nat(sub_only(), 2) }

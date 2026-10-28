@@ -1,0 +1,22 @@
+// A one-case pattern stays accepted wherever the scrutinee's type is known
+// (ADR 13.10.26i AC 3): over its transparent payload, as a concrete
+// instance's nested payload, and a binder over a generic payload. Only a
+// constructor pattern over a type parameter itself is refused.
+type Wrap = MkWrap(Nat)
+type Opt<T> = Som(T) | Non
+
+fn bump(n: Nat) -> Nat {
+    match n { MkWrap(h) => h + 1 }
+}
+
+fn inner(o: Opt<Wrap>) -> Nat {
+    match o { Som(MkWrap(h)) => h, Non => 0 }
+}
+
+fn keep<T>(o: Opt<T>, d: T) -> T {
+    match o { Som(x) => x, Non => d }
+}
+
+fn main() -> Nat {
+    bump(41) + inner(Som(MkWrap(8))) + keep(Som(1), 0)
+}

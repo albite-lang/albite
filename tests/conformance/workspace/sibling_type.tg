@@ -1,0 +1,8 @@
+// A signature naming a type from an undeclared sibling (ADR 1.10.26f §2.4,
+// D4). The bootstrap reports an internal error (parked, D7); the self-host
+// must refuse.
+use boxes::{Box};
+
+fn unbox(_b: Box) -> Nat { 0 }
+
+fn main() -> Nat { 0 }

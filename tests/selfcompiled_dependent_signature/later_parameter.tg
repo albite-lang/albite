@@ -1,0 +1,6 @@
+// ADR 2.10.26f D2: scope is left to right, so a parameter's type cannot name
+// a later parameter.
+
+fn h(p: Eq<Nat, n, n>, n: Nat) -> Nat { 0 }
+
+fn main() -> Nat { 0 }

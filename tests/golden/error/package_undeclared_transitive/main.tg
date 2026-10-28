@@ -1,0 +1,5 @@
+// E0005: `lib_c` is `lib_a`'s dependency, not the application's, so the
+// application cannot name it (ADR 3.10.26m D5).
+use lib_a::a;
+use lib_c::base;
+fn main() -> Nat { a() + base() }

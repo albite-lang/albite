@@ -1,0 +1,174 @@
+// The self-hosted lexer's basic and edge-case checks (ADR 29.9.26k D2).
+//
+// These were Bool-returning checks in `lexer/tests/mod.tg`, summed by a
+// private `run_tests` that nothing called, so none of them had ever run. They
+// move here unchanged in what they check; each now asserts, so a wrong token
+// fails the run instead of lowering a count nobody read.
+//
+// Every assertion runs the real `tokenize`, so nothing is mocked.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_bool, assert_eq_nat};
+use driver::ffi::{List, Nil, Cons};
+use lexer::token::{
+    TokenKind, Token, token_kind,
+    TokIntLit, TokStringLit, TokCharLit, TokIdent, TokUnderscore,
+    TokFn, TokLet, TokIf, TokMod, TokReserved,
+    TokArrow, TokFatArrow, TokEqEq, TokBangEq,
+    TokLineComment, TokDocComment, TokEof
+};
+use lexer::scanner::{tokenize, lex_result_tokens, lex_result_errors};
+use lexer::error::{has_errors};
+use parser::cursor::token_kinds::{token_kind_eq};
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+fn count_tokens(toks: List<Token>) -> Nat {
+    match toks {
+        Nil() => 0,
+        Cons(_, rest) => 1 + count_tokens(rest)
+    }
+}
+
+fn first_token_kind(toks: List<Token>) -> TokenKind {
+    match toks {
+        Nil() => TokEof,
+        Cons(t, _) => token_kind(t)
+    }
+}
+
+/// The kind of the first token `src` lexes to.
+fn first_kind_of(src: String) -> TokenKind {
+    first_token_kind(lex_result_tokens(tokenize(src, "test.tg")))
+}
+
+fn first_kind_is(src: String, expected: TokenKind) -> Bool {
+    token_kind_eq(first_kind_of(src), expected)
+}
+
+// ---------------------------------------------------------------------------
+// Basic
+// ---------------------------------------------------------------------------
+
+// 29.9.26k AC3: the migrated lexer/tests/mod.tg checks, now run.
+pub fn test_empty_input_is_only_eof() -> Unit {
+    assert_eq_nat(count_tokens(lex_result_tokens(tokenize("", "test.tg"))), 1)
+}
+
+pub fn test_identifier() -> Unit {
+    let named_foo = match first_kind_of("foo") {
+        TokIdent(name) => name == "foo",
+        _ => false
+    };
+    assert_eq_bool(named_foo, true)
+}
+
+pub fn test_keywords() -> Unit {
+    assert_eq_bool(first_kind_is("fn", TokFn), true);
+    assert_eq_bool(first_kind_is("let", TokLet), true);
+    assert_eq_bool(first_kind_is("if", TokIf), true);
+    assert_eq_bool(first_kind_is("mod", TokMod), true)
+}
+
+pub fn test_number() -> Unit {
+    let forty_two = match first_kind_of("42") {
+        TokIntLit(n) => n == 42,
+        _ => false
+    };
+    assert_eq_bool(forty_two, true)
+}
+
+pub fn test_string() -> Unit {
+    let hello = match first_kind_of("\"hello\"") {
+        TokStringLit(s) => s == "hello",
+        _ => false
+    };
+    assert_eq_bool(hello, true)
+}
+
+pub fn test_operators() -> Unit {
+    assert_eq_bool(first_kind_is("->", TokArrow), true);
+    assert_eq_bool(first_kind_is("=>", TokFatArrow), true);
+    assert_eq_bool(first_kind_is("==", TokEqEq), true);
+    assert_eq_bool(first_kind_is("!=", TokBangEq), true)
+}
+
+pub fn test_line_comment() -> Unit {
+    // A `//` comment may lex as either comment kind; the original check
+    // accepted both, and so does this one.
+    let kind = first_kind_of("// comment\nx");
+    assert_eq_bool(token_kind_eq(kind, TokLineComment("")) || token_kind_eq(kind, TokDocComment("")), true)
+}
+
+pub fn test_function_signature_token_count() -> Unit {
+    assert_eq_nat(count_tokens(lex_result_tokens(tokenize("fn add(x: Nat) -> Nat", "test.tg"))), 10)
+}
+
+pub fn test_reserved_keyword() -> Unit {
+    let reserved_async = match first_kind_of("async") {
+        TokReserved(kw) => kw == "async",
+        _ => false
+    };
+    assert_eq_bool(reserved_async, true)
+}
+
+pub fn test_underscore() -> Unit {
+    assert_eq_bool(first_kind_is("_", TokUnderscore), true)
+}
+
+pub fn test_underscore_ident() -> Unit {
+    let named_underscore_foo = match first_kind_of("_foo") {
+        TokIdent(name) => name == "_foo",
+        _ => false
+    };
+    assert_eq_bool(named_underscore_foo, true)
+}
+
+pub fn test_self_lex() -> Unit {
+    let code = "fn span_new(start: Nat, end: Nat, file: String) -> Span { { start: start, end: end, file: file } }";
+    let result = tokenize(code, "self.tg");
+    assert_eq_bool(has_errors(lex_result_errors(result)), false);
+    assert_eq_bool(count_tokens(lex_result_tokens(result)) > 20, true)
+}
+
+// ---------------------------------------------------------------------------
+// Edge cases
+// ---------------------------------------------------------------------------
+
+pub fn test_zero() -> Unit {
+    let zero = match first_kind_of("0") {
+        TokIntLit(n) => n == 0,
+        _ => false
+    };
+    assert_eq_bool(zero, true)
+}
+
+pub fn test_leading_zeros() -> Unit {
+    let seven = match first_kind_of("007") {
+        TokIntLit(n) => n == 7,
+        _ => false
+    };
+    assert_eq_bool(seven, true)
+}
+
+pub fn test_string_with_escape() -> Unit {
+    let escaped = match first_kind_of("\"hello\\nworld\"") {
+        TokStringLit(s) => s == "hello\\nworld",
+        _ => false
+    };
+    assert_eq_bool(escaped, true)
+}
+
+pub fn test_char_backslash_n() -> Unit {
+    assert_eq_bool(first_kind_is("'\\n'", TokCharLit(0)), true)
+}
+
+pub fn test_doc_comment() -> Unit {
+    assert_eq_bool(first_kind_is("/// doc comment", TokDocComment("")), true)
+}

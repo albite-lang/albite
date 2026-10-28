@@ -1,0 +1,6 @@
+// A name defined twice in one file is E0004 at the second definition (ADR
+// 13.10.26f AC 3, AC 4). Before it, this file was accepted and the theorem,
+// written under `one() = 2`, was kernel-admitted against the later `one`.
+fn one() -> Nat { 2 }
+theorem one_is_one(): one() == 1 { refl }
+fn one() -> Nat { 1 }

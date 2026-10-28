@@ -1,0 +1,1 @@
+--no-codegen --emit-llvm --error-format json

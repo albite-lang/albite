@@ -1,0 +1,85 @@
+// Unit tests for ADR 16.10.26g AC3: the self-host's `check` line and the item
+// kinds its holes seam is fed.
+//
+// `check_verdict_line` is asserted against the bootstrap's own strings
+// (`bootstrap/src/driver/pipeline/verdict_tests.rs`), so the two compilers'
+// success lines cannot drift. `hole_item_kind` is asserted over items the
+// self-host's real `tokenize → parse_file` chain produced from a one-line
+// source. Neither half reaches a `tg_holes_*` extern: the counts themselves are
+// the core's, tested by `cargo test -p albite_core holes`.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_nat, assert_eq_string};
+use driver::ffi::{List, Nil, Cons};
+use lexer::scanner::{tokenize, lex_result_tokens};
+use parser::lib::{parse_file, file_parse_result_items};
+use parser::ast::nodes::{Item};
+use driver::pipeline::check::verdict::{check_verdict_line};
+use elab::items::holes::{hole_item_kind};
+
+/// The kind code of the first item a one-line source parses to, or 99 when it
+/// parses to nothing — a value no kind takes, so a parse failure cannot pass.
+fn verdict_first_item_kind(src: String) -> Nat {
+    let toks = lex_result_tokens(tokenize(src, "t.tg"));
+    let items: List<Item> = file_parse_result_items(parse_file(toks, "t.tg"));
+    match items {
+        Nil() => 99,
+        Cons(item, _) => hole_item_kind(item)
+    }
+}
+
+// 16.10.26g AC3: a hole-free program reads all OK.
+fn test_a_hole_free_program_reads_all_ok() -> Unit {
+    assert_eq_string(
+        check_verdict_line("a.tg", 3, 0, 0, 0),
+        "✓ a.tg: 3 definition(s), all OK"
+    )
+}
+
+// 16.10.26g AC3: holes alone — an unused axiom keeps the sorry clause alone.
+fn test_holes_alone_print_the_sorry_clause() -> Unit {
+    assert_eq_string(
+        check_verdict_line("ax.tg", 1, 1, 0, 0),
+        "⚠ ax.tg: 1 definition(s), contains sorry (1 authored, 0 synthesised)"
+    );
+    assert_eq_string(
+        check_verdict_line("a.tg", 6, 2, 4, 0),
+        "⚠ a.tg: 6 definition(s), contains sorry (2 authored, 4 synthesised)"
+    )
+}
+
+// 16.10.26g AC3: the resting clause follows the sorry clause.
+fn test_resting_theorems_follow_the_sorry_clause() -> Unit {
+    assert_eq_string(
+        check_verdict_line("ax.tg", 4, 1, 0, 3),
+        "⚠ ax.tg: 4 definition(s), contains sorry (1 authored, 0 synthesised), 3 theorem(s) rest on an axiom or sorry"
+    )
+}
+
+// 16.10.26g AC3: the resting clause alone is enough to leave all OK.
+fn test_resting_theorems_alone_leave_all_ok() -> Unit {
+    assert_eq_string(
+        check_verdict_line("k.tg", 2, 0, 0, 2),
+        "⚠ k.tg: 2 definition(s), 2 theorem(s) rest on an axiom or sorry"
+    )
+}
+
+// 16.10.26g AC3: a hole nobody authored is reported too.
+fn test_a_single_unauthored_hole_is_reported() -> Unit {
+    assert_eq_string(
+        check_verdict_line("s.tg", 1, 0, 1, 0),
+        "⚠ s.tg: 1 definition(s), contains sorry (0 authored, 1 synthesised)"
+    )
+}
+
+// 16.10.26g AC3: theorems and lemmas are kind 1, axioms 2, a `fn` 0.
+fn test_hole_item_kind_maps_each_parsed_item() -> Unit {
+    assert_eq_nat(verdict_first_item_kind("theorem t(): 1 == 1 { refl }"), 1);
+    assert_eq_nat(verdict_first_item_kind("lemma l(): 1 == 1 { refl }"), 1);
+    assert_eq_nat(verdict_first_item_kind("axiom ax(): Void"), 2);
+    assert_eq_nat(verdict_first_item_kind("fn f() -> Nat { 1 }"), 0)
+}

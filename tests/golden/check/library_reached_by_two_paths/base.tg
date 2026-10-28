@@ -1,0 +1,4 @@
+// The shared library of a diamond (ADR 9.10.26p): `left` and `right` both
+// declare it, so the module-tree walk elaborates it once per path.
+
+pub theorem base_refl(n: Nat) -> Eq<Nat, n + 0, n> { refl }

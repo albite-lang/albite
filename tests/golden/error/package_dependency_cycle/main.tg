@@ -1,0 +1,3 @@
+// E0124: `lib_a → lib_b → lib_a` is a dependency cycle (ADR 3.10.26m D3).
+use lib_a::f;
+fn main() -> Nat { f() }

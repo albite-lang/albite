@@ -1,0 +1,90 @@
+// Negative control for test_tactic_cases.tg (ADR 3.10.26f D3, AC 4).
+//
+// Each theorem below is one wrong `cases` proof, and each must be refused
+// for its own reason. `check-mustfail-fixtures` (make/quality/tg-tests.mk)
+// requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_tactic_cases.tg --require-tests
+//     -> aborting due to 10 errors
+//
+// The count alone cannot say which error fired, so each case's code is also
+// pinned by a Rust test in
+// bootstrap/src/elaborate/tactics/cases/tests/elaboration.rs (the 2.9.26c
+// lesson). The cases and their codes:
+//
+//    1. cases_mustfail_compound     a compound scrutinee              E0082
+//    2. cases_mustfail_on_a_nat     a Nat scrutinee: use `induction`  E0082
+//    3. cases_mustfail_on_a_bool    a Bool scrutinee                  E0082
+//    4. cases_mustfail_on_a_record  a record scrutinee                E0082
+//    5. cases_mustfail_missing      no arm for `MfSome`               E0082
+//    6. cases_mustfail_duplicate    `MfSome` has two arms             E0082
+//    7. cases_mustfail_unknown      no constructor `MfMany`           E0082
+//    8. cases_mustfail_binders      `MfSome` binds two names          E0082
+//    9. cases_mustfail_open_arm     the `MfSome` arm left open        E0083
+//   10. cases_mustfail_false        `Eq<_, o, MfNone>`, whose
+//                                   `MfSome` arm `refl` refuses       E0071
+//
+// Case 10 states no global call, unlike D3's `Eq<Opt, id_opt(o), None>`: a
+// `refl` that needs δ is deferred (28.9.26d) and discharged only when the
+// rest of the module elaborates, so in this file of refusals it would never
+// fire. The δ-free statement is refused on the spot, by the same arm.
+//
+// A global scrutinee is left out: a theorem body cannot name a global value
+// of ADT type without a definition only this file would need. The Rust test
+// `a_global_scrutinee_is_refused` covers it.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+pub type MfOpt = MfNone | MfSome(Nat)
+pub type MfPt = { mx: Nat, my: Nat }
+
+pub fn mf_id_opt(o: MfOpt) -> MfOpt {
+    match o { MfNone => MfNone, MfSome(x) => MfSome(x) }
+}
+
+pub theorem cases_mustfail_compound(o: MfOpt) -> Eq<MfOpt, o, o> by {
+    cases mf_id_opt(o) { MfNone => refl, MfSome(x) => refl }
+}
+
+pub theorem cases_mustfail_on_a_nat(n: Nat) -> Eq<Nat, n, n> by {
+    cases n { MfNone => refl }
+}
+
+pub theorem cases_mustfail_on_a_bool(b: Bool) -> Eq<Bool, b, b> by {
+    cases b { MfNone => refl }
+}
+
+pub theorem cases_mustfail_on_a_record(p: MfPt) -> Eq<MfPt, p, p> by {
+    cases p { MfNone => refl }
+}
+
+pub theorem cases_mustfail_missing(o: MfOpt) -> Eq<MfOpt, o, o> by {
+    cases o { MfNone => refl }
+}
+
+pub theorem cases_mustfail_duplicate(o: MfOpt) -> Eq<MfOpt, o, o> by {
+    cases o { MfNone => refl, MfSome(x) => refl, MfSome(y) => refl }
+}
+
+pub theorem cases_mustfail_unknown(o: MfOpt) -> Eq<MfOpt, o, o> by {
+    cases o { MfNone => refl, MfMany(x) => refl }
+}
+
+pub theorem cases_mustfail_binders(o: MfOpt) -> Eq<MfOpt, o, o> by {
+    cases o { MfNone => refl, MfSome(x, y) => refl }
+}
+
+pub theorem cases_mustfail_open_arm(o: MfOpt) -> Eq<MfOpt, o, o> by {
+    cases o { MfNone => refl, MfSome(x) => {} }
+}
+
+pub theorem cases_mustfail_false(o: MfOpt) -> Eq<MfOpt, o, MfNone> by {
+    cases o { MfNone => refl, MfSome(x) => refl }
+}
+
+fn test_the_wrong_proofs_are_cited() -> Unit {
+    let _missing: Eq<MfOpt, MfNone, MfNone> = cases_mustfail_missing(MfNone);
+    let _false: Eq<MfOpt, MfSome(1), MfNone> = cases_mustfail_false(MfSome(1));
+    ()
+}

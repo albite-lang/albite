@@ -1,0 +1,50 @@
+// src/compiler/elab/items/handles/regions.tg
+// E0731's handle half (ADR 9.10.26o D4), the self-host's mirror of
+// `bootstrap/src/elaborate/handles/regions.rs`: inside a `region { ... }`
+// body the handle walk refuses an outer handle variable, a function some
+// declaration of which mentions a handle, and a handle constructor.
+
+use parser::ast::{Path, ident_name, path_item_name, path_span, path_is_simple};
+use driver::ffi::{List, Nil, Cons};
+use elab::items::handles::declarations::{HandleDeclarations, handle_string_in};
+use elab::items::handles::state::{HandleWalk, HandleBinding, HandleFinding, handle_id};
+
+/// `w` with its region floor replaced: 0 outside every region.
+pub fn handle_with_region_floor(w: HandleWalk, region_floor: Nat) -> HandleWalk {
+    let next: HandleWalk = {
+        scope: w.scope, consumed: w.consumed, live: w.live,
+        next_id: w.next_id, floor: w.floor, region_floor: region_floor, findings: w.findings
+    };
+    next
+}
+
+/// Inside a region, refuse a path naming an outer handle variable, a
+/// function whose declared type mentions a handle, or a handle constructor.
+pub fn handle_region_reference(w: HandleWalk, d: HandleDeclarations, p: Path) -> HandleWalk {
+    let name = ident_name(path_item_name(p));
+    let reached = if w.region_floor == 0 {
+        false
+    } else if path_is_simple(p) && handle_is_bound(w.scope, name) {
+        let id = handle_id(w.scope, name);
+        id != 0 && id < w.region_floor
+    } else {
+        handle_string_in(name, d.mentioning) || name == "MkBytes" || name == "MkStringBuilder"
+    };
+    if reached { handle_region_report(w, name, p) } else { w }
+}
+
+fn handle_is_bound(scope: List<HandleBinding>, name: String) -> Bool {
+    match scope {
+        Nil() => false,
+        Cons(b, rest) => b.name == name || handle_is_bound(rest, name)
+    }
+}
+
+fn handle_region_report(w: HandleWalk, name: String, p: Path) -> HandleWalk {
+    let finding: HandleFinding = { captured: false, in_region: true, handle: name, span: path_span(p) };
+    let reported: HandleWalk = {
+        scope: w.scope, consumed: w.consumed, live: w.live, next_id: w.next_id,
+        floor: w.floor, region_floor: w.region_floor, findings: Cons(finding, w.findings)
+    };
+    reported
+}

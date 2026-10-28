@@ -1,0 +1,5 @@
+// widget.tg's companion: `double` is private to widget, called unqualified
+// with no `use`; `assert_eq_nat` is the import widget.tg makes.
+pub fn test_double_doubles() -> Unit { assert_eq_nat(double(3), 6) }
+
+pub fn test_scaled_adds_one() -> Unit { assert_eq_nat(scaled(3), 7) }

@@ -1,0 +1,9 @@
+[E0122] Error: dependency `lib_c` conflicts: two packages are named `lib_c`: `tests/golden/error/package_duplicate_name/packages/lib_c` and `tests/golden/error/package_duplicate_name/packages/vendor/lib_c`
+   ╭─[tests/golden/error/package_duplicate_name/packages/lib_b/albite.toml:5:1]
+   │
+ 5 │ lib_c = { path = "../vendor/lib_c" }
+   │ ──┬──  
+   │   ╰──── 
+───╯
+
+error: aborting due to 1 error

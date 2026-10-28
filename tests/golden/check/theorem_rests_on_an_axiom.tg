@@ -1,0 +1,8 @@
+// ADR 13.10.26g: a theorem that cites an axiom carries no hole of its own, so
+// `check` counts it separately — one hop (`bad2`), two hops (`bad3`) and a
+// tactic proof (`bad4`) all rest on `ax`.
+
+axiom ax(): Void
+theorem bad2(): Void { ax() }
+theorem bad3(): 0 == 1 { absurd(bad2()) }
+lemma bad4(): 2 == 3 by { exact absurd(ax()) }

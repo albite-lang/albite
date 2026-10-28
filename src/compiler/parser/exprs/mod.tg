@@ -1,0 +1,26 @@
+use driver::util::{Result, Ok, Err};
+// src/compiler/parser/exprs/mod.tg
+// Expression parsing module for the Tungsten self-hosted compiler.
+//
+// Refactored into submodules:
+// - result.tg: Parse result types
+// - pratt.tg: Core Pratt parsing (precedence climbing)
+// - postfix.tg: Postfix operators (calls, fields, type app)
+// - atoms.tg: Atomic expressions (literals, paths, parens, tuples)
+// - records.tg: Record literal parsing
+// - compound/: Block expressions, control flow, and lambdas
+// - proof.tg: Proof constructs (have, show, assume)
+
+pub mod result;
+pub mod pratt;
+pub mod postfix;
+pub mod atoms;
+pub mod compound;
+pub mod records;
+pub mod proof;
+
+// Re-export all public types and functions
+pub use parser::exprs::result::{MaybeBinOp, NoBinOp, SomeBinOp, cursor_peek_span};
+
+pub use parser::exprs::pratt::{parse_expr, parse_expr_prec};
+pub use parser::exprs::compound::blocks::{parse_block, parse_block_or_record};

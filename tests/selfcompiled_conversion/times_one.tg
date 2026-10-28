@@ -1,0 +1,5 @@
+// ADR 30.9.26g twin: `k * 1` reduces to `0 + k`, the left-zero case that
+// needs induction (30.9.26e). Both compilers must refuse it.
+fn times_one(k: Nat) -> Nat { let _p: Eq<Nat, k * 1, k> = refl; 0 }
+
+fn main() -> Nat { 0 }

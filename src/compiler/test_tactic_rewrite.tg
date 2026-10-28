@@ -1,0 +1,99 @@
+// `rewrite` re-proves the library's arithmetic in tactic mode (ADR 2.10.26e
+// D8, AC 5).
+//
+// `rw_add_mul` re-proves `add_mul` whole, by four applied citations.
+// `add_comm` needs induction, so its base and step cases are `rewrite`
+// proofs and `rw_add_comm` assembles them with S3's `induction`. Two small cases pin D3's semantics: every occurrence of the
+// chosen side moves (`rw_every_occurrence`), and a bare lemma fixes its
+// arguments at the outermost-leftmost match (`rw_first_match`).
+//
+// Every proof below also goes through the kernel's `check_proof` at the
+// admission boundary — a refusal is E0081 and would fail this file.
+// Each theorem is cited by a typed `let`, at a literal and at swapped
+// arguments, so the suite also pins that a rewrite theorem is an ordinary
+// global.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_tactic_rewrite.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+// Cited by qualified path, as test_nat_lemmas.tg does.
+mod nat_arith;
+
+// ── `add_comm`, its two cases by `rewrite` ──────────────────────────────────
+
+// A bare lemma, matched at `0 + ?n`; then `n + 0` reduces to `n`.
+pub theorem rw_add_comm_base(n: Nat) -> Eq<Nat, n + 0, 0 + n> by {
+    rewrite [nat_arith::add_zero_left];
+    refl
+}
+
+// An applied citation, then a reversed hypothesis: `ih`'s right side,
+// `j + n`, is what occurs.
+pub theorem rw_add_comm_step(n: Nat, j: Nat, ih: Eq<Nat, n + j, j + n>)
+    -> Eq<Nat, n + (j + 1), (j + 1) + n> by {
+    rewrite [nat_arith::add_succ_left(j, n), <- ih];
+    refl
+}
+
+// The two cases, assembled by `induction` (ADR 3.10.26e D7).
+pub theorem rw_add_comm(n: Nat, m: Nat) -> Eq<Nat, n + m, m + n> by {
+    induction m;
+    exact rw_add_comm_base(n);
+    intro j;
+    intro ih;
+    exact rw_add_comm_step(n, j, ih)
+}
+
+// ── `add_mul`, whole ────────────────────────────────────────────────────────
+
+pub theorem rw_add_mul(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n + m) * k, (n * k) + (m * k)> by {
+    rewrite [nat_arith::mul_comm(n + m, k), nat_arith::mul_add(k, n, m),
+             nat_arith::mul_comm(k, n), nat_arith::mul_comm(k, m)];
+    refl
+}
+
+// ── D3's semantics ──────────────────────────────────────────────────────────
+
+// Holds only if BOTH `a`s move: rewriting one would leave `b + a = b + b`.
+pub theorem rw_every_occurrence(a: Nat, b: Nat, h: Eq<Nat, a, b>) -> Eq<Nat, a + a, b + b> by {
+    rewrite [h];
+    refl
+}
+
+// Holds only if the outermost-leftmost sum, `(a + b) + c`, is the one matched.
+pub theorem rw_first_match(a: Nat, b: Nat, c: Nat) -> Eq<Nat, (a + b) + c, c + (a + b)> by {
+    rewrite [nat_arith::add_comm];
+    refl
+}
+
+// ── Each one cited ──────────────────────────────────────────────────────────
+
+fn test_add_comm_by_rewrite_is_cited() -> Unit {
+    let _base: Eq<Nat, 3 + 0, 0 + 3> = rw_add_comm_base(3);
+    let _comm: Eq<Nat, 2 + 5, 5 + 2> = rw_add_comm(2, 5);
+    let _swapped: Eq<Nat, 5 + 2, 2 + 5> = rw_add_comm(5, 2);
+    ()
+}
+
+fn rw_add_comm_step_at(j: Nat, ih: Eq<Nat, 4 + j, j + 4>) -> Unit {
+    let _p: Eq<Nat, 4 + (j + 1), (j + 1) + 4> = rw_add_comm_step(4, j, ih);
+    ()
+}
+
+fn test_the_step_is_cited() -> Unit {
+    rw_add_comm_step_at(0, refl)
+}
+
+fn test_add_mul_by_rewrite_is_cited() -> Unit {
+    let _p: Eq<Nat, (2 + 3) * 4, (2 * 4) + (3 * 4)> = rw_add_mul(2, 3, 4);
+    let _q: Eq<Nat, (3 + 2) * 4, (3 * 4) + (2 * 4)> = rw_add_mul(3, 2, 4);
+    ()
+}
+
+fn test_the_semantics_cases_are_cited() -> Unit {
+    let _p: Eq<Nat, 2 + 2, 2 + 2> = rw_every_occurrence(2, 2, refl);
+    let _q: Eq<Nat, (1 + 2) + 3, 3 + (1 + 2)> = rw_first_match(1, 2, 3);
+    let _r: Eq<Nat, (2 + 1) + 3, 3 + (2 + 1)> = rw_first_match(2, 1, 3);
+    ()
+}

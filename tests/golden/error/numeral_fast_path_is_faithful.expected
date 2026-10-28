@@ -1,0 +1,9 @@
+[E0071] Error: `refl` requires both sides to be equal, but found `(((succ (succ zero)) + (succ zero)) - (succ zero))` and `(succ (succ (succ (succ zero))))`
+   ╭─[tests/golden/error/numeral_fast_path_is_faithful.tg:8:45]
+   │
+ 8 │ fn wrong_sub() -> Eq<Nat, (2 + 1) - 1, 4> { refl }
+   │                                             ──┬─  
+   │                                               ╰─── 
+───╯
+
+error: aborting due to 1 error

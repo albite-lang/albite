@@ -1,0 +1,9 @@
+// ADR 4.10.26j AC7: the compile path agrees with the evaluator. `x` and `y`
+// each define `pub fn helper`; their scoped Core names are distinct C
+// identifiers, so each qualified call links to its own definition: 112.
+mod x;
+mod y;
+
+fn main() -> Nat {
+    x::helper(1) + y::helper(1)
+}

@@ -1,0 +1,4 @@
+// ADR 30.9.26h: one elaboration error.
+fn main() -> Nat {
+    true
+}

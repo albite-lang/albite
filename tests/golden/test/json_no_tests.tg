@@ -1,0 +1,6 @@
+// `albite test --format json` over a file with no tests (ADR 29.9.26i
+// AC 5): one zero `test_summary`, exit 0.
+
+fn helper() -> Nat {
+    42
+}

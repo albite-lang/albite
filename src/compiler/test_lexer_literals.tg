@@ -1,0 +1,114 @@
+// Radix-prefixed numbers and lexer error conditions (ADR 29.9.26k D2).
+//
+// These were Bool-returning checks in `lexer/tests/numbers.tg` and
+// `lexer/tests/errors.tg`, summed by `run_number_tests`/`run_error_tests`
+// under a `run_tests` nothing called, so none had ever run. Each now asserts.
+//
+// Every assertion runs the real `tokenize`, so nothing is mocked.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_bool, assert_eq_string};
+use driver::ffi::{List, Nil, Cons};
+use lexer::token::{TokenKind, Token, token_kind, TokIntLit, TokEof, TokBlockComment};
+use lexer::scanner::{tokenize, lex_result_tokens, lex_result_errors};
+use lexer::error::{has_errors};
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+fn first_token_kind(toks: List<Token>) -> TokenKind {
+    match toks {
+        Nil() => TokEof,
+        Cons(t, _) => token_kind(t)
+    }
+}
+
+/// `src`'s first token is an integer literal of value `expected`.
+fn lexes_to_int(src: String, expected: Nat) -> Bool {
+    match first_token_kind(lex_result_tokens(tokenize(src, "test.tg"))) {
+        TokIntLit(n) => n == expected,
+        _ => false
+    }
+}
+
+/// The text of `src`'s first token when it is a block comment, else `"<none>"`.
+fn block_comment_text(src: String) -> String {
+    match first_token_kind(lex_result_tokens(tokenize(src, "test.tg"))) {
+        TokBlockComment(text) => text,
+        _ => "<none>"
+    }
+}
+
+fn lexing_reports_an_error(src: String) -> Bool {
+    has_errors(lex_result_errors(tokenize(src, "test.tg")))
+}
+
+// ---------------------------------------------------------------------------
+// Numbers
+// ---------------------------------------------------------------------------
+
+// 29.9.26k AC3: the migrated numbers.tg and errors.tg checks, now run.
+pub fn test_hex_numbers() -> Unit {
+    assert_eq_bool(lexes_to_int("0xFF", 255), true);
+    assert_eq_bool(lexes_to_int("0X2A", 42), true);
+    assert_eq_bool(lexes_to_int("0xDeadBeef", 3735928559), true);
+    assert_eq_bool(lexes_to_int("0xFF_FF", 65535), true)
+}
+
+pub fn test_octal_numbers() -> Unit {
+    assert_eq_bool(lexes_to_int("0o77", 63), true);
+    assert_eq_bool(lexes_to_int("0O52", 42), true)
+}
+
+pub fn test_binary_numbers() -> Unit {
+    assert_eq_bool(lexes_to_int("0b1010", 10), true);
+    assert_eq_bool(lexes_to_int("0B11111111", 255), true);
+    assert_eq_bool(lexes_to_int("0b1111_0000", 240), true)
+}
+
+pub fn test_radix_prefix_without_digits_is_an_error() -> Unit {
+    assert_eq_bool(lexing_reports_an_error("0x"), true);
+    assert_eq_bool(lexing_reports_an_error("0o"), true);
+    assert_eq_bool(lexing_reports_an_error("0b"), true)
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+pub fn test_unterminated_literals_are_errors() -> Unit {
+    assert_eq_bool(lexing_reports_an_error("\"hello"), true);
+    assert_eq_bool(lexing_reports_an_error("'x"), true)
+}
+
+pub fn test_nested_block_comments() -> Unit {
+    assert_eq_bool(lexing_reports_an_error("/* outer /* inner */ still outer */"), false);
+    assert_eq_bool(lexing_reports_an_error("/* outer /* inner */"), true)
+}
+
+// 16.10.26h D8: a closed comment's text drops `*/`; an unterminated one runs
+// to end of input, so a three-byte last character is never cut — the cut
+// would now trap rather than report the unterminated comment.
+pub fn test_unterminated_block_comment_text_runs_to_end_of_input() -> Unit {
+    assert_eq_string(block_comment_text("/* x */"), " x ");
+    assert_eq_string(block_comment_text("/* x→"), " x→");
+    assert_eq_string(block_comment_text("/* xé"), " xé");
+    assert_eq_bool(lexing_reports_an_error("/* x→"), true)
+}
+
+pub fn test_reserved_keywords_are_errors() -> Unit {
+    assert_eq_bool(lexing_reports_an_error("async"), true);
+    assert_eq_bool(lexing_reports_an_error("await"), true)
+}
+
+pub fn test_pub_is_a_keyword_not_an_error() -> Unit {
+    // Corrected (ADR 29.9.26k D2): the migrated check expected `pub` to be a
+    // reserved-word error, which predates `pub` becoming a keyword —
+    // `classify_keyword` maps it to `TokPub`.
+    assert_eq_bool(lexing_reports_an_error("pub"), false)
+}

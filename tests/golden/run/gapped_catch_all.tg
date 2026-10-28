@@ -1,0 +1,77 @@
+// ADR 13.10.26k AC2/AC3: a catch-all that stands in for a constructor BEFORE
+// a named one must not slide the later arms a slot left. Each shape returns a
+// value weighted per constructor, so a shifted arm gives a different digit;
+// the sum is 101077 + 7100 + 204 + 71007 + 123 + 7 + 127 = 179645, plus
+// gap_tail's 7007302007101007 (three digits per constructor).
+
+type GapVar = Ga(Nat) | Gb(Nat) | Gc(Nat)
+
+// A variable catch-all binds the whole value in every slot it fills.
+fn gap_var(q: GapVar) -> Nat {
+    match q { Gb(x) => 100 + x, other => 7 }
+}
+
+type GapTwo = Ta(Nat) | Tb(Nat)
+
+// Two constructors: the binary path's `inl` slot holds the catch-all.
+fn gap_two(q: GapTwo) -> Nat {
+    match q { Tb(x) => 100, _ => 7 }
+}
+
+type GapFour = Fa | Fb | Fc | Fd
+
+fn gap_four(q: GapFour) -> Nat {
+    match q { Fb() => 2, Fd() => 4, _ => 0 }
+}
+
+type LastPayload = Ls(Nat) | Ln
+type GapLastSum = La(Nat) | Lb(Nat) | Lc(LastPayload)
+
+// The last constructor's payload is itself a sum: the count is three, not four.
+fn gap_last_sum(q: GapLastSum) -> Nat {
+    match q { Lb(x) => 100, _ => 7 }
+}
+
+type Full = Ua(Nat) | Ub(Nat) | Uc(Nat)
+
+// A catch-all after full coverage is dropped, not given a fourth slot.
+fn full_plus_catch_all(q: Full) -> Nat {
+    match q { Ua(x) => 1, Ub(y) => 2, Uc(z) => 3, _ => 7 }
+}
+
+type GapTail = Ka(Nat) | Kb(Nat) | Kc(Nat) | Kd(Nat) | Ke(Nat) | Kf(Nat)
+
+// Two constructors after the last named arm (D3's cap): one slot, which the
+// lowering hands the rest of the sum, stands for both, and a variable
+// catch-all still binds the whole value there.
+fn gap_tail(q: GapTail) -> Nat {
+    match q { Kb(x) => 100 + x, Kd(y) => 300 + y, other => 7 }
+}
+
+type Duo = | Pair(Nat, Nat)
+
+// One constructor over a product: padding leaves the lone product arm.
+fn single_pair(v: Duo) -> Nat {
+    match v { Pair(a, b) => a + b, _ => 2 }
+}
+
+type NoGap = Na(Nat) | Nb(Nat) | Nc(Nat)
+
+// Control: no gap before a named arm, right before this ADR too.
+fn no_gap(q: NoGap) -> Nat {
+    match q { Na(x) => 1, Nb(y) => 2, _ => 7 }
+}
+
+fn main() -> Nat {
+    let v_gap_var = gap_var(Gb(1)) * 1000 + gap_var(Ga(2)) * 10 + gap_var(Gc(3));
+    let v_gap_two = gap_two(Ta(1)) * 1000 + gap_two(Tb(1));
+    let v_gap_four = gap_four(Fa()) * 1000 + gap_four(Fb()) * 100 + gap_four(Fc()) * 10 + gap_four(Fd());
+    let v_last_sum = gap_last_sum(La(0)) * 10000 + gap_last_sum(Lb(1)) * 10 + gap_last_sum(Lc(Ln()));
+    let v_full = full_plus_catch_all(Ua(0)) * 100 + full_plus_catch_all(Ub(0)) * 10 + full_plus_catch_all(Uc(0));
+    let v_single = single_pair(Pair(3, 4));
+    let v_no_gap = no_gap(Na(0)) * 100 + no_gap(Nb(0)) * 10 + no_gap(Nc(0));
+    let v_tail = gap_tail(Ka(0)) + gap_tail(Kb(1)) * 1000 + gap_tail(Kc(0)) * 1000000
+        + gap_tail(Kd(2)) * 1000000000 + gap_tail(Ke(0)) * 1000000000000
+        + gap_tail(Kf(0)) * 1000000000000000;
+    v_gap_var + v_gap_two + v_gap_four + v_last_sum + v_full + v_single + v_no_gap + v_tail
+}

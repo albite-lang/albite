@@ -1,0 +1,9 @@
+[E0124] Error: dependency cycle: app → lib_a → lib_b → lib_a
+   ╭─[tests/golden/error/package_dependency_cycle/packages/lib_b/albite.toml:5:1]
+   │
+ 5 │ lib_a = { path = "../lib_a" }
+   │ ──┬──  
+   │   ╰──── 
+───╯
+
+error: aborting due to 1 error

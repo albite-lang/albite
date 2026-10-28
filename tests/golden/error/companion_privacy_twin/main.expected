@@ -1,0 +1,9 @@
+[E0016] Error: function `double` is private (defined in `widget`) and cannot be accessed from `widget_probe`
+   ╭─[tests/golden/error/companion_privacy_twin/widget_probe.tg:2:25]
+   │
+ 2 │ pub fn probe() -> Nat { widget::double(3) }
+   │                         ───────┬──────  
+   │                                ╰──────── 
+───╯
+
+error: aborting due to 1 error

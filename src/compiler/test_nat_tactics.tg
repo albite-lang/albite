@@ -1,0 +1,89 @@
+// The library re-proved in tactic mode (ADR 2.10.26c D10, AC 5).
+//
+// Each `_by_tactic` theorem restates a lemma from the flat sibling
+// `nat_arith.tg` and proves it with a `by` block: the four `refl` lemmas by
+// `refl`, the citation `mul_one_right` by `exact`, `add_zero_left` by `apply`,
+// an implication by `intro`, and a premise left by `apply` closed by `exact`.
+// Every proof below also goes through the kernel's `check_proof` at the
+// admission boundary — a refusal is E0081 and would fail this file.
+//
+// Each theorem is cited by a typed `let` in a `test_*` function, so the suite
+// also pins that a tactic theorem is an ordinary global.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_nat_tactics.tg`, checked by
+// `make check-mustfail-fixtures`; the kernel's own refusal cannot be a
+// must-fail row (it is raised only when everything else elaborated), so it is
+// the golden `tests/golden/error/tactic_kernel_refuses_a_delta_proof`.
+
+// Cited by qualified path, as test_nat_lemmas.tg does.
+mod nat_arith;
+
+// ── The four `refl` lemmas ──────────────────────────────────────────────────
+
+pub theorem add_zero_right_by_tactic(n: Nat) -> Eq<Nat, n + 0, n> by { refl }
+
+pub theorem add_succ_right_by_tactic(n: Nat, m: Nat) -> Eq<Nat, n + (m + 1), (n + m) + 1> by { refl }
+
+pub theorem mul_zero_right_by_tactic(n: Nat) -> Eq<Nat, n * 0, 0> by { refl }
+
+pub theorem mul_succ_right_by_tactic(n: Nat, m: Nat) -> Eq<Nat, n * (m + 1), n * m + n> by { refl }
+
+// ── The citation, by `exact` ────────────────────────────────────────────────
+
+pub theorem mul_one_right_by_tactic(n: Nat) -> Eq<Nat, n * 1, n> by {
+    exact nat_arith::add_zero_left(n)
+}
+
+// ── `apply`: the conclusion matched, the variable inferred ──────────────────
+
+pub theorem add_zero_left_by_tactic(n: Nat) -> Eq<Nat, 0 + n, n> by { apply nat_arith::add_zero_left }
+
+// ── `intro`: an implication ─────────────────────────────────────────────────
+
+pub theorem add_zero_implication_by_tactic(n: Nat) -> Eq<Nat, n, 0> -> Eq<Nat, n + 0, 0> by {
+    intro h;
+    exact h
+}
+
+// ── `apply` leaving a premise, closed by `exact` ────────────────────────────
+
+// A term-mode helper whose premise `apply` turns into a goal.
+pub theorem tactics_premised_add_zero(n: Nat, h: Eq<Nat, n + 0, n>) -> Eq<Nat, 0 + n, n> {
+    nat_arith::add_zero_left(n)
+}
+
+pub theorem add_zero_left_through_a_premise_by_tactic(k: Nat) -> Eq<Nat, 0 + k, k> by {
+    apply tactics_premised_add_zero;
+    exact nat_arith::add_zero_right(k)
+}
+
+// ── Each one cited ──────────────────────────────────────────────────────────
+
+fn test_the_refl_lemmas_are_cited() -> Unit {
+    let _a: Eq<Nat, 4 + 0, 4> = add_zero_right_by_tactic(4);
+    let _b: Eq<Nat, 4 + (5 + 1), (4 + 5) + 1> = add_succ_right_by_tactic(4, 5);
+    let _c: Eq<Nat, 4 * 0, 0> = mul_zero_right_by_tactic(4);
+    let _d: Eq<Nat, 4 * (5 + 1), 4 * 5 + 4> = mul_succ_right_by_tactic(4, 5);
+    ()
+}
+
+fn test_the_exact_citation_is_cited() -> Unit {
+    let _p: Eq<Nat, 7 * 1, 7> = mul_one_right_by_tactic(7);
+    ()
+}
+
+fn test_the_applied_lemma_is_cited() -> Unit {
+    let _p: Eq<Nat, 0 + 7, 7> = add_zero_left_by_tactic(7);
+    let _q: Eq<Nat, 0 + 8, 8> = add_zero_left_through_a_premise_by_tactic(8);
+    ()
+}
+
+fn tactics_implication_at(n: Nat, h: Eq<Nat, n, 0>) -> Unit {
+    let _p: Eq<Nat, n + 0, 0> = add_zero_implication_by_tactic(n, h);
+    ()
+}
+
+fn test_the_implication_is_cited() -> Unit {
+    tactics_implication_at(0, refl)
+}

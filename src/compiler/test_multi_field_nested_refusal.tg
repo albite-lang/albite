@@ -1,0 +1,183 @@
+// Unit tests for the self-host's multi-field nested-pattern refusal (ADR
+// 16.10.26c D1–D3). Every subject is a pure function over a hand-built `Env`,
+// as `test_flat_match_coverage.tg` builds `coverage_env`, and hand-built match
+// arms; nothing here parses or elaborates a file. The end-to-end refusal is the
+// two `multi_field_nested_*` error goldens, compared by the records gate.
+//
+// Spans encode which arm a refusal names: arm `k`'s pattern starts at `k`, and
+// the arm itself at `k + 50`. A nested refusal spans the pattern, a guard's the
+// arm, so `E0308@2` is the nested group at arm 2 and `E0308@52` a guard there.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_string, assert_eq_bool};
+use driver::util::nat_to_string;
+use parser::option::{Option, None, Some};
+use parser::ast::common::{VisPublic, ident_new, MkPath};
+use parser::ast::{Pattern, PatConstructor, PatVar, PatWildcard, MatchArm, ExprIntLit, Expr, NoExpr, SomeExpr, MaybeExpr};
+use lexer::span::{Span, span_new};
+use elab::ffi::INVALID_HANDLE;
+use elab::env::{env_new, Env};
+use elab::env::ops::env_register_constructor;
+use elab::env::defs::{ConstructorInfo, CtorIdentity, constructor_info_new};
+use elab::exprs::matches::patterns::resolve::{MaybeElabExprError, NoElabExprError, SomeElabExprError};
+use elab::exprs::matches::arm_coverage::{
+    arm_offends, multi_field_nested_arm, refuse_slot_order_arms, multi_field_nested_error
+};
+
+// --- Builders ---------------------------------------------------------------
+
+fn nested_span(start: Nat) -> Span { span_new(start, start, "") }
+
+fn nested_ctor(name: String, parent: String, index: Nat, arity: Nat) -> ConstructorInfo {
+    let id: CtorIdentity = { name: name, parent_type: parent, index: index, arity: arity };
+    constructor_info_new(id, INVALID_HANDLE(), INVALID_HANDLE(), VisPublic, nested_span(0))
+}
+
+/// `type Wrap = Pr(Ab, Nat) | Qr(Ab, Nat) | Q`, `type Ab = A | B` and
+/// `type Opt = Som(Ab) | Non`.
+fn nested_env() -> Env {
+    let wrap = env_register_constructor(env_register_constructor(env_register_constructor(env_new(),
+        nested_ctor("Pr", "Wrap", 0, 2)), nested_ctor("Qr", "Wrap", 1, 2)), nested_ctor("Q", "Wrap", 2, 0));
+    let with_letters = env_register_constructor(env_register_constructor(wrap, nested_ctor("A", "Ab", 0, 0)), nested_ctor("B", "Ab", 1, 0));
+    env_register_constructor(env_register_constructor(with_letters,nested_ctor("Som", "Opt", 0, 1)), nested_ctor("Non", "Opt", 1, 0))
+}
+
+fn ctor(name: String, subs: List<Pattern>, start: Nat) -> Pattern {
+    PatConstructor(MkPath(Cons(ident_new(name, nested_span(start)), Nil), nested_span(start)), subs, nested_span(start))
+}
+
+/// `A()`, a nullary constructor sub-pattern.
+fn nullary(name: String) -> Pattern { ctor(name, Nil, 0) }
+
+fn binder(name: String) -> Pattern { PatVar(ident_new(name, nested_span(0))) }
+
+fn guarded_arm_at(pattern: Pattern, guard: MaybeExpr, start: Nat) -> MatchArm {
+    { pattern: pattern, guard: guard, body: ExprIntLit(0, nested_span(0)), span: nested_span(start + 50) }
+}
+
+/// Arm `start`: `<name>(<subs>) => 0`, its pattern spanned at `start`.
+fn arm_at(name: String, subs: List<Pattern>, start: Nat) -> MatchArm {
+    guarded_arm_at(ctor(name, subs, start), NoExpr, start)
+}
+
+/// Arm `start`, as `arm_at`, with a guard.
+fn guarded_at(name: String, subs: List<Pattern>, start: Nat) -> MatchArm {
+    guarded_arm_at(ctor(name, subs, start), SomeExpr(ExprIntLit(1, nested_span(0))), start)
+}
+
+fn wildcard_arm() -> MatchArm { guarded_arm_at(PatWildcard(nested_span(9)), NoExpr, 9) }
+
+fn pair(first: Pattern, second: Pattern) -> List<Pattern> { Cons(first, Cons(second, Nil)) }
+
+fn offends(name: String, subs: List<Pattern>) -> Bool { arm_offends(arm_at(name, subs, 1)) }
+
+/// Which arm `multi_field_nested_arm` names, by its pattern's start; `none`.
+fn named_arm_of(arms: List<MatchArm>) -> String {
+    match multi_field_nested_arm(nested_env(), arms) {
+        None() => "none",
+        Some(arm) => nat_to_string(arm.span.start - 50)
+    }
+}
+
+/// `refuse_slot_order_arms`' verdict as `<code>@<span start>`; `none`.
+fn refusal_of(arms: List<MatchArm>) -> String {
+    match refuse_slot_order_arms(nested_env(), arms) {
+        NoElabExprError() => "none",
+        SomeElabExprError(e) => e.code ++ "@" ++ nat_to_string(e.span.start)
+    }
+}
+
+// --- D1: the rule -----------------------------------------------------------
+
+// ADR 16.10.26c AC4: a nested constructor in the first field, and in the second.
+pub fn test_a_nested_constructor_in_either_field_offends() -> Unit {
+    assert_eq_bool(offends("Pr", pair(nullary("A"), binder("n"))), true);
+    assert_eq_bool(offends("Pr", pair(binder("n"), nullary("B"))), true)
+}
+
+// ADR 16.10.26c AC4: counted on the pattern, so a wrong arity offends too.
+pub fn test_a_wrong_arity_nested_pattern_offends() -> Unit {
+    let three: List<Pattern> = Cons(nullary("A"), Cons(binder("n"), Cons(binder("m"), Nil)));
+    assert_eq_bool(offends("Pr", three), true)
+}
+
+// ADR 16.10.26c AC4: a single-field nested pattern is the desugar's, not refused.
+pub fn test_a_single_field_nested_pattern_does_not_offend() -> Unit {
+    assert_eq_bool(offends("Som", Cons(nullary("A"), Nil)), false)
+}
+
+// ADR 16.10.26c AC4: binders, wildcards and a catch-all do not offend.
+pub fn test_binders_and_catch_alls_do_not_offend() -> Unit {
+    assert_eq_bool(offends("Pr", pair(binder("e"), binder("n"))), false);
+    assert_eq_bool(offends("Pr", pair(PatWildcard(nested_span(0)), binder("n"))), false);
+    assert_eq_bool(arm_offends(wildcard_arm()), false)
+}
+
+// --- D2: the named arm ------------------------------------------------------
+
+// ADR 16.10.26c AC4: the group's first arm in source order, offending or not.
+pub fn test_the_named_arm_is_the_groups_first() -> Unit {
+    let arms: List<MatchArm> = Cons(arm_at("Q", Nil, 1), Cons(arm_at("Pr", pair(binder("e"), binder("n")), 2),
+        Cons(arm_at("Pr", pair(nullary("A"), binder("n")), 3), Nil)));
+    assert_eq_string(named_arm_of(arms), "2")
+}
+
+// ADR 16.10.26c AC4: first in the SOURCE, not the list — the desugar's inner
+// match reorders its arms, and `inner_multi_field` was named at its second.
+pub fn test_the_named_arm_is_first_in_source_not_in_the_list() -> Unit {
+    let arms: List<MatchArm> = Cons(arm_at("Pr", pair(nullary("B"), binder("n")), 3),
+        Cons(arm_at("Pr", pair(nullary("A"), binder("n")), 2), Cons(wildcard_arm(), Nil)));
+    assert_eq_string(named_arm_of(arms), "2")
+}
+
+// ADR 16.10.26c AC4: of two offending groups, the lower index, though second in source.
+pub fn test_the_lower_index_group_is_named() -> Unit {
+    let arms: List<MatchArm> = Cons(arm_at("Qr", pair(nullary("A"), binder("n")), 1),
+        Cons(arm_at("Pr", pair(nullary("A"), binder("n")), 2), Cons(wildcard_arm(), Nil)));
+    assert_eq_string(named_arm_of(arms), "2")
+}
+
+// ADR 16.10.26c AC4: no offending arm names no arm.
+pub fn test_no_offending_arm_names_none() -> Unit {
+    let arms: List<MatchArm> = Cons(arm_at("Pr", pair(binder("e"), binder("n")), 1), Cons(wildcard_arm(), Nil));
+    assert_eq_string(named_arm_of(arms), "none");
+    assert_eq_string(refusal_of(arms), "none")
+}
+
+// --- D2: the order against a guard ------------------------------------------
+
+// ADR 16.10.26c AC4: the guard in the lower slot is refused first, at its arm.
+pub fn test_a_guard_in_the_lower_slot_comes_first() -> Unit {
+    let arms: List<MatchArm> = Cons(arm_at("Qr", pair(nullary("A"), binder("n")), 1),
+        Cons(guarded_at("Pr", pair(binder("e"), binder("n")), 2), Cons(wildcard_arm(), Nil)));
+    assert_eq_string(refusal_of(arms), "E0308@52")
+}
+
+// ADR 16.10.26c AC4: the nested group in the lower slot is refused first, at its pattern.
+pub fn test_a_nested_group_in_the_lower_slot_comes_first() -> Unit {
+    let arms: List<MatchArm> = Cons(arm_at("Pr", pair(nullary("A"), binder("n")), 1),
+        Cons(guarded_at("Q", Nil, 2), Cons(wildcard_arm(), Nil)));
+    assert_eq_string(refusal_of(arms), "E0308@1")
+}
+
+// ADR 16.10.26c AC4: on a tie, a guarded arm in a nested group, the group's refusal.
+pub fn test_a_tie_is_the_nested_groups() -> Unit {
+    let arms: List<MatchArm> = Cons(guarded_at("Pr", pair(binder("e"), binder("n")), 1),
+        Cons(arm_at("Pr", pair(nullary("A"), binder("n")), 2), Cons(wildcard_arm(), Nil)));
+    assert_eq_string(refusal_of(arms), "E0308@1")
+}
+
+// --- D3: the record ---------------------------------------------------------
+
+// ADR 16.10.26c AC4: the self-host's existing E0308, on the span it is given.
+pub fn test_the_record_is_e0308_on_the_pattern() -> Unit {
+    let err = multi_field_nested_error(nested_span(7));
+    assert_eq_string(err.code, "E0308");
+    assert_eq_string(nat_to_string(err.span.start), "7");
+    assert_eq_string(err.message, "unsupported pattern: a constructor pattern nested in a multi-field constructor; match that field in an inner `match`")
+}

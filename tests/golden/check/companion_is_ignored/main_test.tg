@@ -1,0 +1,5 @@
+// Deliberately broken: under `test` this would be a parse error, and its
+// `helper` a duplicate. `check` must not read it at all.
+fn helper() -> Nat { 0 }
+
+fn test_unfinished( -> Unit {

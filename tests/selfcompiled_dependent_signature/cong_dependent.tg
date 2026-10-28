@@ -1,0 +1,7 @@
+// ADR 2.10.26f D14: `cong` takes only a non-dependent function.
+
+fn add_zero_right(n: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+fn bad(h: Eq<Nat, 1, 1>) -> Nat { let _c = cong(add_zero_right, h); 0 }
+
+fn main() -> Nat { 0 }

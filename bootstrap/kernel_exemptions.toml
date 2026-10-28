@@ -1,0 +1,8 @@
+# The kernel exemption register (ADR 2.10.26d). Shrink-only: a row is
+# removed when the kernel admits its theorem, and is never added without an
+# ADR that raises the ceiling in register_tests.rs, says why, and names
+# itself in the new row's removed_by.
+#
+# Empty since ADR 2.10.26l (K-δ): the kernel unfolds the bodies it admits
+# itself, so `two_is_two`, `length_two` and `via_two` pass `check_proof`.
+schema = 1

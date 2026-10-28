@@ -1,0 +1,3 @@
+// Golden test (ADR 28.9.26e): an E0010 in schema-1 JSON — a note, and the
+// diagnostic hints JSON always carries (D6).
+fn f() -> 0 == true { refl }

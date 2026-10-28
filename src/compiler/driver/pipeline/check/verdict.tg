@@ -1,0 +1,44 @@
+// src/compiler/driver/pipeline/check/verdict.tg
+// The line `albite1 check` prints on success (ADR 16.10.26g D3).
+//
+// Byte for byte the bootstrap's `check_verdict_line`
+// (`bootstrap/src/driver/pipeline/mod.rs`) without its kernel-exempt clause,
+// which reports a register this compiler has no kernel to consult. Pure, so
+// the suite asserts it against the bootstrap's own strings.
+
+use driver::util::{nat_to_string};
+
+/// `✓ <file>: <n> definition(s), all OK`, or `⚠` with a clause for the holes
+/// (`not_authored` is synthesised plus unclassified, printed as synthesised)
+/// and one for the theorems resting on an axiom or sorry.
+pub fn check_verdict_line(file: String, defs: Nat, authored: Nat, not_authored: Nat, resting: Nat) -> String {
+    let head = file ++ ": " ++ nat_to_string(defs) ++ " definition(s), ";
+    let sorry_clause = if authored + not_authored > 0 {
+        "contains sorry (" ++ nat_to_string(authored) ++ " authored, "
+            ++ nat_to_string(not_authored) ++ " synthesised)"
+    } else {
+        ""
+    };
+    let resting_clause = if resting > 0 {
+        nat_to_string(resting) ++ " theorem(s) rest on an axiom or sorry"
+    } else {
+        ""
+    };
+    let clauses = verdict_join_clauses(sorry_clause, resting_clause);
+    if clauses == "" {
+        "✓ " ++ head ++ "all OK"
+    } else {
+        "⚠ " ++ head ++ clauses
+    }
+}
+
+/// The non-empty clauses, comma-separated as the bootstrap joins them.
+fn verdict_join_clauses(first: String, second: String) -> String {
+    if first == "" {
+        second
+    } else if second == "" {
+        first
+    } else {
+        first ++ ", " ++ second
+    }
+}

@@ -1,0 +1,5 @@
+// ADR 30.9.26g twin: `+` computes on its right operand only, so `0 + k ≡ k`
+// needs induction. Both compilers must refuse it.
+fn left_zero(k: Nat) -> Nat { let _p: Eq<Nat, 0 + k, k> = refl; 0 }
+
+fn main() -> Nat { 0 }

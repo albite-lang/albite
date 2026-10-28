@@ -1,0 +1,5 @@
+// E0088 (ADR 6.10.26f D7): `n + 1 <= n` has no witness — `t - s` is `-1` —
+// so `omega` refuses before it cites any lemma, naming the negative term.
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+
+theorem false_omega(n: Nat) -> Le<n + 1, n> by { omega }

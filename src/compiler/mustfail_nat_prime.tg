@@ -1,0 +1,46 @@
+// Negative control for test_nat_prime.tg (ADR 9.10.26k D7, AC 3).
+//
+// Each item below cites one nat_prime.tg lemma at a statement its
+// conclusion does not fit, and each must be refused. `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_nat_prime.tg --require-tests
+//     -> aborting due to 4 errors
+//
+// The cases, each E0010 (the bootstrap's TypeMismatch):
+//
+//   1. divides_le(d, n, …) stated as `Le<n, d>`, the bound reversed
+//   2. euclid_lemma(p, a, b, …) stated with its conclusion at `a`, not `b`
+//   3. prime_divisor_cases(p, d, …) stated with `Eq<Nat, d, 2>` as its first
+//      arm, where the lemma's is `Eq<Nat, d, 1>`
+//   4. prime_divides_binom(p, k, …) stated at `binom(p, k + 1)` (ADR 9.10.26l)
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+mod nat_prime;
+
+fn test_divides_le_reversed(d: Nat, n: Nat, hd: nat_prime::nat_divides::Divides<d, n>,
+    hn: nat_prime::nat_divmod::nat_order::Lt<0, n>) -> Unit {
+    let _r: nat_prime::nat_divmod::nat_order::Le<n, d> = nat_prime::divides_le(d, n, hd, hn);
+    ()
+}
+
+// A theorem, as test_nat_prime.tg cites it: the lemma takes six arguments.
+theorem euclid_lemma_at_the_wrong_factor(p: Nat, a: Nat, b: Nat, hp: nat_prime::IsPrime<p>,
+    hab: nat_prime::nat_divides::Divides<p, a * b>, hna: nat_prime::nat_divides::Divides<p, a> -> Void)
+    -> nat_prime::nat_divides::Divides<p, a> {
+    nat_prime::euclid_lemma(p, a, b, hp, hab, hna)
+}
+
+fn test_prime_divisor_cases_at_two(p: Nat, d: Nat, hp: nat_prime::IsPrime<p>,
+    hd: nat_prime::nat_divides::Divides<d, p>) -> Unit {
+    let _r: Eq<Nat, d, 2> + Eq<Nat, d, p> = nat_prime::prime_divisor_cases(p, d, hp, hd);
+    ()
+}
+
+theorem prime_divides_binom_at_the_next_column(p: Nat, k: Nat, hp: nat_prime::IsPrime<p>,
+    h0: nat_prime::nat_divmod::nat_order::Lt<0, k>, hk: nat_prime::nat_divmod::nat_order::Lt<k, p>)
+    -> nat_prime::nat_divides::Divides<p, nat_prime::nat_binom::binom(p, k + 1)> {
+    nat_prime::prime_divides_binom(p, k, hp, h0, hk)
+}

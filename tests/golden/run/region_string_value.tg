@@ -1,0 +1,6 @@
+// Golden test (ADR 13.10.26q D6; was compile_error/region_string_value, ADR
+// 9.10.26o AC 5): a String-valued region, refused by `tungsten compile` until
+// `B1.3`, now runs — its value is copied out before the release.
+fn main() -> Nat {
+    if region { "abc" ++ "def" } == "abcdef" { 1 } else { 0 }
+}

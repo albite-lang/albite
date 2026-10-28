@@ -1,0 +1,34 @@
+// ADR 3.10.26i §2.5: a dependent `natind` motive is instantiated at each case
+// on BOTH compilers — the base at P(0), the step's IH at P(j) and its body at
+// P(succ j), and the whole term at P(n). Both compilers must accept every line.
+// The must-fail twin is tests/golden/error/natind_step_must_prove_the_successor_case.tg.
+
+// 29.9.26d's `zero_add`: the base `refl` has the goal P(0) = `0 + 0 == 0`.
+fn zero_add(n: Nat) -> Eq<Nat, 0 + n, n> {
+    natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+// 29.9.26d's `succ_add`: the motive mentions an outer parameter `m`.
+fn succ_add(m: Nat, n: Nat) -> Eq<Nat, (m + 1) + n, (m + n) + 1> {
+    natind(|k: Nat| Eq<Nat, (m + 1) + k, (m + k) + 1>, refl,
+           fn(j: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+// A step whose IH is written, at P(j), with primitive `+` only.
+fn zero_add_annotated(n: Nat) -> Eq<Nat, 0 + n, n> {
+    natind(|k: Nat| Eq<Nat, 0 + k, k>, refl,
+           fn(j: Nat, ih: Eq<Nat, 0 + j, j>) => cong(|x: Nat| x + 1, ih), n)
+}
+
+// `mul_zero_left`'s shape: the bare IH meets P(succ j) by endpoint conversion.
+fn zero_mul(n: Nat) -> Eq<Nat, 0 * n, 0> {
+    natind(|k: Nat| Eq<Nat, 0 * k, 0>, refl, fn(j: Nat, ih) => ih, n)
+}
+
+fn uses() -> Nat {
+    // A literal target: the result is P(0), not the motive body with `k` free.
+    let _p: Eq<Nat, 0, 0> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih) => refl, 0);
+    0
+}
+
+fn main() -> Nat { uses() }

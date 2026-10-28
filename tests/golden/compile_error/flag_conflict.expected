@@ -1,0 +1,3 @@
+error: --no-codegen and --emit-llvm are incompatible.
+       --no-codegen stops before LLVM IR emission.
+       Use --no-codegen alone, or --emit-llvm alone.

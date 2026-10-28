@@ -1,0 +1,126 @@
+// The Tier 3 division library is citable and computes (ADR 9.10.26i AC 2, D5).
+//
+// Each lemma of nat_divmod.tg cited in a typed `let`, at variables and at
+// numerals; closed values of `nat_div` and `nat_mod` checked by `refl`, and
+// their agreement with the primitive `/` and `%` at literals, the zero
+// divisor included; plus `expect_error` over a citation at the wrong value.
+// The primitives are the kernel's and the evaluator's, compared by `refl` at
+// elaboration; no test here runs compiled code.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_nat_divmod.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+mod nat_divmod;
+
+// A `let` binding is opaque, so each variable citation states the lemma's
+// conclusion at the variable itself; a citation at numerals states it at the
+// numerals, which conversion computes.
+fn test_nat_beq_lemmas_are_cited() -> Unit {
+    let x: Nat = 3;
+    let y: Nat = 5;
+    let _s: Eq<Bool, nat_divmod::nat_beq(x + 1, y + 1), nat_divmod::nat_beq(x, y)> =
+        nat_divmod::nat_beq_succ_succ(x, y);
+    let _r: Eq<Bool, nat_divmod::nat_beq(x, x), true> = nat_divmod::nat_beq_refl(x);
+    let _n: Eq<Bool, nat_divmod::nat_beq(4, 4), true> = nat_divmod::nat_beq_refl(4);
+    ()
+}
+
+fn test_nat_beq_eq_is_cited() -> Unit {
+    let x: Nat = 6;
+    let h: Eq<Bool, nat_divmod::nat_beq(x, x), true> = nat_divmod::nat_beq_refl(x);
+    let _r: Eq<Nat, x, x> = nat_divmod::nat_beq_eq(x, x, h);
+    let _n: Eq<Nat, 6, 6> = nat_divmod::nat_beq_eq(6, 6, refl);
+    ()
+}
+
+fn test_nat_beq_cases_and_dec_are_cited() -> Unit {
+    let x: Nat = 2;
+    let y: Nat = 7;
+    let _c: Eq<Bool, nat_divmod::nat_beq(x, y), true> + Eq<Bool, nat_divmod::nat_beq(x, y), false> =
+        nat_divmod::nat_beq_cases(x, y);
+    let _d: Eq<Nat, x, y> + (Eq<Nat, x, y> -> Void) = nat_divmod::nat_eq_dec(x, y);
+    let _n: Eq<Nat, 3, 3> + (Eq<Nat, 3, 3> -> Void) = nat_divmod::nat_eq_dec(3, 3);
+    ()
+}
+
+fn test_zero_divisor_lemmas_are_cited() -> Unit {
+    let x: Nat = 9;
+    let _m: Eq<Nat, nat_divmod::nat_mod(x, 0), 0> = nat_divmod::nat_mod_zero_right(x);
+    let _d: Eq<Nat, nat_divmod::nat_div(x, 0), 0> = nat_divmod::nat_div_zero_right(x);
+    let _n: Eq<Nat, nat_divmod::nat_mod(9, 0), 0> = nat_divmod::nat_mod_zero_right(9);
+    ()
+}
+
+// At divisor 3: `nat_mod(2, 3) + 1` is 3, so step 2 wraps; `nat_mod(1, 3) + 1`
+// is 2, so step 1 keeps. The tests are numerals, so `refl` proves each.
+fn test_step_lemmas_are_cited() -> Unit {
+    let t: Eq<Bool, nat_divmod::nat_beq(nat_divmod::nat_mod(2, 3) + 1, 3), true> = refl;
+    let f: Eq<Bool, nat_divmod::nat_beq(nat_divmod::nat_mod(1, 3) + 1, 3), false> = refl;
+    let _mw: Eq<Nat, nat_divmod::nat_mod(3, 3), 0> = nat_divmod::nat_mod_step_wrap(2, 2, t);
+    let _mk: Eq<Nat, nat_divmod::nat_mod(2, 3), nat_divmod::nat_mod(1, 3) + 1> =
+        nat_divmod::nat_mod_step_keep(1, 2, f);
+    let _dw: Eq<Nat, nat_divmod::nat_div(3, 3), nat_divmod::nat_div(2, 3) + 1> =
+        nat_divmod::nat_div_step_wrap(2, 2, t);
+    let _dk: Eq<Nat, nat_divmod::nat_div(2, 3), nat_divmod::nat_div(1, 3)> =
+        nat_divmod::nat_div_step_keep(1, 2, f);
+    ()
+}
+
+fn test_lt_succ_of_beq_false_is_cited() -> Unit {
+    let h: nat_divmod::nat_order::Lt<1, 4> = (2, refl);
+    let hb: Eq<Bool, nat_divmod::nat_beq(2, 4), false> = refl;
+    let _r: nat_divmod::nat_order::Lt<1 + 1, 4> = nat_divmod::lt_succ_of_beq_false(1, 4, h, hb);
+    ()
+}
+
+fn test_mod_def_succ_is_cited() -> Unit {
+    let x: Nat = 17;
+    let p: Nat = 4;
+    let _r: Eq<Nat, (p + 1) * nat_divmod::nat_div(x, p + 1) + nat_divmod::nat_mod(x, p + 1), x> =
+        nat_divmod::mod_def_succ(x, p);
+    let _l: nat_divmod::nat_order::Lt<nat_divmod::nat_mod(x, p + 1), p + 1> = nat_divmod::mod_lt_succ(x, p);
+    let _n: Eq<Nat, 5 * nat_divmod::nat_div(17, 5) + nat_divmod::nat_mod(17, 5), 17> =
+        nat_divmod::mod_def_succ(17, 4);
+    ()
+}
+
+fn test_mod_def_and_mod_lt_are_cited() -> Unit {
+    let x: Nat = 23;
+    let p: Nat = 5;
+    let h: nat_divmod::nat_order::Lt<0, p + 1> = nat_divmod::zero_lt_succ(p);
+    let _d: Eq<Nat, (p + 1) * nat_divmod::nat_div(x, p + 1) + nat_divmod::nat_mod(x, p + 1), x> =
+        nat_divmod::mod_def(x, p + 1, h);
+    let _l: nat_divmod::nat_order::Lt<nat_divmod::nat_mod(x, p + 1), p + 1> = nat_divmod::mod_lt(x, p + 1, h);
+    let hn: nat_divmod::nat_order::Lt<0, 6> = (5, refl);
+    let _n: Eq<Nat, 6 * nat_divmod::nat_div(23, 6) + nat_divmod::nat_mod(23, 6), 23> = nat_divmod::mod_def(23, 6, hn);
+    ()
+}
+
+// The definitions compute.
+fn test_closed_values() -> Unit {
+    let _m: Eq<Nat, nat_divmod::nat_mod(7, 2), 1> = refl;
+    let _d: Eq<Nat, nat_divmod::nat_div(17, 5), 3> = refl;
+    let _e: Eq<Nat, nat_divmod::nat_mod(10, 5), 0> = refl;
+    let _t: Eq<Bool, nat_divmod::nat_beq(3, 4), false> = refl;
+    ()
+}
+
+// Agreement with the primitive at literals, the zero divisor included
+// (arithmetic_library.md § H3: both are `0`).
+fn test_agrees_with_the_primitive_at_literals() -> Unit {
+    let _m: Eq<Nat, nat_divmod::nat_mod(17, 5), 17 % 5> = refl;
+    let _d: Eq<Nat, nat_divmod::nat_div(17, 5), 17 / 5> = refl;
+    let _dz: Eq<Nat, nat_divmod::nat_div(7, 0), 7 / 0> = refl;
+    let _mz: Eq<Nat, nat_divmod::nat_mod(7, 0), 7 % 0> = refl;
+    ()
+}
+
+// A citation whose stated value is not the lemma's conclusion is refused.
+fn test_wrong_citation_is_refused() -> Unit {
+    expect_error(
+        { let _r: Eq<Nat, nat_divmod::nat_mod(9, 0), 9> = nat_divmod::nat_mod_zero_right(9); () },
+        "E0010",
+    );
+    ()
+}

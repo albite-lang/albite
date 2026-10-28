@@ -1,0 +1,168 @@
+// Unit tests for the self-host's ambiguous bare value (ADR 7.10.26e AC 1):
+// the candidate count (`elab/env/resolve/ambiguity.tg`) over injected
+// definitions, module files and package tables, as the bootstrap's `E0019`
+// (ADR 4.10.26j D3) counts them. Nothing here parses or elaborates a file.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_bool, assert_eq_string, assert_eq_nat};
+use driver::util::{list_len, string_join};
+use driver::modules::path::{module_path_new};
+use driver::modules::info::{ModuleFileEntry};
+use driver::packages::table::{PackageTable, package_table_empty, package_table_add, package_table_with_application_declares};
+use parser::ast::common::{Visibility, VisCrate, VisPublic, VisPrivate};
+use lexer::span::{span_new};
+use elab::env::defs::{ValueDefInfo, value_def_info_new};
+use elab::env::resolve::ambiguity::{
+    AmbiguityScope, ambiguous_candidates, definitions_sharing_a_name,
+    definition_admitted, ambiguity_message
+};
+
+// --- Builders ----------------------------------------------------------------
+
+fn one_segment(segment: String) -> List<String> { Cons(segment, Nil) }
+
+/// `helper` defined in `file` at `visibility`.
+fn helper_in(file: String, visibility: Visibility) -> ValueDefInfo {
+    value_def_info_new("helper", 7, visibility, span_new(0, 6, file))
+}
+
+/// Modules `x`, `y` and `lib::z`, read from `x.tg`, `y.tg` and `z.tg`.
+fn golden_files() -> List<ModuleFileEntry> {
+    Cons((module_path_new(one_segment("x")), "x.tg"),
+        Cons((module_path_new(one_segment("y")), "y.tg"),
+            Cons((module_path_new(Cons("lib", Cons("z", Nil))), "z.tg"), Nil)))
+}
+
+/// The root module calling, with no manifest.
+fn root_scope() -> AmbiguityScope {
+    { files: golden_files(), packages: package_table_empty(), caller: Nil } : AmbiguityScope
+}
+
+/// The root module calling, with `lib` mounted and NOT declared.
+fn undeclared_lib_scope() -> AmbiguityScope {
+    { files: golden_files(), packages: package_table_add(package_table_empty(), "lib", Nil), caller: Nil } : AmbiguityScope
+}
+
+/// `lib` mounted and declared by the application.
+fn declared_lib_scope() -> AmbiguityScope {
+    let table = package_table_with_application_declares(package_table_add(package_table_empty(), "lib", Nil), Cons(0, Nil));
+    { files: golden_files(), packages: table, caller: Nil } : AmbiguityScope
+}
+
+fn spelled(candidates: List<List<String>>) -> String {
+    match candidates {
+        Nil() => "",
+        Cons(module, rest) => string_join(module, "::") ++ ";" ++ spelled(rest)
+    }
+}
+
+// --- The golden's shape ------------------------------------------------------
+
+// 7.10.26e AC1: two public definitions in two reachable modules are two
+// candidates, in the order the definitions list gives them.
+pub fn test_two_public_definitions_are_two_candidates() -> Unit {
+    let defs = Cons(helper_in("x.tg", VisPublic), Cons(helper_in("y.tg", VisPublic), Nil));
+    let found = ambiguous_candidates(defs, "helper", root_scope());
+    assert_eq_nat(list_len(found), 2);
+    assert_eq_string(spelled(found), "x;y;")
+}
+
+// 7.10.26e AC1: only definitions of the asked name count.
+pub fn test_another_name_is_not_a_candidate() -> Unit {
+    let defs = Cons(helper_in("x.tg", VisPublic), Cons(helper_in("y.tg", VisPublic), Nil));
+    assert_eq_nat(list_len(ambiguous_candidates(defs, "other", root_scope())), 0)
+}
+
+// --- Visibility --------------------------------------------------------------
+
+// 7.10.26e AC1: a private definition in a module the caller does not import
+// (and is not inside) is no candidate, so one public one remains.
+pub fn test_private_definition_elsewhere_is_not_a_candidate() -> Unit {
+    let defs = Cons(helper_in("x.tg", VisPublic), Cons(helper_in("y.tg", VisPrivate), Nil));
+    let found = ambiguous_candidates(defs, "helper", root_scope());
+    assert_eq_nat(list_len(found), 1);
+    assert_eq_string(spelled(found), "x;")
+}
+
+// 7.10.26e AC1: a private definition is visible from inside its own module,
+// as `env_check_visibility` judges it.
+pub fn test_private_definition_is_visible_inside_its_module() -> Unit {
+    let inside: AmbiguityScope = { files: golden_files(), packages: package_table_empty(), caller: one_segment("y") };
+    assert_eq_bool(definition_admitted(inside, VisPrivate, one_segment("y")), true);
+    assert_eq_bool(definition_admitted(root_scope(), VisPrivate, one_segment("y")), false)
+}
+
+// 7.10.26e AC1: `pub(crate)` counts inside one package and not across one.
+pub fn test_crate_definition_counts_only_inside_its_package() -> Unit {
+    assert_eq_bool(definition_admitted(root_scope(), VisCrate, one_segment("x")), true);
+    assert_eq_bool(definition_admitted(declared_lib_scope(), VisCrate, Cons("lib", Cons("z", Nil))), false);
+    assert_eq_bool(definition_admitted(declared_lib_scope(), VisPublic, Cons("lib", Cons("z", Nil))), true)
+}
+
+// --- Reach -------------------------------------------------------------------
+
+// 7.10.26e AC1: a definition in a package the caller may not reach is no
+// candidate; declared, the same definition is one.
+pub fn test_unreachable_package_is_not_a_candidate() -> Unit {
+    let defs = Cons(helper_in("x.tg", VisPublic), Cons(helper_in("z.tg", VisPublic), Nil));
+    assert_eq_nat(list_len(ambiguous_candidates(defs, "helper", undeclared_lib_scope())), 1);
+    assert_eq_nat(list_len(ambiguous_candidates(defs, "helper", declared_lib_scope())), 2)
+}
+
+// 7.10.26e AC1: a definition whose file no module owns (a builtin's, or a
+// span-less stub's) is no candidate.
+pub fn test_unowned_file_is_not_a_candidate() -> Unit {
+    let defs = Cons(helper_in("x.tg", VisPublic), Cons(helper_in("", VisPublic), Cons(helper_in("w.tg", VisPublic), Nil)));
+    assert_eq_nat(list_len(ambiguous_candidates(defs, "helper", root_scope())), 1)
+}
+
+// --- One module, counted once (the must-fail twin) ---------------------------
+
+// 7.10.26e AC1 must-fail twin: two entries naming ONE module are one
+// candidate, so the refusal (two or more) is not raised.
+pub fn test_two_entries_in_one_module_count_once() -> Unit {
+    let defs = Cons(helper_in("x.tg", VisPublic), Cons(helper_in("x.tg", VisPublic), Nil));
+    let found = ambiguous_candidates(defs, "helper", root_scope());
+    assert_eq_nat(list_len(found), 1);
+    assert_eq_bool(list_len(found) >= 2, false)
+}
+
+// --- The seeded list ---------------------------------------------------------
+
+// 7.10.26e AC1: only definitions whose name another FILE shares are kept, in
+// order; one file's two entries, and a span-less entry, share nothing.
+pub fn test_sharing_keeps_names_defined_in_two_files() -> Unit {
+    let other = value_def_info_new("other", 7, VisPublic, span_new(0, 5, "x.tg"));
+    let stub = value_def_info_new("lonely", 0, VisPublic, span_new(0, 0, ""));
+    let twice = value_def_info_new("lonely", 7, VisPublic, span_new(0, 6, "y.tg"));
+    let defs = Cons(helper_in("y.tg", VisPublic), Cons(other, Cons(stub, Cons(twice, Cons(helper_in("x.tg", VisPublic), Nil)))));
+    let shared = definitions_sharing_a_name(defs);
+    assert_eq_nat(list_len(shared), 2);
+    assert_eq_string(files_of(shared), "y.tg;x.tg;")
+}
+
+fn files_of(defs: List<ValueDefInfo>) -> String {
+    match defs {
+        Nil() => "",
+        Cons(def, rest) => def.span.file ++ ";" ++ files_of(rest)
+    }
+}
+
+// --- The message -------------------------------------------------------------
+
+// 7.10.26e AC1: the bootstrap's message, then the qualified paths its help
+// names; a root definition is spelled bare.
+pub fn test_message_names_each_qualified_path() -> Unit {
+    let two = Cons(one_segment("x"), Cons(one_segment("y"), Nil));
+    assert_eq_string(ambiguity_message("helper", two),
+        "`helper` is ambiguous: 2 definitions are visible here; qualify it: `x::helper` or `y::helper`, or import one with `use`");
+    let root_module: List<String> = Nil;
+    let rooted: List<List<String>> = Cons(root_module, Cons(Cons("lib", Cons("z", Nil)), Nil));
+    assert_eq_string(ambiguity_message("helper", rooted),
+        "`helper` is ambiguous: 2 definitions are visible here; qualify it: `helper` or `lib::z::helper`, or import one with `use`")
+}

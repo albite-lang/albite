@@ -1,0 +1,18 @@
+// Golden test (ADR 30.9.26d AC 8): functions whose signatures mention their
+// parameters compile and run. The dependency is erased at the compile entry,
+// so no `Pi` reaches codegen (`declare_def` asserts it in a debug build).
+// The bodies are `refl`/`sym`; a `natind` proof body compiles since ADR
+// 3.10.26e erased proofs before codegen (a_natind_proof_compiles).
+fn refl_at(n: Nat) -> Eq<Nat, n + 0, n + 0> { refl }
+
+fn flip(n: Nat, h: Eq<Nat, n, 0>) -> Eq<Nat, 0, n> { sym(h) }
+
+fn doubled(n: Nat) -> Nat { n + n }
+
+fn main() -> String {
+    let _direct: Eq<Nat, 3 + 0, 3 + 0> = refl_at(3);
+    let f = refl_at;
+    let _through_let: Eq<Nat, 4 + 0, 4 + 0> = f(4);
+    let _flipped: Eq<Nat, 0, 0> = flip(0, refl);
+    if doubled(21) == 42 { "dependent signature compiled" } else { "wrong value" }
+}

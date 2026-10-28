@@ -1,0 +1,10 @@
+// ADR 6.10.26h D10: a definition generic in a predicate. The bootstrap
+// accepts it; tungsten1 parses no type-parameter bound, so it refuses it at
+// parse. The divergence is a refusal on the self-host's side, never an
+// acceptance (Q7), and the battery row records it. Its citation at a family
+// is in `src/compiler/test_predicate_binder.tg`: tungsten1 parses no family
+// either, which would mask this row's refusal.
+
+pub theorem pred_transport<P: Nat -> Prop>(a: Nat, b: Nat, e: Eq<Nat, a, b>, h: P<a>) -> P<b> {
+    subst(e, |x: Nat| P<x>, h)
+}

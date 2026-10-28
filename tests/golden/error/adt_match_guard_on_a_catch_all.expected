@@ -1,0 +1,9 @@
+[E0100] Error: `match guards` is not supported
+   ╭─[tests/golden/error/adt_match_guard_on_a_catch_all.tg:8:26]
+   │
+ 8 │     match k { X(n) => n, _ if b => 50 }
+   │                          ──────┬─────  
+   │                                ╰─────── 
+───╯
+
+error: aborting due to 1 error

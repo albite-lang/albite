@@ -1,0 +1,85 @@
+// Negative control for test_natind_dependent.tg (ADR 29.9.26d AC 2).
+//
+// The positive suite pins dependent `natind` two ways: typed `let` bindings
+// that check only because each case meets its motive instance, and
+// `expect_error`s for the wrong cases. An expectation that silently stopped
+// being compared would leave that suite green while asserting nothing. So this
+// file is the same suite with EVERY expectation wrong — each accepted binding
+// is wrapped in an `expect_error` it cannot satisfy, each E0010 becomes E0071
+// and each E0071 becomes E0010, and `Nat` becomes `Bool` — and
+// `check-mustfail-fixtures` (make/quality/tg-tests.mk) requires it to fail
+// with exactly
+//
+//   albite test src/compiler/mustfail_natind_dependent.tg --require-tests
+//     -> aborting due to 14 errors
+//
+// The count is the point: a case that stops being checked lowers it, and the
+// gate goes red. A dependent check that accepted everything would satisfy the
+// seven wrapped bindings' opposite and drop the count too.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+fn natind_dependent_succ_of(n: Nat) -> Nat {
+    n + 1
+}
+
+fn natind_dependent_constant_motive(n: Nat) -> Nat {
+    natind(|k: Nat| Nat, 0, fn(k: Nat, ih: Nat) => ih, n)
+}
+
+fn test_the_motive_is_instantiated_at_a_variable_target() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, n, n> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih: Eq<Nat, k, k>) => refl, n); 0 }, "E0010")
+}
+
+fn test_the_motive_is_instantiated_at_a_literal_target() -> Unit {
+    expect_error({ let _p: Eq<Nat, 3, 3> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih: Eq<Nat, k, k>) => refl, 3); 0 }, "E0010")
+}
+
+fn test_an_omitted_ih_annotation_is_supplied() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, n, n> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih) => refl, n); 0 }, "E0010")
+}
+
+fn test_a_constant_motive_keeps_its_type() -> Unit {
+    expect_type(natind_dependent_constant_motive(4), "Bool")
+}
+
+fn test_an_eq_type_restated_elsewhere_is_the_same_type() -> Unit {
+    expect_error(|n: Nat| { let p: Eq<Nat, natind_dependent_succ_of(n), natind_dependent_succ_of(n)> = refl; let _q: Eq<Nat, natind_dependent_succ_of(n), natind_dependent_succ_of(n)> = p; 0 }, "E0010")
+}
+
+fn test_a_step_that_returns_its_ih_is_refused() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, n, n> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih) => ih, n); 0 }, "E0071")
+}
+
+fn test_a_base_that_does_not_hold_at_zero_is_refused() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, n, 1> = natind(|k: Nat| Eq<Nat, k, 1>, refl, fn(k: Nat, ih) => refl, n); 0 }, "E0010")
+}
+
+fn test_the_result_is_the_motive_at_the_target_not_at_zero() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, 0, 0> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih) => refl, n); 0 }, "E0071")
+}
+
+fn test_a_dependent_step_must_be_a_two_parameter_lambda() -> Unit {
+    expect_error(|n: Nat, s: Nat| { let _p: Eq<Nat, n, n> = natind(|k: Nat| Eq<Nat, k, k>, refl, s, n); 0 }, "E0071")
+}
+
+fn test_a_step_parameter_that_shadows_the_motive_is_refused() -> Unit {
+    expect_error(|m: Nat, n: Nat| { let _p: Eq<Nat, (m + 1) + n, (m + n) + 1> = natind(|k: Nat| Eq<Nat, (m + 1) + k, (m + k) + 1>, refl, fn(m: Nat, ih) => cong(|x: Nat| x + 1, ih), n); 0 }, "E0071")
+}
+
+fn test_zero_add_is_proved_by_induction() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, 0 + n, n> = natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n); 0 }, "E0010")
+}
+
+fn test_succ_add_is_proved_by_induction() -> Unit {
+    expect_error(|m: Nat, n: Nat| { let _p: Eq<Nat, (m + 1) + n, (m + n) + 1> = natind(|k: Nat| Eq<Nat, (m + 1) + k, (m + k) + 1>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n); 0 }, "E0010")
+}
+
+fn test_zero_add_is_not_refl() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, 0 + n, n> = refl; 0 }, "E0010")
+}
+
+fn test_succ_add_is_not_refl() -> Unit {
+    expect_error(|m: Nat, n: Nat| { let _p: Eq<Nat, (m + 1) + n, (m + n) + 1> = refl; 0 }, "E0010")
+}

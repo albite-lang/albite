@@ -1,0 +1,57 @@
+// Conversion reduces under a variable (ADR 29.9.26c AC 4).
+//
+// Tier 3: each typed `let _: Eq<…> = refl;` binding sits in a function with an
+// open `Nat` parameter, so it is decided by the call-by-name comparison — in
+// the discharge when it mentions a global, δ-free at elaboration when it does
+// not. A binding that failed would be an E0071 and the file would not check.
+// A function's return type cannot name its parameters, so these proofs live in
+// bodies, and each `test_*` only calls one.
+
+type ConversionOpenList = CoNil | CoCons(Nat, ConversionOpenList)
+
+fn conversion_open_length(l: ConversionOpenList) -> Nat {
+    match l {
+        CoNil => 0,
+        CoCons(h, t) => 1 + conversion_open_length(t),
+    }
+}
+
+fn conversion_open_add(a: Nat, b: Nat) -> Nat {
+    natrec(Nat, b, fn(k: Nat, acc: Nat) => acc + 1, a)
+}
+
+fn conversion_open_length_of_one(n: Nat) -> Unit {
+    let _p: Eq<Nat, conversion_open_length(CoCons(n, CoNil)), 1> = refl;
+    ()
+}
+
+fn conversion_open_right_zero(k: Nat) -> Unit {
+    let _p: Eq<Nat, k + 0, k> = refl;
+    ()
+}
+
+fn conversion_open_succ_right_zero(k: Nat) -> Unit {
+    let _p: Eq<Nat, (k + 1) + 0, (k + 0) + 1> = refl;
+    ()
+}
+
+fn conversion_open_add_zero_left(n: Nat) -> Unit {
+    let _p: Eq<Nat, conversion_open_add(0, n), n> = refl;
+    ()
+}
+
+fn test_a_total_global_is_entered_through_an_open_argument() -> Unit {
+    conversion_open_length_of_one(7)
+}
+
+fn test_addition_computes_on_its_right_operand() -> Unit {
+    conversion_open_right_zero(7)
+}
+
+fn test_a_successor_on_the_left_survives_a_zero_on_the_right() -> Unit {
+    conversion_open_succ_right_zero(7)
+}
+
+fn test_natrec_computes_on_a_numeral_beside_an_open_argument() -> Unit {
+    conversion_open_add_zero_left(7)
+}

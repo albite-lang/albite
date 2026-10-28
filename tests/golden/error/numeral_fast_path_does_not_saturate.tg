@@ -1,0 +1,9 @@
+// == `+` past the largest Nat is not a value (ADR 13.10.26e AC 5)
+//
+// The closed-term evaluator used to saturate at 2^64 - 1, so the fast path
+// found `MAX + 1` equal to `MAX` and accepted this `refl`. Overflow now stops
+// the evaluator: `MAX + 1` is a neutral term, equal only to itself.
+
+fn saturated() -> Eq<Nat, 18446744073709551615 + 1, 18446744073709551615> { refl }
+
+fn main() -> Nat { 0 }

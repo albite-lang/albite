@@ -1,0 +1,5 @@
+// ADR 2.10.26f §2.4: `n` names no parameter of `g`.
+
+fn g(m: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+fn main() -> Nat { 0 }

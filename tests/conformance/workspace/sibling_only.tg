@@ -1,0 +1,5 @@
+// Imports from an undeclared sibling (ADR 30.9.26i §2.5): the module is found,
+// its value is not, so both compilers refuse with value-not-found.
+use doubling::{double};
+
+fn main() -> Nat { double(2) }

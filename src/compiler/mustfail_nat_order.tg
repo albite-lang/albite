@@ -1,0 +1,41 @@
+// Negative control for test_nat_order.tg (ADR 6.10.26g D5, AC 2).
+//
+// Each function below cites one nat_order.tg lemma at arguments its
+// conclusion does not fit, and each must be refused. `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_nat_order.tg --require-tests
+//     -> aborting due to 4 errors
+//
+// The cases, each E0010 (the bootstrap's TypeMismatch):
+//
+//   1. le_refl(a) stated as `nat_order::Le<a, b>`, `a` and `b` distinct parameters
+//   2. le_antisymm given its hypotheses swapped
+//   3. le_trans given a middle that does not match its hypotheses
+//   4. le_add_right(2, 3) stated at `nat_order::Le<2, 6>`: a closed sum
+//      converts (ADR 7.10.26i), and 5 and 6 do not
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+mod nat_order;
+
+fn test_le_refl_at_distinct_bounds(a: Nat, b: Nat) -> Unit {
+    let _r: nat_order::Le<a, b> = nat_order::le_refl(a);
+    ()
+}
+
+fn test_le_antisymm_with_swapped_hypotheses(a: Nat, b: Nat, h1: nat_order::Le<a, b>, h2: nat_order::Le<b, a>) -> Unit {
+    let _r: Eq<Nat, a, b> = nat_order::le_antisymm(a, b, h2, h1);
+    ()
+}
+
+fn test_le_trans_with_a_mismatched_middle(a: Nat, b: Nat, c: Nat, h1: nat_order::Le<a, b>, h2: nat_order::Le<b, c>) -> Unit {
+    let _r: nat_order::Le<a, c> = nat_order::le_trans(a, c, c, h1, h2);
+    ()
+}
+
+fn test_le_add_right_at_a_wrong_numeral() -> Unit {
+    let _r: nat_order::Le<2, 6> = nat_order::le_add_right(2, 3);
+    ()
+}

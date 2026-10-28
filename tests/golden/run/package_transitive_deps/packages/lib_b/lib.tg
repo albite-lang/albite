@@ -1,0 +1,4 @@
+// `lib_c` by `use` and by qualified path.
+use lib_c::base;
+
+pub fn b() -> Nat { lib_c::base() + base() + 2 }

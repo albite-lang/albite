@@ -1,0 +1,108 @@
+// Negative control for test_dependent_signature.tg (ADR 30.9.26d AC 2).
+//
+// The positive suite pins dependent signatures two ways: typed `let`
+// citations that check only because each call substitutes its argument into
+// the lemma's statement, and `expect_error`s for the wrong citations. An
+// expectation that silently stopped being compared would leave that suite
+// green while asserting nothing. So this file is the same suite with EVERY
+// expectation wrong — each accepted citation is wrapped in an `expect_error`
+// it cannot satisfy, and each E0010 becomes E0071 — and
+// `check-mustfail-fixtures` (make/quality/tg-tests.mk) requires it to fail
+// with exactly
+//
+//   albite test src/compiler/mustfail_dependent_signature.tg --require-tests
+//     -> aborting due to 13 errors
+//
+// The count is the point: a case that stops being checked lowers it, and the
+// gate goes red.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+fn dep_sig_add_zero_left(n: Nat) -> Eq<Nat, 0 + n, n> {
+    natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+theorem dep_sig_add_zero_left_thm(n: Nat): 0 + n == n {
+    natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+fn dep_sig_add_zero_right(n: Nat) -> n + 0 == n {
+    refl
+}
+
+fn dep_sig_flip(n: Nat, h: Eq<Nat, n, 0>) -> Eq<Nat, 0, n> {
+    sym(h)
+}
+
+fn dep_sig_refl_at<T>(x: T) -> Eq<T, x, x> {
+    refl
+}
+
+fn dep_sig_two(n: Nat, m: Nat) -> Eq<Nat, n + m, n + m> {
+    refl
+}
+
+axiom dep_sig_ax(n: Nat, h: Eq<Nat, n, 0>): Eq<Nat, 0, n>
+
+fn dep_sig_cites(m: Nat) -> Eq<Nat, 0 + m, m> {
+    dep_sig_add_zero_left(m)
+}
+
+fn dep_sig_swapped(n: Nat, m: Nat) -> Eq<Nat, m + n, m + n> {
+    dep_sig_two(m, n)
+}
+
+fn test_a_lemma_is_cited_at_a_literal() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0 + 3, 3> = dep_sig_add_zero_left(3); 0 }, "E0010")
+}
+
+fn test_a_lemma_is_cited_at_another_functions_parameter() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0 + 5, 5> = dep_sig_cites(5); 0 }, "E0010")
+}
+
+fn test_a_theorem_is_cited_the_same_way() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0 + 4, 4> = dep_sig_add_zero_left_thm(4); 0 }, "E0010")
+}
+
+fn test_a_hypothesis_over_an_earlier_parameter_is_cited() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0, 0> = dep_sig_flip(0, refl); 0 }, "E0010")
+}
+
+fn test_a_generic_dependent_signature_is_instantiated() -> Unit {
+    expect_error({ let _p: Eq<Nat, 5, 5> = dep_sig_refl_at(5); 0 }, "E0010")
+}
+
+fn test_a_swapped_citation_is_not_captured() -> Unit {
+    expect_error({ let _p: Eq<Nat, 2 + 1, 2 + 1> = dep_sig_swapped(1, 2); 0 }, "E0010")
+}
+
+fn test_an_axiom_hypothesis_over_an_earlier_parameter_is_cited() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0, 0> = dep_sig_ax(0, refl); 0 }, "E0010")
+}
+
+fn test_the_statement_sugar_is_cited() -> Unit {
+    expect_error({ let _p: Eq<Nat, 6 + 0, 6> = dep_sig_add_zero_right(6); 0 }, "E0010")
+}
+
+fn test_a_lemma_bound_by_let_is_cited() -> Unit {
+    expect_error({ let f = dep_sig_add_zero_left; let _p: Eq<Nat, 0 + 7, 7> = f(7); 0 }, "E0010")
+}
+
+fn test_a_lemma_is_cited_through_the_pipe() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0 + 8, 8> = 8 |> dep_sig_add_zero_left; 0 }, "E0010")
+}
+
+fn test_a_citation_at_the_wrong_argument_is_refused() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0 + 4, 4> = dep_sig_add_zero_left(3); 0 }, "E0071")
+}
+
+// Accepted since ADR 30.9.26e D5, so wrapped in an `expect_error` it cannot
+// satisfy, like every other accepted citation here.
+fn test_a_citation_converts_at_its_annotation() -> Unit {
+    expect_error({ let _p: Eq<Nat, 3, 3> = dep_sig_add_zero_left(3); 0 }, "E0010")
+}
+
+fn test_a_let_bound_argument_escapes_its_block() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0 + 3, 3> = { let k = 3; dep_sig_add_zero_left(k) }; 0 }, "E0071")
+}

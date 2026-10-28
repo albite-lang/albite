@@ -1,0 +1,199 @@
+// Unit tests for the pattern-constructor resolver and the ADT route's one
+// refusal of an unresolved constructor pattern (ADR 3.10.26l AC 1–2). Every
+// subject is a pure function over a hand-built `Env` (from
+// `populate_module_info`, as `test_names_only_ctors.tg` builds one) and
+// hand-built match arms; nothing here parses or elaborates a file.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_string};
+use driver::util::{Option, None};
+use parser::ast::common::{VisPublic, Ident, ident_new, Path, MkPath, MaybeString, NoString, SomeString};
+use parser::ast::{Pattern, PatConstructor, PatTuple, PatVar, PatWildcard, MatchArm, ExprIntLit, NoExpr};
+use lexer::span::{Span, span_new};
+use driver::modules::path::{ModulePath, module_path_single};
+use driver::modules::info::{
+    ModuleInfo, ModuleRegInfo, ModuleItemNames, module_info_empty, module_info_register_module,
+    module_info_register_item, module_item_names_empty, module_item_names_add_type,
+    module_item_names_add_ctor
+};
+use driver::modules::workspace::merge::{merge_module_info};
+use elab::ffi::INVALID_HANDLE;
+use elab::env::{env_new, populate_module_info, Env};
+use elab::env::ops::{env_enter_module, env_leave_module, env_register_constructor, env_bind_local};
+use elab::env::defs::{
+    ConstructorInfo, CtorIdentity, constructor_info_new,
+    MaybeResolvedValue, NoResolvedValue, SomeResolvedValue, ResolvedValue, ResolvedConstructor
+};
+use elab::exprs::matches::patterns::resolve::{
+    resolve_pattern_constructor, unresolved_arm_suffix, unresolved_constructor_error, arm_refusal_name
+};
+
+// --- Builders and probes ---------------------------------------------------
+
+/// What a probe reports when it finds nothing; no constructor is named this.
+fn ABSENT_NAME() -> String { "<absent>" }
+
+fn no_span() -> Span { span_new(0, 0, "") }
+
+/// `type Box = MkBox(..)` at the names level.
+fn box_names() -> ModuleItemNames {
+    module_item_names_add_ctor(module_item_names_add_type(module_item_names_empty(), "Box"), "MkBox")
+}
+
+fn with_box_module(info: ModuleInfo, path: ModulePath, file: String) -> ModuleInfo {
+    let no_parent: Option<ModulePath> = None;
+    let registration: ModuleRegInfo = { path: path, contents: box_names(), visibility: VisPublic, parent: no_parent };
+    module_info_register_item(module_info_register_module(info, registration, file), "MkBox", path)
+}
+
+/// Main declares `shapes`; an undeclared sibling contributes `boxes`.
+fn workspace_env() -> Env {
+    let main = with_box_module(module_info_empty(), module_path_single("shapes"), "shapes.tg");
+    let sibling = with_box_module(module_info_empty(), module_path_single("boxes"), "boxes.tg");
+    populate_module_info(env_new(), merge_module_info(main, sibling))
+}
+
+fn ctor(name: String, parent: String, index: Nat, arity: Nat) -> ConstructorInfo {
+    let id: CtorIdentity = { name: name, parent_type: parent, index: index, arity: arity };
+    constructor_info_new(id, INVALID_HANDLE(), INVALID_HANDLE(), VisPublic, no_span())
+}
+
+/// The workspace, plus `type OptT = NadaT | AlgoT(Nat)` in the root module,
+/// a declared `shapes::MkBox` of `Box`, and a local `helper` that is no
+/// constructor.
+fn local_env() -> Env {
+    let with_opt = env_register_constructor(env_register_constructor(workspace_env(), ctor("NadaT", "OptT", 0, 0)), ctor("AlgoT", "OptT", 1, 1));
+    let with_shapes = env_leave_module(env_register_constructor(env_enter_module(with_opt, "shapes"), ctor("MkBox", "Box", 0, 1)));
+    env_bind_local(with_shapes, "helper", INVALID_HANDLE())
+}
+
+fn bare(name: String) -> Path {
+    MkPath(Cons(ident_new(name, no_span()), Nil), no_span())
+}
+
+fn qualified(first: String, name: String) -> Path {
+    let segments: List<Ident> = Cons(ident_new(first, no_span()), Cons(ident_new(name, no_span()), Nil));
+    MkPath(segments, no_span())
+}
+
+fn arm_of(pattern: Pattern) -> MatchArm {
+    { pattern: pattern, guard: NoExpr, body: ExprIntLit(0, no_span()), span: no_span() }
+}
+
+/// `<path>(k) => 0`
+fn ctor_arm(path: Path) -> MatchArm {
+    arm_of(PatConstructor(path, Cons(PatVar(ident_new("k", no_span())), Nil), no_span()))
+}
+
+fn wildcard_arm() -> MatchArm { arm_of(PatWildcard(no_span())) }
+
+/// The parent type a resolution names, or ABSENT_NAME.
+fn resolved_parent(found: MaybeResolvedValue) -> String {
+    match found {
+        NoResolvedValue() => ABSENT_NAME(),
+        SomeResolvedValue(value) => ctor_parent(value)
+    }
+}
+
+fn ctor_parent(value: ResolvedValue) -> String {
+    match value {
+        ResolvedConstructor(info) => info.parent_type,
+        _ => "<not a constructor>"
+    }
+}
+
+fn refusal_text(refusal: MaybeString) -> String {
+    match refusal {
+        NoString() => ABSENT_NAME(),
+        SomeString(name) => name
+    }
+}
+
+/// The constructor path the guard refuses in `arms`, or ABSENT_NAME.
+fn first_refused(env: Env, arms: List<MatchArm>) -> String {
+    match unresolved_arm_suffix(env, arms) {
+        Nil() => ABSENT_NAME(),
+        Cons(arm, _) => refusal_text(arm_refusal_name(env, arm))
+    }
+}
+
+// --- AC 2: one resolver reads a path as the bootstrap does (D2) ------------
+
+// ADR 3.10.26l AC2
+pub fn test_bare_ctor_resolves() -> Unit {
+    assert_eq_string(resolved_parent(resolve_pattern_constructor(local_env(), bare("AlgoT"))), "OptT")
+}
+
+// ADR 3.10.26l AC2
+pub fn test_module_qualified_ctor_resolves() -> Unit {
+    assert_eq_string(resolved_parent(resolve_pattern_constructor(local_env(), qualified("shapes", "MkBox"))), "Box")
+}
+
+// ADR 3.10.26l AC2: an undeclared sibling's names-only constructor is no value.
+pub fn test_names_only_qualified_ctor_misses() -> Unit {
+    assert_eq_string(resolved_parent(resolve_pattern_constructor(local_env(), qualified("boxes", "MkBox"))), ABSENT_NAME())
+}
+
+// ADR 3.10.26l AC2
+pub fn test_type_qualified_ctor_resolves() -> Unit {
+    assert_eq_string(resolved_parent(resolve_pattern_constructor(local_env(), qualified("OptT", "AlgoT"))), "OptT")
+}
+
+// ADR 3.10.26l AC2: `Box::AlgoT` names a real constructor under the wrong type.
+pub fn test_type_qualified_wrong_parent_misses() -> Unit {
+    assert_eq_string(resolved_parent(resolve_pattern_constructor(local_env(), qualified("Box", "AlgoT"))), ABSENT_NAME())
+}
+
+// ADR 3.10.26l AC2: and the first segment is never looked up as the constructor.
+pub fn test_unknown_module_misses() -> Unit {
+    let env = local_env();
+    assert_eq_string(resolved_parent(resolve_pattern_constructor(env, qualified("nowhere", "AlgoT"))), ABSENT_NAME());
+    assert_eq_string(resolved_parent(resolve_pattern_constructor(env, qualified("AlgoT", "Missing"))), ABSENT_NAME())
+}
+
+// --- AC 1: an unresolved constructor pattern is refused at one site (D1) ---
+
+// ADR 3.10.26l AC1
+pub fn test_unknown_ctor_arm_is_refused() -> Unit {
+    let env = local_env();
+    assert_eq_string(refusal_text(arm_refusal_name(env, ctor_arm(bare("Foo")))), "Foo");
+    let arms: List<MatchArm> = Cons(ctor_arm(bare("AlgoT")), Cons(ctor_arm(bare("Foo")), Cons(wildcard_arm(), Nil)));
+    assert_eq_string(first_refused(env, arms), "Foo")
+}
+
+// ADR 3.10.26l AC1: a name that resolves, but not to a constructor.
+pub fn test_function_name_arm_is_refused() -> Unit {
+    let env = local_env();
+    assert_eq_string(refusal_text(arm_refusal_name(env, ctor_arm(bare("helper")))), "helper");
+    let arms: List<MatchArm> = Cons(ctor_arm(bare("helper")), Cons(wildcard_arm(), Nil));
+    assert_eq_string(first_refused(env, arms), "helper")
+}
+
+// ADR 3.10.26l AC1
+pub fn test_resolved_ctor_arm_passes() -> Unit {
+    let env = local_env();
+    assert_eq_string(refusal_text(arm_refusal_name(env, ctor_arm(qualified("OptT", "AlgoT")))), ABSENT_NAME());
+    let arms: List<MatchArm> = Cons(ctor_arm(bare("AlgoT")), Cons(ctor_arm(bare("NadaT")), Nil));
+    assert_eq_string(first_refused(env, arms), ABSENT_NAME())
+}
+
+// ADR 3.10.26l AC1: patterns that name no constructor are not the guard's.
+pub fn test_catch_all_and_tuple_arms_pass() -> Unit {
+    let tuple = PatTuple(Cons(PatVar(ident_new("a", no_span())), Cons(PatWildcard(no_span()), Nil)), no_span());
+    let arms: List<MatchArm> = Cons(arm_of(tuple), Cons(arm_of(PatVar(ident_new("Nope", no_span()))), Cons(wildcard_arm(), Nil)));
+    assert_eq_string(first_refused(local_env(), arms), ABSENT_NAME())
+}
+
+// ADR 3.10.26l AC1: the catalogued code, and the kind's own message.
+pub fn test_refusal_is_e0302_naming_the_ctor() -> Unit {
+    let arms: List<MatchArm> = Cons(ctor_arm(qualified("nowhere", "AlgoT")), Cons(wildcard_arm(), Nil));
+    assert_eq_string(first_refused(local_env(), arms), "nowhere::AlgoT");
+    let err = unresolved_constructor_error("nowhere::AlgoT", "OptT", no_span());
+    assert_eq_string(err.code, "E0302");
+    assert_eq_string(err.message, "constructor 'nowhere::AlgoT' not found in type 'OptT'")
+}

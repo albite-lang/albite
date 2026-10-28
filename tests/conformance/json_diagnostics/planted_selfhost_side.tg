@@ -1,0 +1,10 @@
+// ADR 1.10.26h D6: the planted pair's self-host side — see the note below.
+
+fn diverge() -> Void { diverge() }
+
+fn main() -> Nat { 0 }
+
+// The same program as `planted_bootstrap_side.tg` with one blank line more
+// above the error, so the self-host's record sits on line 3 against the
+// bootstrap's line 2. This file is the planted entry's `recorded_in`: the
+// divergence is deliberate, and recorded here rather than in a parked item.

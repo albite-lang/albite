@@ -1,0 +1,202 @@
+// src/compiler/elab/error/render/json.tg
+// Schema-1 diagnostic records for `albite1 check --error-format json`
+// (ADR 30.9.26h D6), built on the generic writer in `driver::util::json`.
+//
+// Field for field with the bootstrap's `DiagnosticRecord`
+// (`bootstrap/src/driver/diagnostics/json/`) where the concept exists, in its
+// declaration order — the order is not contractual (28.9.26e D9), but matching
+// it lets a human diff the two compilers' streams line by line:
+//
+//   schema, kind, level, code, message, primary_span, notes, help,
+//   diagnostic_hints
+//
+// `level` is "error", or "note" for a package plan's note (ADR 20.10.26i), and
+// `diagnostic_hints` always `[]` (it has no hint system); both are legal
+// schema-1 values. Columns are CHARACTER columns (28.9.26e D8): count the bytes
+// that are not UTF-8 continuation bytes. The human header stays byte-based.
+//
+// Every name is `json_`-prefixed, as in the writer: bare-name keying makes a
+// generic `span_value` here an E0016 elsewhere.
+
+use lexer::span::Span;
+use lexer::error::{LexError};
+use parser::error::{ParseError};
+use parser::syntax_kind::{syntax_kind_code};
+use driver::ffi::{List, Nil, Cons, string_len};
+use driver::util::json::{
+    json_string, json_nat, json_null, json_field, json_object, json_array
+};
+use driver::util::strings::scalars::{string_copy_range, utf8_is_scalar_start};
+use elab::error::kinds::{error_kind_code, error_kind_message};
+use elab::error::expected::{MaybeExpectedBecause, NoExpectedBecause, SomeExpectedBecause,
+                            expected_because_message};
+use elab::error::list::{ElabError, Suggestion};
+use elab::error::source::{SourceInfo, LineCol, offset_to_line_col, get_line_start, get_line_end};
+use parser::ast::common::{MaybeString, NoString, SomeString};
+
+// ===========================================================================
+// RECORDS
+// ===========================================================================
+
+/// One record for an elaboration error, resolved against its own file's
+/// source (D2): the expected-because note first, then `notes`; `help` then
+/// each suggestion's message as `help`.
+pub fn json_elab_error_record(err: ElabError, src: SourceInfo) -> String {
+    let message = error_kind_message(err.kind);
+    json_record(
+        json_string(error_kind_code(err.kind)),
+        message,
+        json_span_value(src, err.span, message),
+        json_elab_notes(err.expected_because, err.notes),
+        json_elab_help(err.help, err.suggestions)
+    )
+}
+
+/// One record for a parse error, with its syntax code (D4).
+pub fn json_parse_error_record(err: ParseError, src: SourceInfo) -> String {
+    json_record(json_string(syntax_kind_code(err.kind)), err.message,
+                json_span_value(src, err.span, err.message), Nil, Nil)
+}
+
+/// One LOCATED record for a lex error, with its syntax code (D5). The human
+/// renderer prints one located line per lex error too (ADR 1.10.26h D10).
+pub fn json_lex_error_record(err: LexError, src: SourceInfo) -> String {
+    json_record(json_string(syntax_kind_code(err.kind)), err.message,
+                json_span_value(src, err.span, err.message), Nil, Nil)
+}
+
+/// A pipeline failure (the module tree could not be read): `code` and
+/// `primary_span` both `null`, as the bootstrap's `failure_record`.
+pub fn json_failure_record(message: String) -> String {
+    json_record(json_null(), message, json_null(), Nil, Nil)
+}
+
+/// A non-fatal note (ADR 20.10.26i D2): a failure record's shape at level
+/// `note`, as the bootstrap's `note_output`.
+pub fn json_note_record(message: String) -> String {
+    json_record_at("note", json_record_body(json_null(), message, json_null(), Nil, Nil))
+}
+
+/// The record shape every error constructor above shares. `code` and `span`
+/// are already-serialised JSON, so either may be `null`.
+fn json_record(code: String, message: String, span: String,
+               notes: List<String>, help: List<String>) -> String {
+    json_record_at("error", json_record_body(code, message, span, notes, help))
+}
+
+/// A record at `level`, its fields after `level` already built.
+fn json_record_at(level: String, body: List<String>) -> String {
+    json_object(
+        Cons(json_field("schema", json_nat(1)),
+        Cons(json_field("kind", json_string("diagnostic")),
+        Cons(json_field("level", json_string(level)),
+        body)))
+    )
+}
+
+/// The fields after `level`, in the bootstrap's declaration order.
+fn json_record_body(code: String, message: String, span: String,
+                    notes: List<String>, help: List<String>) -> List<String> {
+    Cons(json_field("code", code),
+    Cons(json_field("message", json_string(message)),
+    Cons(json_field("primary_span", span),
+    Cons(json_field("notes", json_array(json_note_values(notes))),
+    Cons(json_field("help", json_array(json_string_values(help))),
+    Cons(json_field("diagnostic_hints", json_array(Nil)),
+    Nil))))))
+}
+
+fn json_elab_notes(because: MaybeExpectedBecause, notes: List<String>) -> List<String> {
+    match because {
+        NoExpectedBecause() => notes,
+        SomeExpectedBecause(ctx) => Cons(expected_because_message(ctx), notes)
+    }
+}
+
+fn json_elab_help(help: MaybeString, suggestions: List<Suggestion>) -> List<String> {
+    match help {
+        NoString() => json_suggestion_messages(suggestions),
+        SomeString(h) => Cons(h, json_suggestion_messages(suggestions))
+    }
+}
+
+fn json_suggestion_messages(suggestions: List<Suggestion>) -> List<String> {
+    match suggestions {
+        Nil() => Nil,
+        Cons(s, rest) => Cons(s.message, json_suggestion_messages(rest))
+    }
+}
+
+/// Each note as `{"message": …, "span": null}`.
+fn json_note_values(notes: List<String>) -> List<String> {
+    match notes {
+        Nil() => Nil,
+        Cons(n, rest) => Cons(
+            json_object(Cons(json_field("message", json_string(n)), Cons(json_field("span", json_null()), Nil))),
+            json_note_values(rest))
+    }
+}
+
+fn json_string_values(items: List<String>) -> List<String> {
+    match items {
+        Nil() => Nil,
+        Cons(s, rest) => Cons(json_string(s), json_string_values(rest))
+    }
+}
+
+// ===========================================================================
+// SPANS
+// ===========================================================================
+
+/// The `primary_span` object: file (spelled as the span spells it, which is
+/// the bootstrap's spelling — P0 item 5), byte offsets, 1-based lines,
+/// CHARACTER columns with an exclusive end, the label, and the covered source
+/// lines — `null` when the span lies outside the source.
+pub fn json_span_value(src: SourceInfo, span: Span, label: String) -> String {
+    let start_lc = offset_to_line_col(src, span.start);
+    let end_lc = offset_to_line_col(src, span.end);
+    json_object(
+        Cons(json_field("file", json_string(span.file)),
+        Cons(json_field("byte_start", json_nat(span.start)),
+        Cons(json_field("byte_end", json_nat(span.end)),
+        Cons(json_field("line_start", json_nat(start_lc.line)),
+        Cons(json_field("col_start", json_nat(json_char_column(src, span.start, start_lc))),
+        Cons(json_field("line_end", json_nat(end_lc.line)),
+        Cons(json_field("col_end", json_nat(json_char_column(src, span.end, end_lc))),
+        Cons(json_field("label", json_string(label)),
+        Cons(json_field("text", json_span_text(src, span, start_lc, end_lc)),
+        Nil)))))))))
+    )
+}
+
+/// The 1-based CHARACTER column of `offset`, whose line and byte column are
+/// `lc`: one plus the number of scalar starts between the line's first byte
+/// and `offset`.
+pub fn json_char_column(src: SourceInfo, offset: Nat, lc: LineCol) -> Nat {
+    let line_start = offset - (lc.col - 1);
+    1 + json_count_scalar_starts(src.contents, line_start, offset, 0)
+}
+
+// Partial (ADR 11.8.26b): `i` ascends toward `stop` — a measure recursion,
+// deferred to v2.1. Executable compiler code no proof reaches; E0063 guards it.
+#[partial]
+fn json_count_scalar_starts(s: String, i: Nat, stop: Nat, acc: Nat) -> Nat {
+    if i >= stop {
+        acc
+    } else if utf8_is_scalar_start(s, i) {
+        json_count_scalar_starts(s, i + 1, stop, acc + 1)
+    } else {
+        json_count_scalar_starts(s, i + 1, stop, acc)
+    }
+}
+
+/// The whole lines the span covers, or `null` when it ends past the source.
+fn json_span_text(src: SourceInfo, span: Span, start_lc: LineCol, end_lc: LineCol) -> String {
+    if span.end > string_len(src.contents) {
+        json_null()
+    } else {
+        json_string(string_copy_range(src.contents,
+                                      get_line_start(src, start_lc.line),
+                                      get_line_end(src, end_lc.line)))
+    }
+}

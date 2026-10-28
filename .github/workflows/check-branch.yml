@@ -1,0 +1,203 @@
+name: Check Branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      run-integration:
+        description: 'Run integration tests (slower, requires LLVM)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check (no codegen)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The three tools/ submodules are workspace members (ADR 20.7.26b,
+          # 14.8.26c, 5.9.26l) — every cargo invocation needs them checked
+          # out. All are pinned by HTTPS URL
+          # in .gitmodules precisely so the PAT below can fetch them; an SSH
+          # URL is unauthenticatable here, because actions/checkout injects
+          # an HTTPS auth header and has no key.
+          # scs-claude-hooks is private: SUBMODULES_PAT is a fine-grained PAT
+          # (Contents: Read on this repo and all three sibling repos); the
+          # GITHUB_TOKEN cannot fetch a sibling private repo. Falls back to
+          # github.token so jobs degrade (submodule fetch fails loudly) rather
+          # than break at checkout while the secret is unset.
+          submodules: true
+          token: ${{ secrets.SUBMODULES_PAT || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (no codegen)
+        run: cargo clippy -p albite_core -p albite_bootstrap -p albite_runtime --no-default-features -- -D warnings
+
+      - name: Test (no codegen)
+        run: cargo test -p albite_core -p albite_bootstrap --no-default-features
+
+      # Cache-poisoning canary (ADR 4.7.26d) — host-side, no LLVM, ~2s.
+      # Mirrors ci.yml; the 4.7.26c class is silent to every other gate.
+      - name: Cache-poisoning canary (cold vs warm)
+        run: make check-cache-poisoning-canary
+
+      # This workflow ships with the public repository, so it invokes only make
+      # targets the public make files define (ADR 25.9.26l D6, checked by
+      # `tungsten-snapshot leak-check`). The mutation-baseline, guardrail,
+      # submodule-pin, health-test, playground and coverage checks read files
+      # that do not ship and run in private-checks.yml instead.
+
+      # ADR 28.7.26a AC 3 — mirrors ci.yml. Verified in CI rather than by local
+      # report: the wasm32 build breaks in ways invisible to anyone not building
+      # for the target (a dep that only fails there, or a widened `#[cfg]`).
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Build LLVM-free bootstrap for wasm32
+        run: cargo build -p albite_bootstrap --lib --no-default-features --target wasm32-unknown-unknown
+
+  build-with-llvm:
+    name: Build with LLVM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # tools/claude-hooks and tools/scs-notify are git submodules AND
+          # workspace members (ADR 20.7.26b, 14.8.26c) — every cargo
+          # invocation needs both checked out. Both are pinned by HTTPS URL
+          # in .gitmodules precisely so the PAT below can fetch them; an SSH
+          # URL is unauthenticatable here, because actions/checkout injects
+          # an HTTPS auth header and has no key.
+          # scs-claude-hooks is private: SUBMODULES_PAT is a fine-grained PAT
+          # (Contents: Read on this repo + scs-claude-hooks + scs-notify); the
+          # GITHUB_TOKEN cannot fetch a sibling private repo. Falls back to
+          # github.token so jobs degrade (submodule fetch fails loudly) rather
+          # than break at checkout while the secret is unset.
+          submodules: true
+          token: ${{ secrets.SUBMODULES_PAT || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install LLVM 18
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 llvm-18-dev libpolly-18-dev clang-18 lld-18 zlib1g-dev libzstd-dev
+
+      # ADR 2.10.26k: mirrors ci.yml's step (the codegen crate and arm).
+      - name: Clippy (with codegen)
+        env:
+          LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+        run: cargo clippy -p albite_codegen -p albite_bootstrap --features codegen -- -D warnings
+
+      - name: Build with codegen
+        env:
+          LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+        run: cargo build --release
+
+      - name: Test with codegen
+        env:
+          LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+        run: |
+          cargo build -p albite_core
+          cargo test
+
+      - name: Test codegen crate
+        env:
+          LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+        run: cargo test -p albite_codegen
+
+      - name: Upload binary
+        if: inputs.run-integration
+        uses: actions/upload-artifact@v4
+        with:
+          name: tungsten-binary
+          path: target/release/albite
+          retention-days: 1
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: build-with-llvm
+    if: inputs.run-integration
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # tools/claude-hooks and tools/scs-notify are git submodules AND
+          # workspace members (ADR 20.7.26b, 14.8.26c) — every cargo
+          # invocation needs both checked out. Both are pinned by HTTPS URL
+          # in .gitmodules precisely so the PAT below can fetch them; an SSH
+          # URL is unauthenticatable here, because actions/checkout injects
+          # an HTTPS auth header and has no key.
+          # scs-claude-hooks is private: SUBMODULES_PAT is a fine-grained PAT
+          # (Contents: Read on this repo + scs-claude-hooks + scs-notify); the
+          # GITHUB_TOKEN cannot fetch a sibling private repo. Falls back to
+          # github.token so jobs degrade (submodule fetch fails loudly) rather
+          # than break at checkout while the secret is unset.
+          submodules: true
+          token: ${{ secrets.SUBMODULES_PAT || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install LLVM 18
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 llvm-18-dev libpolly-18-dev clang-18 lld-18 zlib1g-dev libzstd-dev
+
+      - name: Build release
+        env:
+          LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+        run: cargo build --release
+
+      - name: Golden tests
+        env:
+          LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+        run: make golden
+
+      - name: Type-check examples
+        run: |
+          failed=0
+          for f in examples/*.tg; do
+            echo "Checking $f..."
+            rm -rf examples/.tungsten
+            if ! ./target/release/albite check "$f"; then
+              failed=$((failed + 1))
+            fi
+          done
+          if [ "$failed" -gt 0 ]; then
+            echo ""
+            echo "FAILED: $failed example(s) had errors"
+            exit 1
+          fi
+
+      - name: Compile smoke test
+        env:
+          LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+        run: |
+          ./target/release/albite compile examples/hello.tg -o hello_test -v
+          output=$(./hello_test)
+          echo "Output: $output"
+          if [ "$output" != "hello world" ]; then
+            echo "FAIL: expected 'hello world', got '$output'"
+            exit 1
+          fi
+          echo "PASS: compiled program produced correct output"

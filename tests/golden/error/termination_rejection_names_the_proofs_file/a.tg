@@ -1,0 +1,2 @@
+#[partial]
+pub fn h(n: Nat) -> Nat { h(n) }

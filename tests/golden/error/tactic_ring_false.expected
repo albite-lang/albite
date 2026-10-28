@@ -1,0 +1,9 @@
+[E0087] Error: `ring`: the two sides normalise to different polynomials: `m + m + n` and `m + n + 1`
+   ╭─[tests/golden/error/tactic_ring_false.tg:3:74]
+   │
+ 3 │ theorem false_ring(n: Nat, m: Nat) -> Eq<Nat, m * 2 + n, n + m + 1> by { ring }
+   │                                                                          ──┬─  
+   │                                                                            ╰─── 
+───╯
+
+error: aborting due to 1 error

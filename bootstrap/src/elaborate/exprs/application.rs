@@ -1,0 +1,387 @@
+//! Function application elaboration.
+//!
+//! Handles:
+//! - `elab_application` - regular function application
+//! - `instantiate_polymorphic_function` - type argument inference
+//! - `extract_type_var_bindings` - unification for type inference
+
+use std::collections::HashMap;
+
+use crate::ast::Expr;
+use crate::span::{Span, Spanned};
+use albite_core::{Term, Type};
+
+use crate::elaborate::error::{ElabError, ElabErrorKind, ExpectedContext};
+use crate::elaborate::{ElabResult, Elaborator};
+
+impl<'a> Elaborator<'a> {
+    /// Elaborate function application.
+    pub(super) fn elab_application(
+        &mut self,
+        func: &Expr,
+        args: &[Expr],
+        span: Span,
+    ) -> ElabResult<(Term, Type)> {
+        // Check if this is a built-in function or constructor (handled specially)
+        if let Expr::Path(path) = func {
+            if let Some(result) = self.try_elab_special_application(path, args, span)? {
+                return Ok(result);
+            }
+        }
+
+        // `inl(e)` has no inferred type (ADR 7.10.26l D2): E0011, not E0001.
+        if let Some(refusal) = self.refuse_inferred_sum_intro(func, args, span) {
+            return Err(refusal);
+        }
+
+        // Regular function application
+        let (func_term, func_ty) = self.infer(func)?;
+
+        // Extract callee name for cross-file diagnostics (ADR 15.5.26a)
+        let callee_name = match &func_term {
+            Term::Global(name) => Some(name.clone()),
+            _ => None,
+        };
+
+        // If the function is polymorphic, try to instantiate it based on argument types
+        let (instantiated_term, instantiated_ty) =
+            self.instantiate_polymorphic_function(func_term, func_ty, args, span)?;
+
+        // Apply arguments one at a time
+        self.apply_args_sequentially(
+            instantiated_term,
+            instantiated_ty,
+            args,
+            callee_name.as_deref(),
+        )
+    }
+
+    /// Try to elaborate a path-based call as a built-in or constructor application.
+    ///
+    /// Returns `Ok(Some(...))` if handled, `Ok(None)` to fall through to regular application.
+    ///
+    /// **This table shadows the value environment, and that has consequences for
+    /// `.tg` code that no tool currently reports** (ADR 19.8.26c). A name matched
+    /// here is never resolved, so a `.tg` function carrying it is:
+    ///
+    /// - **invisible to the bootstrap** — every call site is intercepted, so
+    ///   `info def <name> --callers` truthfully reports `none` and
+    ///   `doctor audit-dead-definitions` calls it dead. Neither is wrong; both
+    ///   read as "delete me" and both are answering a bootstrap-side question;
+    /// - **load-bearing for the self-host**, whose `synth_app`
+    ///   (`src/compiler/elab/exprs/apply/app/mod.tg`) intercepts only
+    ///   `expect_type` / `expect_error` / `compare` / `substring` and the two
+    ///   `Int` bridges, and resolves everything else the ordinary way, by bare
+    ///   name.
+    ///
+    /// The tell in a Core IR dump is the **absent `global:` prefix**: a real
+    /// reference carries one, a builtin does not. `driver/modules/build/mod.tg`'s
+    /// `substring` is the live instance, and the two spellings of it disagree —
+    /// `elab_substring` takes a **length**, that function takes an **end index**.
+    /// Tracked as ADR 20.8.26c; do not "clean up" a `.tg` definition whose name
+    /// appears below without reading it first.
+    fn try_elab_special_application(
+        &mut self,
+        path: &crate::ast::Path,
+        args: &[Expr],
+        span: Span,
+    ) -> ElabResult<Option<(Term, Type)>> {
+        // Check built-in functions (Phase 3-Prep)
+        if path.is_simple() {
+            match path.item_name().name.as_str() {
+                "ref" => return self.elab_ref_new(args, span).map(Some),
+                "get" => return self.elab_ref_get(args, span).map(Some),
+                "set" => return self.elab_ref_set(args, span).map(Some),
+                "char_at" => return self.elab_char_at(args, span).map(Some),
+                "string_len" => return self.elab_string_len(args, span).map(Some),
+                "substring" => return self.elab_substring(args, span).map(Some),
+                "expect_type" => return self.elab_expect_type(args, span).map(Some),
+                "expect_error" => return self.elab_expect_error(args, span).map(Some),
+                "__compare" => return self.elab_compare(args, span).map(Some),
+                "compare" => return self.elab_compare_poly(args, span).map(Some),
+                "to_int" => return self.elab_to_int(args, span).map(Some),
+                "from_int" => return self.elab_from_int(args, span).map(Some),
+                _ => {}
+            }
+        }
+
+        // Check constructor application (both simple and qualified paths)
+        let ident = path.item_name();
+        if let Ok(Some(info)) = self
+            .env
+            .resolve_constructor_path(path, &self.current_module)
+        {
+            let info = info.clone();
+            // Check constructor visibility
+            if !self
+                .env
+                .is_constructor_accessible(&info, &self.current_module)
+            {
+                if let Some(item_module) = self.env.get_item_module(&info.type_name) {
+                    return Err(ElabError::private_item(
+                        path.span,
+                        &ident.name,
+                        "constructor",
+                        item_module.to_string(),
+                        self.current_module.to_string(),
+                    ));
+                }
+            }
+            return self
+                .elab_constructor_application(&ident.name, &info, args, span)
+                .map(Some);
+        }
+
+        Ok(None)
+    }
+
+    /// Apply arguments one at a time to a (possibly instantiated) function term.
+    ///
+    /// `callee_name` is used for cross-file diagnostics (ADR 15.5.26a): when a
+    /// type mismatch occurs on an argument and the callee is from another module,
+    /// the error gets a cross-file note pointing to the callee's definition.
+    fn apply_args_sequentially(
+        &mut self,
+        mut current_term: Term,
+        mut current_ty: Type,
+        args: &[Expr],
+        callee_name: Option<&str>,
+    ) -> ElabResult<(Term, Type)> {
+        for (position, arg) in args.iter().enumerate() {
+            let Some((binder, param_ty, result_ty)) = function_layer(&current_ty) else {
+                // Application against poison (ADR 14.8.26g §2.2): a callee
+                // whose signature failed to collect is registered as
+                // `Type::Error`, and its one recorded error already names the
+                // real fault — an E0013 here would repeat it at every call
+                // site. The argument is still inferred so its own independent
+                // faults surface; the application's result is poison, which
+                // the run-level refusal (D8) keeps out of codegen.
+                if matches!(current_ty, Type::Error) {
+                    let (arg_term, _) = self.infer(arg)?;
+                    current_term = Term::app(current_term, arg_term);
+                    current_ty = Type::Error;
+                    continue;
+                }
+                return Err(ElabError::expected_function(arg.span(), current_ty));
+            };
+
+            // Push context for better error messages on argument type mismatches
+            self.push_context(ExpectedContext::function_arg(position, arg.span()));
+            let check_result = self.check(arg, &param_ty);
+            self.pop_context();
+
+            let arg_term = match check_result {
+                Ok(term) => term,
+                Err(mut err) => {
+                    // Enrich with cross-file note if callee is from another module
+                    // (ADR 15.5.26a). Only applies to direct calls where callee_name
+                    // was extracted from Expr::Path; higher-order calls won't have it.
+                    if let Some(name) = callee_name {
+                        if let Some((file_path, def_span)) = self.cross_file_info_for_function(name)
+                        {
+                            err = err.with_cross_file_note(
+                                def_span,
+                                file_path,
+                                format!("parameter type declared in `{}`", name),
+                            );
+                        }
+                    }
+                    return Err(err);
+                }
+            };
+
+            // A dependent result mentions its parameter: substitute the
+            // argument as elaborated (ADR 30.9.26d D3).
+            current_ty = match binder {
+                Some(binder) => result_ty.substitute_term(&binder, &arg_term),
+                None => result_ty,
+            };
+            current_term = Term::app(current_term, arg_term);
+        }
+
+        Ok((current_term, current_ty))
+    }
+
+    /// Instantiate a polymorphic function type based on argument types.
+    ///
+    /// Given a function `f : forall T. T -> T` and call `f(42)`, this will:
+    /// 1. Strip off foralls to get `T -> T` with bound var `T`
+    /// 2. Infer arguments to get their types (e.g., `42 : Nat`)
+    /// 3. Match parameter type `T` against argument type `Nat` to get `T = Nat`
+    /// 4. Apply type application `f[Nat]` and return `f[Nat] : Nat -> Nat`
+    pub(super) fn instantiate_polymorphic_function(
+        &mut self,
+        func_term: Term,
+        func_ty: Type,
+        args: &[Expr],
+        span: Span,
+    ) -> ElabResult<(Term, Type)> {
+        // Collect all forall-bound type variables
+        let mut type_vars: Vec<String> = Vec::new();
+        let mut inner_ty = func_ty.clone();
+
+        while let Type::Forall(var, body) = inner_ty {
+            type_vars.push(var);
+            inner_ty = *body;
+        }
+        // A predicate is never inferred: `P<a>` against `Le<0, a>` has more
+        // than one solution, so it must be passed (ADR 6.10.26h D5).
+        if let Type::ForallPred(pred, _, _) = &inner_ty {
+            return Err(
+                ElabError::new(span, ElabErrorKind::CannotInferTypeArg(pred.clone())).with_note(
+                    format!(
+                        "`{pred}` is a predicate parameter, which is never inferred: \
+                         pass it, `::<Family>`"
+                    ),
+                ),
+            );
+        }
+
+        // If no foralls, return unchanged
+        if type_vars.is_empty() {
+            return Ok((func_term, func_ty));
+        }
+
+        // We have type variables to instantiate. Infer argument types to guide instantiation.
+        // Resolve type references (App → μ-encoding for ADTs) so that argument types
+        // are in the same representation as parameter types, enabling structural matching
+        // in extract_type_var_bindings. Without this, record field types (stored as
+        // App("List", [T])) would fail to unify with μ-encoded parameter types.
+        let mut alias_expansion_stack = std::collections::HashSet::new();
+        let mut arg_types: Vec<Type> = Vec::new();
+        for arg in args {
+            let (_, arg_ty) = self.infer(arg)?;
+            let resolved = self.resolve_type_references_impl(&arg_ty, &mut alias_expansion_stack);
+            arg_types.push(resolved);
+        }
+
+        // Build a substitution by matching parameter types against argument types
+        let mut subst: HashMap<String, Type> = HashMap::new();
+
+        // Walk through the inner type (after stripping foralls) and match with arg types
+        let mut param_ty = inner_ty.clone();
+        for arg_ty in &arg_types {
+            if let Type::Arrow(expected_param, result) | Type::Pi(_, expected_param, result) =
+                param_ty
+            {
+                // Try to extract type variable bindings from matching expected_param with arg_ty
+                self.extract_type_var_bindings(&expected_param, arg_ty, &type_vars, &mut subst);
+                param_ty = *result;
+            } else {
+                break;
+            }
+        }
+
+        // Check if we got all type variables - if not, this is an error for greedy instantiation
+        for var in &type_vars {
+            if !subst.contains_key(var) {
+                return Err(ElabError::new(
+                    span,
+                    ElabErrorKind::CannotInferTypeArg(var.clone()),
+                ));
+            }
+        }
+
+        // Apply type applications in order
+        let mut result_term = func_term;
+        let mut result_ty = func_ty;
+
+        for var in &type_vars {
+            let ty_arg = subst.get(var).unwrap();
+            result_term = Term::TyApp(Box::new(result_term), ty_arg.clone());
+
+            // Unwrap one forall and substitute
+            if let Type::Forall(v, body) = result_ty {
+                assert_eq!(&v, var);
+                result_ty = body.substitute(&v, ty_arg);
+            }
+        }
+
+        Ok((result_term, result_ty))
+    }
+
+    /// Extract type variable bindings by matching expected type against actual type.
+    ///
+    /// For example, matching `T` against `Nat` gives `T = Nat`.
+    /// Matching `Option<T>` against `Option<String>` gives `T = String`.
+    pub(super) fn extract_type_var_bindings(
+        &self,
+        expected: &Type,
+        actual: &Type,
+        type_vars: &[String],
+        subst: &mut HashMap<String, Type>,
+    ) {
+        match (expected, actual) {
+            // If expected is a type variable we're looking for, bind it
+            (Type::TyVar(v), actual) if type_vars.contains(v) => {
+                // Only bind if not already bound (first binding wins)
+                if !subst.contains_key(v) {
+                    subst.insert(v.clone(), actual.clone());
+                }
+            }
+
+            // Recurse into structural types
+            (Type::Arrow(e1, e2), Type::Arrow(a1, a2))
+            | (Type::Pi(_, e1, e2), Type::Pi(_, a1, a2))
+            // A generic lemma stated with `exists` instantiates too (ADR 4.10.26h)
+            | (Type::Sigma(_, e1, e2), Type::Sigma(_, a1, a2)) => {
+                self.extract_type_var_bindings(e1, a1, type_vars, subst);
+                self.extract_type_var_bindings(e2, a2, type_vars, subst);
+            }
+            (Type::Product(e1, e2), Type::Product(a1, a2)) => {
+                self.extract_type_var_bindings(e1, a1, type_vars, subst);
+                self.extract_type_var_bindings(e2, a2, type_vars, subst);
+            }
+            (Type::Sum(e1, e2), Type::Sum(a1, a2)) => {
+                self.extract_type_var_bindings(e1, a1, type_vars, subst);
+                self.extract_type_var_bindings(e2, a2, type_vars, subst);
+            }
+
+            // For mu types, try to extract from the body
+            (Type::Mu(v1, body1), Type::Mu(v2, body2)) if v1 == v2 => {
+                self.extract_type_var_bindings(body1, body2, type_vars, subst);
+            }
+
+            // For forall types (nested), try to extract from body
+            (Type::Forall(v1, body1), Type::Forall(v2, body2)) if v1 == v2 => {
+                self.extract_type_var_bindings(body1, body2, type_vars, subst);
+            }
+
+            // For App types (parameterized types like List<T>), decompose if names match
+            (Type::App(n1, args1), Type::App(n2, args2))
+                if n1 == n2 && args1.len() == args2.len() =>
+            {
+                for (e, a) in args1.iter().zip(args2.iter()) {
+                    self.extract_type_var_bindings(e, a, type_vars, subst);
+                }
+            }
+
+            // For Adt types, decompose type args and variant payloads
+            (Type::Adt(n1, ta1, vs1), Type::Adt(n2, ta2, vs2))
+                if n1 == n2 && ta1.len() == ta2.len() && vs1.len() == vs2.len() =>
+            {
+                for (e, a) in ta1.iter().zip(ta2.iter()) {
+                    self.extract_type_var_bindings(e, a, type_vars, subst);
+                }
+                for ((_, e), (_, a)) in vs1.iter().zip(vs2.iter()) {
+                    self.extract_type_var_bindings(e, a, type_vars, subst);
+                }
+            }
+
+            // Base types and non-matching structures: nothing to extract
+            _ => {}
+        }
+    }
+}
+
+/// One layer of a function type: its binder when dependent, its parameter
+/// type and its result type. `None` for anything that is not a function.
+fn function_layer(ty: &Type) -> Option<(Option<String>, Type, Type)> {
+    match ty {
+        Type::Arrow(param, result) => Some((None, (**param).clone(), (**result).clone())),
+        Type::Pi(binder, param, result) => {
+            Some((Some(binder.clone()), (**param).clone(), (**result).clone()))
+        }
+        _ => None,
+    }
+}

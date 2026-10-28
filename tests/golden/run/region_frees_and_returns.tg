@@ -1,0 +1,36 @@
+// Golden test (ADR 9.10.26o AC 5): regions that allocate lists, strings and
+// closures return a `Nat`, nested, and with an early `return` crossing one.
+// A `?` inside a region and outside every `try` crosses it, carrying a
+// `Result` out, so it is refused until `B1.3`; one inside a `try` returns from
+// the `try` (ADR 13.10.26o) and is pinned by `region_try_inside.tg`.
+type List<T> = Nil | Cons(T, List<T>)
+
+#[partial]
+fn build(n: Nat) -> List<Nat> {
+    if n == 0 { Nil } else { Cons(n, build(n - 1)) }
+}
+
+fn total(xs: List<Nat>) -> Nat {
+    match xs {
+        Nil => 0,
+        Cons(x, rest) => x + total(rest)
+    }
+}
+
+// The `return` crosses the region in tail position; the non-tail case, where
+// it unwinds through the region to the call (ADR 13.10.26n), is pinned by
+// `region_non_tail_return.tg`.
+fn early(n: Nat) -> Nat {
+    region {
+        if n > 10 { return 99 } else { total(build(n)) + 1 }
+    }
+}
+
+fn main() -> Nat {
+    let a = region { total(build(10)) };
+    let b = region { if "abc" ++ "def" == "abcdef" { 6 } else { 0 } };
+    let add = |x: Nat| x + a;
+    let c = region { let g = |y: Nat| add(y) * 2; g(1) };
+    let d = region { region { total(build(3)) } + 1 };
+    a + b + c + d + early(4) + early(20)
+}

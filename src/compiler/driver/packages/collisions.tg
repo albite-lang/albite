@@ -1,0 +1,213 @@
+// src/compiler/driver/packages/collisions.tg
+// The two refusals that need the mounted libraries' parsed trees (ADR
+// 6.10.26p D4), run after every `lib.tg` is parsed and before the mount, as
+// the bootstrap's `mount_packages` runs `library_module_clashes` and then
+// `cross_package_collisions` (`bootstrap/src/driver/packages/mod.rs`).
+//
+// - A library's dependency key equal to one of its own top-level modules
+//   (E0122's second kind): `use units::f` would be ambiguous. Spanned on the
+//   key, in that library's manifest.
+// - Two packages declaring one C symbol (E0123, kept for externs by ADR
+//   4.10.26j D6): an extern's symbol is its identity, so module scoping
+//   cannot separate them. Spanned on the key that introduced the later
+//   package, with each declaration named in a note.
+//
+// The decisions are the pure helpers below; only `post_mount_refusals` reads
+// the plan, through the FFI, which the evaluator does not run.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Option, Some, None, list_append, list_reverse, list_contains_string};
+use driver::modules::tree::parsed::{ParsedModule};
+use driver::modules::build::{get_module_name};
+use driver::modules::workspace::{split_lines};
+use driver::packages::ffi::{
+    PlanHandle, packages_name, packages_application_name, packages_manifest_path,
+    packages_introduced_by, packages_dependency_keys, packages_dependency_key_range
+};
+use parser::ast::nodes::{Item, ItemExtern};
+use parser::ast::common::{MaybeString, NoString, SomeString};
+use elab::error::{
+    ElabError, ErrPackageNameConflict, ErrPackageExternCollision,
+    elab_error_new, elab_error_with_note, elab_error_with_help
+};
+use lexer::span::{Span, span_new};
+
+/// Where an extern's C symbol is declared.
+pub type ExternSymbol = { symbol: String, span: Span }
+
+/// A package's name and the C symbols its tree declares.
+pub type SymbolOwner = { owner: String, symbols: List<ExternSymbol> }
+
+/// Both refusals over the plan and the parsed libraries (in plan order):
+/// the key clashes when there are any, else the extern collisions.
+pub fn post_mount_refusals(plan: PlanHandle, app: ParsedModule, libraries: List<ParsedModule>) -> List<ElabError> {
+    let clashes = library_key_clashes(plan, libraries, 0);
+    match clashes {
+        Cons(_, _) => clashes,
+        Nil() => {
+            let app_owner: SymbolOwner = { owner: packages_application_name(plan), symbols: extern_symbols(Cons(app, Nil)) };
+            extern_collisions(plan, libraries, 0, Cons(app_owner, Nil))
+        }
+    }
+}
+
+// ===========================================================================
+// A LIBRARY KEY EQUAL TO ONE OF ITS OWN MODULES
+// ===========================================================================
+
+fn library_key_clashes(plan: PlanHandle, libraries: List<ParsedModule>, index: Nat) -> List<ElabError> {
+    match libraries {
+        Nil() => Nil,
+        Cons(library, rest) => {
+            let own = top_level_module_names(library.submodules);
+            let keys = split_lines(packages_dependency_keys(plan, index));
+            let here = key_clash_errors(plan, index, keys, clashing_key_indices(keys, own, 0));
+            list_append(here, library_key_clashes(plan, rest, index + 1))
+        }
+    }
+}
+
+/// The positions, in manifest order, of the keys that name one of `own`.
+pub fn clashing_key_indices(keys: List<String>, own: List<String>, nth: Nat) -> List<Nat> {
+    match keys {
+        Nil() => Nil,
+        Cons(key, rest) =>
+            if list_contains_string(own, key) { Cons(nth, clashing_key_indices(rest, own, nth + 1)) }
+            else { clashing_key_indices(rest, own, nth + 1) }
+    }
+}
+
+/// The bootstrap's wording for a key that shadows its package's own module.
+pub fn key_clash_message(key: String, package: String) -> String {
+    "dependency `" ++ key ++ "` conflicts: `" ++ package ++ "` already has a top-level module of that name"
+}
+
+fn key_clash_errors(plan: PlanHandle, index: Nat, keys: List<String>, clashing: List<Nat>) -> List<ElabError> {
+    match clashing {
+        Nil() => Nil,
+        Cons(nth, rest) => {
+            let (start, end_pos) = packages_dependency_key_range(plan, index, nth);
+            let span = span_new(start, end_pos, packages_manifest_path(plan, index));
+            let message = key_clash_message(key_at(keys, nth), packages_name(plan, index));
+            Cons(elab_error_new(ErrPackageNameConflict(message), span), key_clash_errors(plan, index, keys, rest))
+        }
+    }
+}
+
+fn key_at(keys: List<String>, nth: Nat) -> String {
+    match keys {
+        Nil() => "",
+        Cons(key, rest) => if nth == 0 { key } else { key_at(rest, nth - 1) }
+    }
+}
+
+fn top_level_module_names(modules: List<ParsedModule>) -> List<String> {
+    match modules {
+        Nil() => Nil,
+        Cons(module, rest) => Cons(get_module_name(module), top_level_module_names(rest))
+    }
+}
+
+// ===========================================================================
+// TWO PACKAGES DECLARING ONE C SYMBOL
+// ===========================================================================
+
+fn extern_collisions(plan: PlanHandle, libraries: List<ParsedModule>, index: Nat,
+                     owners: List<SymbolOwner>) -> List<ElabError> {
+    match libraries {
+        Nil() => Nil,
+        Cons(library, rest) => {
+            let package: SymbolOwner = { owner: packages_name(plan, index), symbols: extern_symbols(Cons(library, Nil)) };
+            let here = collision_errors(plan, index, owners, package.owner, package.symbols);
+            list_append(here, extern_collisions(plan, rest, index + 1, list_append(owners, Cons(package, Nil))))
+        }
+    }
+}
+
+fn collision_errors(plan: PlanHandle, index: Nat, owners: List<SymbolOwner>,
+                    package: String, symbols: List<ExternSymbol>) -> List<ElabError> {
+    match symbols {
+        Nil() => Nil,
+        Cons(declared, rest) =>
+            prepend_collision(plan, index, earlier_owner(owners, declared.symbol), (package, declared),
+                              collision_errors(plan, index, owners, package, rest))
+    }
+}
+
+/// `tail`, with the collision `later` makes in front when an earlier owner
+/// declared its symbol.
+fn prepend_collision(plan: PlanHandle, index: Nat, earlier: Option<(String, ExternSymbol)>,
+                     later: (String, ExternSymbol), tail: List<ElabError>) -> List<ElabError> {
+    match earlier {
+        None() => tail,
+        Some(found) => Cons(collision_error(plan, index, found, later), tail)
+    }
+}
+
+/// The first owner, in mount order, already declaring `symbol`.
+pub fn earlier_owner(owners: List<SymbolOwner>, symbol: String) -> Option<(String, ExternSymbol)> {
+    match owners {
+        Nil() => None,
+        Cons(entry, rest) => match symbol_declared(entry.symbols, symbol) {
+            Some(declared) => Some((entry.owner, declared)),
+            None() => earlier_owner(rest, symbol)
+        }
+    }
+}
+
+fn symbol_declared(symbols: List<ExternSymbol>, symbol: String) -> Option<ExternSymbol> {
+    match symbols {
+        Nil() => None,
+        Cons(declared, rest) => if declared.symbol == symbol { Some(declared) } else { symbol_declared(rest, symbol) }
+    }
+}
+
+/// The bootstrap's wording for an extern collision.
+pub fn extern_collision_message(symbol: String, first: String, second: String) -> String {
+    "two packages declare the C symbol `" ++ symbol ++ "`: package `" ++ first ++ "` and package `" ++ second ++ "`"
+}
+
+fn collision_error(plan: PlanHandle, index: Nat, earlier: (String, ExternSymbol), later: (String, ExternSymbol)) -> ElabError {
+    let (owner, first) = earlier;
+    let (package, second) = later;
+    let (file, start, end_pos) = packages_introduced_by(plan, index);
+    let err = elab_error_new(ErrPackageExternCollision(extern_collision_message(first.symbol, owner, package)),
+                             span_new(start, end_pos, file));
+    let noted = elab_error_with_note(elab_error_with_note(err,
+        "`" ++ first.symbol ++ "` defined in `" ++ owner ++ "` here: " ++ first.span.file),
+        "and in `" ++ package ++ "` here: " ++ second.span.file);
+    elab_error_with_help(noted, "declare `" ++ first.symbol ++ "` once, in one package, and import it from there")
+}
+
+/// Every C symbol the trees' externs declare — the explicit `symbol`, else
+/// the extern's name — first declaration kept, root before its submodules.
+pub fn extern_symbols(trees: List<ParsedModule>) -> List<ExternSymbol> {
+    list_reverse(collect_symbols(trees, Nil))
+}
+
+fn collect_symbols(trees: List<ParsedModule>, acc: List<ExternSymbol>) -> List<ExternSymbol> {
+    match trees {
+        Nil() => acc,
+        Cons(module, rest) => {
+            let own = symbols_of_items(module.source_file.items, acc);
+            collect_symbols(rest, collect_symbols(module.submodules, own))
+        }
+    }
+}
+
+fn symbols_of_items(items: List<Item>, acc: List<ExternSymbol>) -> List<ExternSymbol> {
+    match items {
+        Nil() => acc,
+        Cons(item, rest) => match item {
+            ItemExtern(decl) => {
+                let symbol = match decl.symbol { SomeString(s) => s, NoString() => decl.name.name };
+                let kept = match symbol_declared(acc, symbol) {
+                    Some(_) => acc,
+                    None() => Cons({ symbol: symbol, span: decl.name.span } : ExternSymbol, acc)
+                };
+                symbols_of_items(rest, kept)
+            },
+            _ => symbols_of_items(rest, acc)
+        }
+    }
+}

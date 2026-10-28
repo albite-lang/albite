@@ -1,0 +1,68 @@
+// src/compiler/codegen/mod.tg
+// Self-hosted LLVM IR text emitter.
+//
+// Emits LLVM IR as text (.ll format) from CodegenIR/CodegenType.
+// This is the .tg parallel to the Rust bootstrap's albite_codegen crate.
+//
+// ## THE DRIVER NEVER REACHES THIS SUBSYSTEM (ADR 3.9.26a)
+//
+// `driver/pipeline/compile.tg`'s `run_compile` type-checks with the self-hosted
+// elaborator for diagnostics ONLY, then `exec_process`es the BOOTSTRAP binary
+// to produce the executable. Nothing on a driver path imports these files:
+// `main.tg` declares `mod codegen;` — which compiles and type-checks them on
+// every build, and is why they read as live machinery — but the only
+// `use codegen::…` in the repository sits in three entry files,
+// `test_codegen.tg`, `test_codegen_closures.tg` and `test_cir_captures.tg`.
+//
+// This is the self-host's FUTURE codegen, not debt and not dead code. What
+// does follow from being unexercised: drift here is not a bug today and is not
+// evidence of one either. `ir_expr.tg` emits
+// `call ptr @tg_string_concat(ptr, ptr)` where `albite_core`'s real
+// `tg_string_concat` takes and returns a two-field `TgString` struct, and the
+// mismatch belongs to whoever wires this subsystem into the driver.
+//
+// Census: `albite doctor audit-driver-reach src/compiler/main.tg`.
+//
+// ## Module Layout
+//
+// - ir_builder.tg    — SSA name generation, IR state threading
+// - ir_types.tg      — CodegenType → LLVM type string
+// - ir_header.tg     — Module header, extern declarations
+// - ir_main.tg       — Main wrapper generation
+// - ir_expr.tg       — CodegenIR → LLVM IR instructions
+// - ir_data.tg       — Products, records (M5)
+// - ir_sums.tg       — Sums, case analysis (M6)
+// - ir_closures/     — Lambda, fix, application (M4)
+//
+// ## Current Milestone
+//
+// M5: Products & Records (insertvalue / extractvalue)
+// M6: Sums & Case Analysis (alloca + switch + load)
+// M1–M3 basics (nat, bool, string, if/else) are included in ir_expr.tg
+//
+// ## Future Diagnostic Tools
+//
+// - `albite diff abi <type> <file>` — compare .tg emitter type layout
+//   vs bootstrap codegen (medium effort, Rust CLI)
+// - `albite info cir sites <variant> <file>` — list CIR construction
+//   sites for a given variant (small effort, Rust CLI)
+
+pub mod ir_builder;
+pub mod ir_types;
+pub mod ir_header;
+pub mod ir_main;
+pub mod ir_expr;
+pub mod ir_data;
+pub mod ir_sums;
+pub mod ir_closures;
+pub mod capture_layout;
+
+pub use codegen::ir_builder::*;
+pub use codegen::ir_types::*;
+pub use codegen::ir_header::*;
+pub use codegen::ir_main::*;
+pub use codegen::ir_expr::*;
+pub use codegen::ir_data::*;
+pub use codegen::ir_sums::*;
+pub use codegen::ir_closures::*;
+pub use codegen::capture_layout::*;

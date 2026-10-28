@@ -1,0 +1,9 @@
+[E0116] Error: `super` is a reserved keyword
+   ╭─[tests/golden/error/package_super_escape/packages/lib_a/lib.tg:1:5]
+   │
+ 1 │ use super::secret;
+   │     ──┬──  
+   │       ╰──── ReservedKeyword("super")
+───╯
+
+error: aborting due to 1 error

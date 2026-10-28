@@ -1,0 +1,210 @@
+// src/compiler/driver/pipeline/check/mod.tg
+// Check pipeline: lex → parse → elaborate (no codegen).
+//
+// The post-elaboration DIAGNOSTICS live next door in `diagnostics.tg`. They
+// are split off because they answer a different question: this file decides
+// whether the program is well-formed, that one reports on the terms a
+// well-formed program produced — and only when a flag asked for it.
+
+use driver::ffi::{
+    println, print, stderr_is_tty,
+    List, Nil, Cons
+};
+use driver::util::{
+    Result, Ok, Err, Option, Some, None,
+    nat_to_string,
+    string_eq, list_len
+};
+pub mod diagnostics;
+pub mod diagnostic_passes;
+pub mod verdict;
+
+use driver::cli::{CheckOpts, error_format_is_json};
+use driver::modules::{
+    ParsedModule,
+    tree_failure_message,
+    parsed_module_parse_errors, parsed_module_lex_errors
+};
+use driver::packages::{
+    ProjectTree, ProjectFailure, ProjectUnparsed, ProjectRefused, parse_project_tree,
+    project_module_info, report_package_notes
+};
+use parser::error::{parse_has_errors, parse_error_count};
+use lexer::error::{has_errors, error_count};
+use elab::items::{elaborate_file, ElabResult, ElabDef, elab_result_ok, elab_result_def_count, elab_result_error_count};
+use elab::items::per_module::{elaborate_module_tree};
+use elab::error::{
+    ElabError, errors_deduplicate,
+    SourceInfo,
+    render_diagnostics_limited
+};
+use elab::error::render::colors::{colorize_bold, ColorRed};
+use elab::error::{source_for_error, json_elab_error_record, json_failure_record};
+use driver::util::json::{json_line};
+use driver::pipeline::{PipelineResult, PipelineOk, PipelineErr, pipeline_tree_failure};
+use driver::pipeline::errors::{render_module_tree_errors, sources_for_errors};
+use driver::pipeline::check::diagnostics::{run_diagnostics};
+use driver::pipeline::check::verdict::{check_verdict_line};
+use elab::items::holes::{holes_stream};
+use elab::ffi::{tg_holes_authored, tg_holes_not_authored, tg_holes_resting};
+
+// ===========================================================================
+// CHECK PIPELINE
+// ===========================================================================
+
+/// Run the check pipeline: lex → parse → elaborate (no codegen).
+pub fn run_check(opts: CheckOpts) -> PipelineResult {
+    let use_color = stderr_is_tty();
+    let max_errors = opts.max_errors;
+
+    // Step 1: Parse module tree, and mount the manifest's packages (ADR 6.10.26j)
+    match parse_project_tree(opts.file) {
+        Err(failure) => check_project_failure(failure, opts, use_color, max_errors),
+        Ok(project) => {
+            report_package_notes(project.notes, opts.error_format);
+            check_parsed_module(project, opts, use_color, max_errors)
+        }
+    }
+}
+
+/// A tree that did not parse, as before; or the package planner's refusals,
+/// reported like elaboration errors (exit 1).
+fn check_project_failure(failure: ProjectFailure, opts: CheckOpts,
+                         use_color: Bool, max_errors: Nat) -> PipelineResult {
+    match failure {
+        ProjectUnparsed(tree_failure) => {
+            report_pipeline_failure(tree_failure_message(tree_failure), opts, use_color);
+            pipeline_tree_failure(tree_failure)
+        },
+        ProjectRefused(errors) => {
+            report_elab_errors(errors, opts, use_color, max_errors);
+            PipelineErr(list_len(errors))
+        }
+    }
+}
+
+/// Check a parsed module for errors, then elaborate if clean.
+fn check_parsed_module(project: ProjectTree, opts: CheckOpts,
+                       use_color: Bool, max_errors: Nat) -> PipelineResult {
+    // Walk the WHOLE tree, not just the root (ADR 12.8.26b P1/AC6): a parse
+    // error in an imported module used to be recorded and never read, so the
+    // check reported "all OK" over source it had failed to parse.
+    let total_errs = render_module_tree_errors(project.tree, opts.error_format, max_errors, use_color);
+
+    if total_errs > 0 {
+        PipelineErr(total_errs)
+    } else {
+        elaborate_parsed_module(project, opts, use_color, max_errors)
+    }
+}
+
+/// Elaborate a cleanly-parsed module.
+fn elaborate_parsed_module(project: ProjectTree, opts: CheckOpts,
+                           use_color: Bool, max_errors: Nat) -> PipelineResult {
+    // Build module info and elaborate per-module (W6.3a), with the workspace
+    // siblings' names merged under main's (ADR 3.10.26l D4, the fourth
+    // attempt). It waited on three holes: a sibling's value stub, then its
+    // constructor and type stubs, type-checking as anything (1.10.26f,
+    // 2.10.26g), and a constructor pattern resolving to nothing being
+    // accepted rather than refused (3.10.26l D1). The siblings sit beside the
+    // manifest when one governs the project (ADR 6.10.26j D4), and the info
+    // carries the package table reach is decided by (ADR 6.10.26p D2).
+    let module = project.tree;
+    let module_info = project_module_info(project);
+    let elab_result = elaborate_module_tree(module, module_info, opts.elab_mode);
+
+    handle_elab_result(elab_result, module, opts, use_color, max_errors)
+}
+
+/// Handle elaboration result: success or render errors.
+fn handle_elab_result(elab_result: ElabResult, module: ParsedModule, opts: CheckOpts,
+                      use_color: Bool, max_errors: Nat) -> PipelineResult {
+    if elab_result_ok(elab_result) {
+        // Run diagnostics if requested
+        run_diagnostics(elab_result.defs, opts);
+        // Count the holes and the theorems resting on them (ADR 16.10.26g D3).
+        // The stream runs in JSON mode too, so the exit code does not depend
+        // on the output format. A definition the seam refused is a hole nobody
+        // counted, so it fails the check — stricter, deliberately, than the
+        // termination stream, which leaves its recorded error unread.
+        if holes_stream(elab_result.defs) {
+            report_check_success(elab_result, opts)
+        } else {
+            report_pipeline_failure(
+                "the holes seam refused a definition, so its sorry and axiom count is incomplete",
+                opts, use_color);
+            PipelineErr(1)
+        }
+    } else {
+        report_elab_errors(elab_result.errors, opts, use_color, max_errors);
+        PipelineErr(elab_result_error_count(elab_result))
+    }
+}
+
+/// Report success UNCONDITIONALLY, not just under --verbose.
+///
+/// This line used to be verbose-gated, so a successful `albite1 check <file>`
+/// printed nothing at all and was indistinguishable from a run that had
+/// silently done no work — measured during ADR 5.8.26b, where confirming that a
+/// 7 s check was not vacuous required building a deliberately ill-typed fixture
+/// and watching for an error. A checker whose success is silent cannot be
+/// trusted to have checked anything.
+///
+/// The wording matches the bootstrap's byte-for-byte, holes clauses included
+/// (`check_verdict_line`, ADR 16.10.26g), so the two compilers' output can be
+/// diffed directly. Like the bootstrap it exits 0 on a `⚠` line.
+///
+/// It is human mode's alone: in JSON mode stdout holds records only (ADR
+/// 30.9.26h D1), so a clean JSON check writes nothing. The unit arm goes
+/// second: the self-host cannot type a `{}` that leads an `if`, reading it as
+/// an unannotated record.
+fn report_check_success(elab_result: ElabResult, opts: CheckOpts) -> PipelineResult {
+    let def_count = elab_result_def_count(elab_result);
+    if !error_format_is_json(opts.error_format) {
+        println(check_verdict_line(
+            opts.file, def_count,
+            tg_holes_authored(), tg_holes_not_authored(), tg_holes_resting()
+        ))
+    } else {
+        {}
+    };
+    PipelineOk(def_count)
+}
+
+/// Render elaboration errors — or the package planner's, which are records
+/// of the same shape — as JSON records or human diagnostics.
+fn report_elab_errors(errors: List<ElabError>, opts: CheckOpts,
+                      use_color: Bool, max_errors: Nat) -> Unit {
+    // Each error is resolved against ITS OWN file's source (ADR 30.9.26h
+    // D2): with the root's, an error from an imported module landed on the
+    // root's last line at a byte-offset column.
+    let deduped = errors_deduplicate(errors);
+    let sources = sources_for_errors(deduped);
+    if error_format_is_json(opts.error_format) {
+        // No summary and no --max-errors budget in JSON (28.9.26e D5).
+        print_elab_error_records(deduped, sources)
+    } else {
+        eprintln(render_diagnostics_limited(deduped, sources, max_errors, use_color))
+    }
+}
+
+/// The module tree could not be read: a `code: null` record in JSON mode, the
+/// `error: …` line in human mode.
+fn report_pipeline_failure(err_msg: String, opts: CheckOpts, use_color: Bool) -> Unit {
+    if error_format_is_json(opts.error_format) {
+        print(json_line(json_failure_record(err_msg)))
+    } else {
+        eprintln(colorize_bold("error", ColorRed, use_color) ++ ": " ++ err_msg)
+    }
+}
+
+/// One schema-1 record per elaboration error, on stdout.
+fn print_elab_error_records(errors: List<ElabError>, sources: List<SourceInfo>) -> Unit {
+    match errors {
+        Nil() => {},
+        Cons(err, rest) => {
+            print(json_line(json_elab_error_record(err, source_for_error(sources, err))));
+            print_elab_error_records(rest, sources)
+        }
+    }
+}

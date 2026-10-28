@@ -1,0 +1,40 @@
+// Golden test (ADR 13.10.26q D6): a 500-element `List<Nat>` built in a
+// region is copied out node by node — the runtime walks it with an explicit
+// work stack, so its length costs no C stack — and summed after the region
+// is released. A second region returns `Option<List<Nat>>`, in each arm. The
+// 1,000,000-element case is `tests/region_copy_million.tg`, native only:
+// the evaluator cannot build it in minutes.
+type List<T> = Nil | Cons(T, List<T>)
+type Option<T> = None | Some(T)
+
+#[partial]
+fn build(n: Nat, acc: List<Nat>) -> List<Nat> {
+    if n == 0 { acc } else { build(n - 1, Cons(n % 10, acc)) }
+}
+
+#[partial]
+fn total(xs: List<Nat>, acc: Nat) -> Nat {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => total(rest, acc + x)
+    }
+}
+
+fn maybe_list(n: Nat) -> Option<List<Nat>> {
+    region {
+        if n == 0 { None } else { Some(build(n, Nil)) }
+    }
+}
+
+fn main() -> Nat {
+    let xs = region { build(500, Nil) };
+    let some = match maybe_list(5) {
+        None => 0,
+        Some(ys) => total(ys, 0)
+    };
+    let none = match maybe_list(0) {
+        None => 7,
+        Some(_) => 0
+    };
+    total(xs, 0) * 1000 + some * 10 + none
+}

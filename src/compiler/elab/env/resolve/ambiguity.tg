@@ -1,0 +1,193 @@
+// src/compiler/elab/env/resolve/ambiguity.tg
+// An ambiguous bare value (ADR 7.10.26e), the bootstrap's `E0019` rule
+// (ADR 4.10.26j D3): a bare name the module neither defines nor imports falls
+// through to the program-wide table, and when two modules that define it are
+// both reachable and visible from the caller, neither is chosen.
+//
+// The global slot cannot answer this: its entries are keyed on the bare name,
+// stamped `VisPublic` and span-less (`extract_value_infos`). The combined
+// pass's own definitions keep each one's declared visibility and its span, so
+// `extract_global_exports` keeps those whose bare name a definition in another
+// file shares, and `build_shared_base_env` seeds them, once per walk, into a
+// slot of their own. A defining module is recovered from the span's file
+// (`module_of_file`), as reach recovers a constructor's.
+//
+// Only definitions count: a re-export is an import, never an entry in the
+// combined pass's values, and a function whose signature fails is never
+// registered there — the bootstrap does not count one either (P0.5).
+// Constructors are not counted (4.10.26j D3 is about values).
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Option, Some, None, list_len, list_reverse, list_eq_string, list_is_prefix_or_eq_string};
+use driver::util::{nat_to_string, string_join};
+use driver::modules::info::{ModuleFileEntry};
+use driver::packages::table::{PackageTable, package_of_path, package_id_eq, package_path_may_reach};
+use parser::ast::common::{Visibility, VisPrivate, VisCrate, VisPublic};
+use lexer::span::{Span};
+use elab::env::types::{Env, env_current_module_contents};
+use elab::env::ops::{elab_path_segments};
+use elab::env::defs::{ValueDefInfo, value_def_list_lookup, SomeValueDef, NoValueDef};
+use elab::env::defs::{EnvError, env_error_coded};
+use elab::env::module::{
+    ElabModulePath, MkElabModulePath, module_map_lookup, SomeModuleContents, NoModuleContents,
+    module_contents_lookup_import, SomeImport, NoImport
+};
+use elab::env::resolve::reach::{module_of_file};
+
+/// The slot holding the definitions whose bare name another file's definition
+/// shares. `<…>` is no identifier, so no declared module can share the path.
+pub fn elab_module_path_shared_value_names() -> ElabModulePath {
+    MkElabModulePath(Cons("<shared-value-names>", Nil))
+}
+
+/// What the candidates are judged against: where each module's source is,
+/// which package may name which, and the calling module's path.
+pub type AmbiguityScope = { files: List<ModuleFileEntry>, packages: PackageTable, caller: List<String> }
+
+// ===========================================================================
+// THE CANDIDATE COUNT (pure)
+// ===========================================================================
+
+/// The modules a bare `name` could mean at the fall-through: each distinct
+/// module defining it that the caller's package may reach and whose
+/// definition the caller may see, in the order `defs` lists them. Two or
+/// more is ambiguous. The seeded slot lists definitions in source order,
+/// since its batch registration reverses the newest-first combined list.
+pub fn ambiguous_candidates(defs: List<ValueDefInfo>, name: String, scope: AmbiguityScope) -> List<List<String>> {
+    list_reverse(candidates_acc(defs, name, scope, Nil))
+}
+
+fn candidates_acc(defs: List<ValueDefInfo>, name: String, scope: AmbiguityScope, acc: List<List<String>>) -> List<List<String>> {
+    match defs {
+        Nil() => acc,
+        Cons(def, rest) =>
+            if def.name == name { candidates_acc(rest, name, scope, admit_candidate(acc, def, scope)) }
+            else { candidates_acc(rest, name, scope, acc) }
+    }
+}
+
+/// `acc` with `def`'s module added, if it is a new, reachable, visible one.
+/// A definition with no known module (a builtin's, a stub's) is no candidate.
+fn admit_candidate(acc: List<List<String>>, def: ValueDefInfo, scope: AmbiguityScope) -> List<List<String>> {
+    match module_of_file(scope.files, def.span.file) {
+        None() => acc,
+        Some(module) =>
+            if module_listed(acc, module) { acc }
+            else if definition_admitted(scope, def.visibility, module) { Cons(module, acc) }
+            else { acc }
+    }
+}
+
+fn module_listed(modules: List<List<String>>, module: List<String>) -> Bool {
+    match modules {
+        Nil() => false,
+        Cons(listed, rest) => if list_eq_string(listed, module) { true } else { module_listed(rest, module) }
+    }
+}
+
+/// Reach first (6.10.26p D3), then visibility, judged as `env_check_visibility`
+/// (`elab/env/ops.tg`) judges it, over the injected scope instead of an `Env`.
+pub fn definition_admitted(scope: AmbiguityScope, visibility: Visibility, module: List<String>) -> Bool {
+    if package_path_may_reach(scope.packages, scope.caller, module) {
+        match visibility {
+            VisPublic() => true,
+            VisCrate() => package_id_eq(package_of_path(scope.packages, module), package_of_path(scope.packages, scope.caller)),
+            VisPrivate() => list_is_prefix_or_eq_string(module, scope.caller)
+        }
+    } else {
+        false
+    }
+}
+
+/// The definitions whose bare name a definition in another file shares, in
+/// their original order: the only ones that can make a bare name ambiguous.
+/// Computed once per walk, so the fall-through scans a short list.
+pub fn definitions_sharing_a_name(defs: List<ValueDefInfo>) -> List<ValueDefInfo> {
+    list_reverse(sharing_acc(defs, defs, Nil))
+}
+
+fn sharing_acc(all: List<ValueDefInfo>, remaining: List<ValueDefInfo>, acc: List<ValueDefInfo>) -> List<ValueDefInfo> {
+    match remaining {
+        Nil() => acc,
+        Cons(def, rest) =>
+            if def.span.file != "" && defined_in_another_file(all, def) { sharing_acc(all, rest, Cons(def, acc)) }
+            else { sharing_acc(all, rest, acc) }
+    }
+}
+
+fn defined_in_another_file(defs: List<ValueDefInfo>, def: ValueDefInfo) -> Bool {
+    match defs {
+        Nil() => false,
+        Cons(other, rest) =>
+            if other.name == def.name && other.span.file != "" && other.span.file != def.span.file { true }
+            else { defined_in_another_file(rest, def) }
+    }
+}
+
+/// The refusal's text: the bootstrap's message, then the qualified paths its
+/// help line names, since an `EnvError` carries no help.
+pub fn ambiguity_message(name: String, candidates: List<List<String>>) -> String {
+    "`" ++ name ++ "` is ambiguous: " ++ nat_to_string(list_len(candidates))
+        ++ " definitions are visible here; qualify it: "
+        ++ string_join(spelled_paths(candidates, name), " or ") ++ ", or import one with `use`"
+}
+
+fn spelled_paths(candidates: List<List<String>>, name: String) -> List<String> {
+    match candidates {
+        Nil() => Nil,
+        Cons(module, rest) => Cons("`" ++ qualified_value_path(module, name) ++ "`", spelled_paths(rest, name))
+    }
+}
+
+/// `x::helper`; a root definition is spelled bare, as the bootstrap spells it.
+fn qualified_value_path(module: List<String>, name: String) -> String {
+    match module {
+        Nil() => name,
+        Cons(_, _) => string_join(module, "::") ++ "::" ++ name
+    }
+}
+
+// ===========================================================================
+// THE REFUSAL (reads the Env)
+// ===========================================================================
+
+/// The `E0105` refusal for a bare value the fall-through resolved, or `None`.
+/// Only the fall-through can be ambiguous (D1), so a name the module defines
+/// or imports never is, however many other modules define it.
+pub fn bare_value_ambiguity(env: Env, name: String, span: Span) -> Option<EnvError> {
+    let candidates = ambiguous_candidates(shared_value_definitions(env), name, ambiguity_scope(env));
+    if list_len(candidates) < 2 {
+        None
+    } else if defined_or_imported_here(env, name) {
+        None
+    } else {
+        Some(env_error_coded(ambiguity_message(name, candidates), span, "E0105"))
+    }
+}
+
+fn ambiguity_scope(env: Env) -> AmbiguityScope {
+    { files: env.module_registry.module_files, packages: env.module_registry.packages,
+      caller: elab_path_segments(env.current_module) } : AmbiguityScope
+}
+
+fn shared_value_definitions(env: Env) -> List<ValueDefInfo> {
+    match module_map_lookup(env.modules, elab_module_path_shared_value_names()) {
+        SomeModuleContents(contents) => contents.values,
+        NoModuleContents() => Nil
+    }
+}
+
+fn defined_or_imported_here(env: Env, name: String) -> Bool {
+    let contents = env_current_module_contents(env);
+    match value_def_list_lookup(contents.values, name) {
+        SomeValueDef(_) => true,
+        NoValueDef() => imported_here(env, name)
+    }
+}
+
+fn imported_here(env: Env, name: String) -> Bool {
+    match module_contents_lookup_import(env_current_module_contents(env), name) {
+        SomeImport(_) => true,
+        NoImport() => false
+    }
+}

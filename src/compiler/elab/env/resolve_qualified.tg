@@ -1,0 +1,231 @@
+// src/compiler/elab/env/resolve_qualified.tg
+// Qualified-path resolution (module::Type, module::value), moved out of
+// resolve_path.tg so the names-only guards (ADR 2.10.26g D2, D3) fit beside it.
+
+use parser::ast::{
+    Ident, ident_name,
+    ident_list_is_empty
+};
+use driver::ffi::{List, Nil, Cons};
+use elab::env::types::{Env};
+use elab::env::defs::{
+    type_def_list_lookup, type_def_is_names_only,
+    value_def_list_lookup, value_def_is_names_only,
+    constructor_list_lookup, constructor_is_names_only,
+    NoTypeDef, SomeTypeDef,
+    NoValueDef, SomeValueDef,
+    NoConstructor, SomeConstructor
+};
+use elab::env::defs::{
+    ResolvedGlobal, ResolvedConstructor, ResolvedTypeDef,
+    TypePathResult, TypePathOk, TypePathErr,
+    ValuePathResult, ValuePathOk, ValuePathErr,
+    env_error_coded
+};
+use elab::env::module::{
+    ElabModulePath, MkElabModulePath,
+    ModuleContents,
+    NoModuleContents, SomeModuleContents,
+    module_map_lookup,
+    elab_module_path_to_string
+};
+use elab::env::ops::{env_check_visibility, elab_path_segments};
+use elab::env::module::{MaybeModuleContents};
+use driver::packages::table::{package_table_is_empty, package_absolute_candidate, package_path_may_reach};
+use lexer::span::Span;
+use elab::env::defs::{
+    NoResolvedValue, SomeResolvedValue, NoResolvedType, SomeResolvedType
+};
+use elab::env::module::{module_contents_lookup_import, SomeImport};
+use elab::env::resolve::{env_resolve_type_via_imports, env_resolve_value_via_imports};
+use elab::env::resolve::fallback::{
+    env_resolve_type_in_global_table, env_resolve_value_in_global_table
+};
+
+// ===========================================================================
+// QUALIFIED PATH RESOLUTION
+// ===========================================================================
+
+/// The module a qualified path names, and its contents when the current
+/// package may name it (ADR 6.10.26p D3): the absolute candidate — rooted at
+/// the package unless the path starts with a declared dependency — when it
+/// exists, else the path as written. Out of reach is unknown. Without a
+/// manifest the candidate is the path as written and everything is in reach.
+fn qualified_module(env: Env, written: ElabModulePath) -> (ElabModulePath, MaybeModuleContents) {
+    let table = env.module_registry.packages;
+    if package_table_is_empty(table) {
+        (written, module_map_lookup(env.modules, written))
+    } else {
+        let current = elab_path_segments(env.current_module);
+        let absolute = MkElabModulePath(package_absolute_candidate(table, current, elab_path_segments(written)));
+        let chosen = match module_map_lookup(env.modules, absolute) {
+            SomeModuleContents(_) => absolute,
+            NoModuleContents() => written
+        };
+        if package_path_may_reach(table, current, elab_path_segments(chosen)) {
+            (chosen, module_map_lookup(env.modules, chosen))
+        } else {
+            (chosen, NoModuleContents)
+        }
+    }
+}
+
+/// Helper: resolve qualified type path.
+pub fn env_resolve_qualified_type_path(env: Env, segments: List<Ident>, span: Span) -> TypePathResult {
+    let (module_path, found) = qualified_module(env, ident_list_to_module_path_init(segments));
+    let type_name = ident_list_last_name(segments);
+
+    match found {
+        NoModuleContents() =>
+            TypePathErr(env_error_coded("unknown module in path", span, "E0102")),
+        SomeModuleContents(contents) =>
+            resolve_type_in_module(env, contents, type_name, module_path, span)
+    }
+}
+
+fn resolve_type_in_module(env: Env, contents: ModuleContents, type_name: String, module_path: ElabModulePath, span: Span) -> TypePathResult {
+    match type_def_list_lookup(contents.types, type_name) {
+        SomeTypeDef(def) =>
+            if type_def_is_names_only(def) {
+                // An undeclared sibling's type name is not a type (ADR 2.10.26g D3).
+                TypePathErr(env_error_coded("unknown type: " ++ type_name, span, "E0100"))
+            } else if env_check_visibility(env, def.visibility, module_path) {
+                TypePathOk(ResolvedTypeDef(def))
+            } else {
+                let defined_in = elab_module_path_to_string(module_path);
+                let accessed_from = elab_module_path_to_string(env.current_module);
+                TypePathErr(env_error_coded(
+                    "type `" ++ type_name ++ "` is private (defined in `" ++ defined_in ++ "`) and cannot be accessed from `" ++ accessed_from ++ "`",
+                    span,
+                    "E0104"
+                ))
+            },
+        NoTypeDef() => resolve_reexported_type(env, contents, type_name, span)
+    }
+}
+
+/// A name the target re-exports with `pub use` (ADR 4.10.26l D1): its slot
+/// holds the import, not the definition. Resolved through that import, else by
+/// the source name in the global table while its source module is not yet
+/// elaborated. A target's private `use`s are not in its exported slot, and a
+/// re-exported type brings no constructors, so neither is found here.
+fn resolve_reexported_type(env: Env, contents: ModuleContents, name: String, span: Span) -> TypePathResult {
+    let SomeImport(imp) = module_contents_lookup_import(contents, name) else {
+        return TypePathErr(env_error_coded("unknown type: " ++ name, span, "E0100"))
+    };
+    let found = match env_resolve_type_via_imports(env, Cons(imp, Nil), name) {
+        SomeResolvedType(resolved) => SomeResolvedType(resolved),
+        NoResolvedType() => env_resolve_type_in_global_table(env, imp.source_name)
+    };
+    match found {
+        SomeResolvedType(resolved) => TypePathOk(resolved),
+        NoResolvedType() => TypePathErr(env_error_coded("unknown type: " ++ name, span, "E0100"))
+    }
+}
+
+/// The value counterpart of `resolve_reexported_type`.
+fn resolve_reexported_value(env: Env, contents: ModuleContents, name: String, span: Span) -> ValuePathResult {
+    let SomeImport(imp) = module_contents_lookup_import(contents, name) else {
+        return ValuePathErr(env_error_coded("unknown value: " ++ name, span, "E0101"))
+    };
+    let found = match env_resolve_value_via_imports(env, Cons(imp, Nil), name) {
+        SomeResolvedValue(resolved) => SomeResolvedValue(resolved),
+        NoResolvedValue() => env_resolve_value_in_global_table(env, imp.source_name)
+    };
+    match found {
+        SomeResolvedValue(resolved) => ValuePathOk(resolved),
+        NoResolvedValue() => ValuePathErr(env_error_coded("unknown value: " ++ name, span, "E0101"))
+    }
+}
+
+/// Helper: resolve qualified value path.
+pub fn env_resolve_qualified_value_path(env: Env, segments: List<Ident>, span: Span) -> ValuePathResult {
+    let (module_path, found) = qualified_module(env, ident_list_to_module_path_init(segments));
+    let value_name = ident_list_last_name(segments);
+
+    match found {
+        NoModuleContents() =>
+            ValuePathErr(env_error_coded("unknown module in path", span, "E0102")),
+        SomeModuleContents(contents) =>
+            resolve_value_in_module(env, contents, value_name, module_path, span)
+    }
+}
+
+fn resolve_value_in_module(env: Env, contents: ModuleContents, value_name: String, module_path: ElabModulePath, span: Span) -> ValuePathResult {
+    match value_def_list_lookup(contents.values, value_name) {
+        SomeValueDef(def) =>
+            if value_def_is_names_only(def) {
+                // An undeclared sibling's name is not a value (ADR 1.10.26f D2).
+                resolve_constructor_in_module(env, contents, value_name, module_path, span)
+            } else if env_check_visibility(env, def.visibility, module_path) {
+                ValuePathOk(ResolvedGlobal(def.name, def.ty))
+            } else {
+                let defined_in = elab_module_path_to_string(module_path);
+                let accessed_from = elab_module_path_to_string(env.current_module);
+                ValuePathErr(env_error_coded(
+                    "function `" ++ value_name ++ "` is private (defined in `" ++ defined_in ++ "`) and cannot be accessed from `" ++ accessed_from ++ "`",
+                    span,
+                    "E0104"
+                ))
+            },
+        NoValueDef() =>
+            resolve_constructor_in_module(env, contents, value_name, module_path, span)
+    }
+}
+
+fn resolve_constructor_in_module(env: Env, contents: ModuleContents, value_name: String, module_path: ElabModulePath, span: Span) -> ValuePathResult {
+    match constructor_list_lookup(contents.constructors.all, value_name) {
+        SomeConstructor(info) =>
+            if constructor_is_names_only(info) {
+                // An undeclared sibling's constructor is not a value (ADR 2.10.26g D2).
+                ValuePathErr(env_error_coded("unknown value: " ++ value_name, span, "E0101"))
+            } else if env_check_visibility(env, info.visibility, module_path) {
+                ValuePathOk(ResolvedConstructor(info))
+            } else {
+                let defined_in = elab_module_path_to_string(module_path);
+                let accessed_from = elab_module_path_to_string(env.current_module);
+                ValuePathErr(env_error_coded(
+                    "constructor `" ++ value_name ++ "` is private (defined in `" ++ defined_in ++ "`) and cannot be accessed from `" ++ accessed_from ++ "`",
+                    span,
+                    "E0104"
+                ))
+            },
+        NoConstructor() => resolve_reexported_value(env, contents, value_name, span)
+    }
+}
+
+// ===========================================================================
+// HELPERS
+// ===========================================================================
+
+/// Helper: convert all but last ident to module path.
+fn ident_list_to_module_path_init(list: List<Ident>) -> ElabModulePath {
+    MkElabModulePath(ident_list_to_string_list_init(list))
+}
+
+/// Helper: convert ident list to string list, excluding last element.
+fn ident_list_to_string_list_init(list: List<Ident>) -> List<String> {
+    match list {
+        Nil() => Nil,
+        Cons(id, rest) =>
+            if ident_list_is_empty(rest) {
+                let empty: List<String> = Nil;
+                empty
+            } else {
+                Cons(ident_name(id), ident_list_to_string_list_init(rest))
+            }
+    }
+}
+
+/// Helper: get last name from ident list.
+fn ident_list_last_name(list: List<Ident>) -> String {
+    match list {
+        Nil() => "",
+        Cons(id, rest) =>
+            if ident_list_is_empty(rest) {
+                ident_name(id)
+            } else {
+                ident_list_last_name(rest)
+            }
+    }
+}

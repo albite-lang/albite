@@ -1,0 +1,119 @@
+// src/compiler/elab/error/mod.tg
+// Error types and formatting for the elaborator.
+//
+// This module re-exports all error-related types and functions.
+//
+// Structure:
+// - kinds/:      ElabErrorKind enum, plus its code and message projections
+// - expected.tg: ExpectedBecause for bidirectional type checking context
+// - list.tg:     ElabError type, list operations, deduplication
+// - source.tg:   SourceInfo for line/column lookup
+// - format.tg:   Basic plain-text error formatting
+// - render.tg:   Rust-style diagnostic rendering with source context
+// - construct.tg: the `elab_error_*` constructors and decorators
+//
+// This file is the module FACE — what the elaborator may import. Building an
+// error is a separate concern and lives in `construct.tg`, which is where the
+// file was split when it passed the .tg size advisory.
+
+// Submodules are private - only re-exported items are accessible
+mod kinds;
+mod expected;
+mod list;
+mod source;
+mod format;
+mod render;
+mod construct;
+
+// Re-export from kinds
+pub use elab::error::kinds::{
+    ElabErrorKind,
+    ErrTypeMismatch, ErrArityMismatch, ErrNotAFunction, ErrNotAType,
+    ErrNotAnAdt, ErrNotASum, ErrNotAPair, ErrCannotInfer, ErrIntLiteralOutOfRange,
+    ErrUnresolvedType, ErrUnresolvedValue, ErrUnresolvedModule,
+    ErrDuplicateDef, ErrDuplicateImport, ErrPrivateAccess, ErrAmbiguousName,
+    ErrBuiltinTypeRedefined, ErrGlobConflict,
+    ErrManifestInvalid, ErrDependencyNotFound, ErrPackageNameConflict,
+    ErrPackageExternCollision, ErrDependencyCycle,
+    ErrMissingReturnType, ErrInvalidExtern, ErrImportNotFound,
+    ErrGlobImportEmpty, ErrCyclicDependency, ErrInvalidVisibility, ErrMissingBody,
+    ErrInexhaustiveMatch, ErrUnreachablePattern, ErrConstructorNotFound,
+    ErrDuplicateField, ErrMissingField, ErrExtraField, ErrMultiArmMatch,
+    ErrUnsupportedPattern,
+    ErrProofRequired, ErrSorryInProd, ErrInvalidRefl,
+    ErrSubstExpectedEquality, ErrTransEndpointMismatch, ErrCongExpectedFunction,
+    ErrMotiveNotPredicate, ErrMotiveDomainMismatch, ErrMotiveBodyNotType,
+    ErrRefInPureContext, ErrCannotMutate,
+    ErrNoReturnContext, ErrNoMainFunction, ErrInvalidMainSig,
+    ErrNonStrictlyPositive, ErrCannotProveTermination, ErrPartialInProof,
+    ErrHandleUsedAfterConsumed, ErrHandleCapturedByClosure,
+    ErrRegionNotFirstOrder, ErrRegionReachesOutside, ErrRegionInProof,
+    ErrRecursionLimitExceeded, ErrPhase1Violation, ErrNotImplemented, ErrCoded, ErrOther,
+    error_kind_code, error_kind_message
+};
+
+// Re-export from expected
+pub use elab::error::expected::{
+    ExpectedBecause,
+    ExpFunctionReturn, ExpIfCondition, ExpIfBranch,
+    ExpMatchScrutinee, ExpMatchBranch, ExpLetAnnotation,
+    ExpArgumentType, ExpBinaryOperand, ExpUnaryOperand,
+    ExpFieldType, ExpConstructorArg, ExpTypeAnnotation,
+    ExpProofObligation, ExpOther,
+    MaybeExpectedBecause, NoExpectedBecause, SomeExpectedBecause,
+    expected_because_span, expected_because_message
+};
+
+// Re-export from list
+pub use elab::error::list::{
+    Suggestion, suggestion_new,
+    // SuggestionList is now List<Suggestion>
+    ElabError,
+    // ElabErrorList is now List<ElabError>
+    // Use generic helpers from driver::util: list_len, list_is_empty, list_append, list_reverse
+    string_list_join,
+    errors_deduplicate
+};
+
+// Re-export from source
+// LineList is now List<Nat> using driver::ffi::{List, Nil, Cons}
+pub use elab::error::source::{
+    SourceInfo, LineCol,
+    source_info_new, source_for_file, offset_to_line_col,
+    get_line_start, get_line_end, get_line_content, line_count
+};
+
+// Re-export from format
+pub use elab::error::format::{
+    format_elab_error, format_elab_errors
+};
+
+// Re-export from render
+pub use elab::error::render::{
+    // Colors
+    Color, ColorRed, ColorYellow, ColorBlue, ColorGreen, ColorCyan, ColorMagenta, ColorBold, ColorReset,
+    color_code, colorize, colorize_bold,
+    // Labels (DiagLabelList is now List<DiagLabel>)
+    DiagLabel,
+    // Rendering (plain)
+    render_diagnostic, render_diagnostics,
+    // Rendering (colored)
+    render_diagnostic_colored, render_diagnostics_colored,
+    // Rendering (with limits)
+    render_diagnostics_limited, default_max_errors, source_for_error,
+    // Helpers
+    detect_common_mistake, suggest_brace_syntax, suggest_line_comment
+};
+
+use lexer::span::Span;
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{TypeHandle, INVALID_HANDLE};
+
+// Re-export the schema-1 record builders (ADR 30.9.26h D6)
+pub use elab::error::render::json::{
+    json_elab_error_record, json_parse_error_record, json_lex_error_record,
+    json_failure_record, json_note_record
+};
+
+// Re-export from construct
+pub use elab::error::construct::*;

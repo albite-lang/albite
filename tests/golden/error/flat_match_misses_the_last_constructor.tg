@@ -1,0 +1,12 @@
+// Golden test (ADR 13.10.26l): a payload match missing the LAST constructor.
+// The self-host used to give `C(5)` the second arm's `2`. Both compilers now
+// refuse it at the `match`. E0020.
+type P = A(Nat) | B(Nat) | C(Nat)
+
+fn f(q: P) -> Nat {
+    match q { A(x) => 1, B(y) => 2 }
+}
+
+fn main() -> Nat {
+    f(C(5))
+}

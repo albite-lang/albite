@@ -1,0 +1,10 @@
+// An unresolved constructor nested under a resolved one (ADR 3.10.26l §2.4,
+// D1): the desugared inner match re-enters the ADT route and its guard.
+type InnerNest = NadaNest | AlgoNest(Nat)
+type OuterNest = WrapNest(InnerNest) | EmptyNest
+
+fn pick(o: OuterNest) -> Nat {
+    match o { WrapNest(Foo(k)) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(EmptyNest) }

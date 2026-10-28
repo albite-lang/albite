@@ -1,0 +1,30 @@
+// A guard on any arm of a match over a user type is refused (ADR 13.10.26v
+// AC 2, D2).
+//
+// Neither compiler supports such a guard, and before 13.10.26v the bootstrap
+// refused it only on a constructor arm: on a catch-all it was dropped and the
+// arm ran with its condition false. These cases run through the bootstrap;
+// the self-host's own order is checked by AC 3 on `albite1`, since a `.tg`
+// test runs on the bootstrap.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+
+type GuardKind = | Holds(Nat) | Empty
+
+type GuardColor = | Crimson | Emerald | Azure
+
+// 13.10.26v AC2: accepted before D2, which returned 50 with the guard false.
+fn test_a_guard_on_a_wildcard_is_refused() -> Unit {
+    let kind: GuardKind = Empty();
+    let condition: Bool = false;
+    expect_error(match kind { Holds(n) => n, _ if condition => 50 }, "E0100")
+}
+
+// 13.10.26v AC2: arms elaborate by constructor index, so `Crimson`'s guard is
+// the one reported, though `Emerald`'s comes first in the source.
+fn test_two_guards_refuse_at_the_lower_index() -> Unit {
+    let color: GuardColor = Crimson();
+    let first: Bool = false;
+    let second: Bool = false;
+    expect_error(match color { Emerald() if first => 2, Crimson() if second => 1, Azure() => 3 }, "E0100")
+}

@@ -1,0 +1,67 @@
+// Golden test (ADR 13.10.26q D6): every exit that crosses a region copies
+// its value out before the release — a `return` of a String under a `let`
+// (ADR 13.10.26n), a crossing `?` carrying `Err(String)`, a `?` inside a
+// `try` inside a region, which crosses nothing (ADR 13.10.26o), and a region
+// inside a `try` — a closure — whose crossing `?` carries the closure's own
+// return type. Source lambdas cannot `return`, so a `try` is the only closure
+// a crossing exit can leave.
+type Result<T, E> = Ok(T) | Err(E)
+
+fn greet(n: Nat) -> String {
+    let r = region {
+        let s: String = if n > 10 { return "big" ++ "!" } else { "small" ++ "?" };
+        s ++ "."
+    };
+    r ++ r
+}
+
+fn half(n: Nat) -> Result<Nat, String> {
+    if n % 2 == 0 { Ok(n / 2) } else { Err("odd" ++ "!") }
+}
+
+fn crossing_q(n: Nat) -> Result<Nat, String> {
+    let v = region { half(n)? + 1 };
+    Ok(v)
+}
+
+fn inside_try(n: Nat) -> Nat {
+    region {
+        let r: Result<Nat, String> = try { half(n)? + 1 };
+        match r {
+            Ok(m) => m,
+            Err(e) => if e == "odd!" { 50 } else { 0 }
+        }
+    }
+}
+
+// A `try` is an immediately invoked lambda, so this region sits inside a
+// closure: the `?` crosses it and returns from the `try`, carrying the
+// `try`'s `Result<String, String>`, not `in_closure`'s `Nat`.
+fn word(n: Nat) -> Result<String, String> {
+    if n > 1 { Ok("many" ++ "+") } else { Err("one" ++ "") }
+}
+
+fn in_closure(n: Nat) -> Nat {
+    let r: Result<String, String> = try {
+        region { word(n)? ++ "!" }
+    };
+    match r {
+        Ok(s) => if s == "many+!" { 1 } else { 0 },
+        Err(e) => if e == "one" { 2 } else { 0 }
+    }
+}
+
+fn main() -> Nat {
+    let small = if greet(3) == "small?.small?." { 1 } else { 0 };
+    let big = if greet(30) == "big!" { 10 } else { 0 };
+    let ok = match crossing_q(8) {
+        Ok(v) => v,
+        Err(_) => 0
+    };
+    let err = match crossing_q(7) {
+        Ok(_) => 0,
+        Err(s) => if s == "odd!" { 1 } else { 0 }
+    };
+    small + big + ok * 100 + err * 1000 + inside_try(8) * 10000 + inside_try(7) * 100000
+        + in_closure(5) * 10000000 + in_closure(1) * 100000000
+}

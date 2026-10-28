@@ -1,0 +1,65 @@
+// Negative control for test_tactic_rewrite.tg (ADR 2.10.26e D8, AC 6).
+//
+// Each theorem below is one wrong `rewrite` proof, and each must be refused
+// for its own reason. `check-mustfail-fixtures` (make/quality/tg-tests.mk)
+// requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_tactic_rewrite.tg --require-tests
+//     -> aborting due to 6 errors
+//
+// The count alone cannot say which error fired, so each case's code is also
+// pinned by a Rust test in bootstrap/src/elaborate/tactics/rewrite/tests/
+// (AC 4, the 2.9.26c lesson). The cases and their codes:
+//
+//   1. rw_mustfail_non_equation_rule   `rewrite [j]`, j : Nat          E0072
+//   2. rw_mustfail_non_equation_goal   rewrite before `intro`           E0082
+//   3. rw_mustfail_no_occurrence       neither side occurs              E0085
+//   4. rw_mustfail_wrong_direction     `ih` where `<- ih` was meant     E0085
+//   5. rw_mustfail_undetermined        `<- add_zero_right`: pattern ?n  E0082
+//   6. rw_mustfail_innermost_match     outermost sum matched, so `refl`
+//                                      is left a false goal             E0071
+//
+// Every-occurrence semantics has no twin here: for these `Nat` sums, a goal
+// `refl` closes after one occurrence moves is closed after all of them do.
+// The positive suite's `rw_every_occurrence` pins it instead.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+// Cited by qualified path, as test_tactic_rewrite.tg does.
+mod nat_arith;
+
+pub theorem rw_mustfail_non_equation_rule(j: Nat) -> Eq<Nat, j, j> by {
+    rewrite [j];
+    refl
+}
+
+pub theorem rw_mustfail_non_equation_goal(a: Nat, b: Nat) -> Eq<Nat, a, b> -> Eq<Nat, b, a> by {
+    rewrite [nat_arith::add_zero_left];
+    refl
+}
+
+pub theorem rw_mustfail_no_occurrence(a: Nat, b: Nat, c: Nat, h: Eq<Nat, a, b>) -> Eq<Nat, c, c> by {
+    rewrite [h];
+    refl
+}
+
+pub theorem rw_mustfail_wrong_direction(n: Nat, j: Nat, ih: Eq<Nat, n + j, j + n>)
+    -> Eq<Nat, n + (j + 1), (j + 1) + n> by {
+    rewrite [nat_arith::add_succ_left(j, n), ih];
+    refl
+}
+
+pub theorem rw_mustfail_undetermined(n: Nat) -> Eq<Nat, n, n + 0> by {
+    rewrite [<- nat_arith::add_zero_right];
+    refl
+}
+
+pub theorem rw_mustfail_innermost_match(a: Nat, b: Nat, c: Nat) -> Eq<Nat, (a + b) + c, (b + a) + c> by {
+    rewrite [nat_arith::add_comm];
+    refl
+}
+
+fn test_the_wrong_proofs_are_refused() -> Unit {
+    ()
+}

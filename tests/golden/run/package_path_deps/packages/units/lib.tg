@@ -1,0 +1,7 @@
+fn twice(n: Nat) -> Nat {
+    n + n
+}
+
+pub fn double(n: Nat) -> Nat {
+    twice(n)
+}

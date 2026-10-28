@@ -1,0 +1,11 @@
+// A bare nullary name inside a constructor pattern names that constructor
+// (ADR 13.10.26h D1). It was a binder, so `Som(A)` took every `Som` payload,
+// the `Som(B)` arm was dropped, and this printed 1113.
+type E = A | B | C
+type O = Som(E) | Non
+
+fn f(opt: O) -> Nat {
+    match opt { Som(A) => 1, Som(B) => 2, other => 3 }
+}
+
+fn main() -> Nat { f(Som(A())) * 1000 + f(Som(B())) * 100 + f(Som(C())) * 10 + f(Non()) }

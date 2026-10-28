@@ -1,0 +1,9 @@
+[E0121] Error: dependency `lib_a` not found: no `lib.tg` in `tests/golden/error/package_dependency_not_found/packages/lib_a`
+   ╭─[tests/golden/error/package_dependency_not_found/albite.toml:5:1]
+   │
+ 5 │ lib_a = { path = "packages/lib_a" }
+   │ ──┬──  
+   │   ╰──── 
+───╯
+
+error: aborting due to 1 error

@@ -1,0 +1,108 @@
+// src/compiler/driver/pipeline/test/capture.tg
+// The machine-format half of running a harness (ADR 1.10.26i D2/D6): the
+// harness's stdout was captured to a file, and its frames become the records.
+//
+// Split out of `execute.tg`, which went past the 300-line cap with it. The
+// seam: `execute.tg` decides what to spawn and owns the clean-up funnel; this
+// file reads what a captured spawn left behind. It imports nothing from
+// `execute.tg`, which is what keeps the two from being mutually dependent —
+// so a run reaches it as a `CaptureRun`, not as `execute.tg`'s `HarnessRun`.
+
+use driver::ffi::{eprintln, print, List, Nil, Cons, read_file, FfiOk, FfiErr};
+use driver::ffi::{ExecOutcome, ExecExited, ExecSpawnFailed};
+use driver::ffi::process::{exec_code_is_absent};
+use driver::ffi::types::{string_len};
+use driver::util::{nat_to_string, starts_with, list_len};
+use driver::util::strings::scalars::{string_copy_range};
+use driver::cli::{TestOpts};
+use driver::pipeline::test::exit::{TestRunResult, TestRunnerFailed, harness_exit_verdict};
+use driver::pipeline::test::records::{render_frames, report_runner_stop};
+use driver::pipeline::test::records::frames::{
+    TestFrame, FrameParse, FramesParsed, FramesMalformed, parse_frames
+};
+
+/// What reading a captured run needs from it.
+pub type CaptureRun = {
+    opts: TestOpts,
+    frames_path: String,
+    test_count: Nat,
+    use_color: Bool
+}
+
+/// Report a runner failure in the run's format and return exit 2. `prefixed`
+/// is one of the driver's `": …"` messages, worded once for both formats; the
+/// machine record carries it without the separator the human line puts after
+/// `error`.
+pub fn capture_stop(run: CaptureRun, frames: List<TestFrame>, prefixed: String) -> TestRunResult {
+    let message = if starts_with(prefixed, ": ") {
+        string_copy_range(prefixed, 2, string_len(prefixed))
+    } else {
+        prefixed
+    };
+    report_runner_stop(run.opts.format, frames, message, run.opts.file, run.use_color);
+    TestRunnerFailed
+}
+
+/// A harness that ran: the exit decides the verdict exactly as in human mode,
+/// and the frames it wrote become the records.
+pub fn captured_run_verdict(run: CaptureRun, outcome: ExecOutcome) -> TestRunResult {
+    match read_file(run.frames_path) {
+        FfiErr(err) => capture_stop(run, Nil, ": could not read the test harness's output: " ++ err),
+        FfiOk(text) => captured_frames_verdict(run, outcome, parse_frames(text))
+    }
+}
+
+fn captured_frames_verdict(run: CaptureRun, outcome: ExecOutcome,
+                           parsed: FrameParse) -> TestRunResult {
+    match parsed {
+        FramesMalformed(msg) => capture_stop(run, Nil, ": malformed test frames: " ++ msg),
+        FramesParsed(frames) =>
+            captured_exit_verdict(run, outcome, frames, harness_exit_verdict(outcome, run.test_count))
+    }
+}
+
+/// The exit's verdict over well-formed frames: a runner failure keeps the
+/// frames collected so far (D6), anything else completes the run.
+fn captured_exit_verdict(run: CaptureRun, outcome: ExecOutcome, frames: List<TestFrame>,
+                         verdict: TestRunResult) -> TestRunResult {
+    match verdict {
+        TestRunnerFailed() => capture_stop(run, frames, harness_exit_message(outcome)),
+        _ => captured_complete_run(run, frames, verdict)
+    }
+}
+
+/// A harness that exited 0 or 1: every test must have a frame, or the stream
+/// is not the whole run.
+fn captured_complete_run(run: CaptureRun, frames: List<TestFrame>,
+                         verdict: TestRunResult) -> TestRunResult {
+    if list_len(frames) != run.test_count {
+        capture_stop(run, frames, ": the test harness reported " ++
+                     nat_to_string(list_len(frames)) ++ " of " ++
+                     nat_to_string(run.test_count) ++ " tests")
+    } else {
+        print(render_frames(run.opts.format, frames, run.opts.file));
+        verdict
+    }
+}
+
+/// Why a harness that ran produced no verdict for every test.
+pub fn harness_exit_message(outcome: ExecOutcome) -> String {
+    match outcome {
+        ExecExited(code) =>
+            if exec_code_is_absent(code) {
+                ": the test harness exited without a status"
+            } else {
+                ": the test harness exited with code " ++ nat_to_string(code)
+            },
+        ExecSpawnFailed(err) => ": " ++ err
+    }
+}
+
+/// On a failed machine-format compile, the bootstrap's captured stdout goes to
+/// stderr, after the failure record, so nothing it said is lost.
+pub fn echo_captured_output(path: String) -> Unit {
+    match read_file(path) {
+        FfiOk(text) => if string_len(text) > 0 { eprintln(text) } else { () },
+        FfiErr(_) => ()
+    }
+}

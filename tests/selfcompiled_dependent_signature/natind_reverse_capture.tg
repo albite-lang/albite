@@ -1,0 +1,10 @@
+// ADR 3.10.26i §2.5 (D2): the step binds `m`, but the motive mentions an outer
+// `m`, so P(m) would conflate the two. Both compilers must refuse it.
+
+fn capture(m: Nat, n: Nat) -> Nat {
+    let _p: Eq<Nat, m + n, m + n> =
+        natind(|k: Nat| Eq<Nat, m + k, m + k>, refl, fn(m: Nat, ih) => refl, n);
+    0
+}
+
+fn main() -> Nat { capture(1, 2) }

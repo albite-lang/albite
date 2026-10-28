@@ -1,0 +1,283 @@
+//! Monomorphized function instantiation.
+//!
+//! Handles compilation of specialized copies of polymorphic functions:
+//! - Single-type-arg instantiation (`compile_monomorphized`)
+//! - Multi-type-arg instantiation (`compile_monomorphized_multi`)
+//! - Named instantiation for the single-owner mono pipeline (`compile_monomorphized_named`)
+
+use crate::codegen::backend::CodeGenError;
+use crate::codegen::CodeGen;
+use albite_core::types::Type;
+use inkwell::values::BasicValueEnum;
+
+impl<'ctx> CodeGen<'ctx> {
+    /// Try to compile a monomorphized version of a polymorphic function.
+    ///
+    /// Returns Some(value) if we have the original term and can specialize it,
+    /// or None if we should fall back to erasure.
+    pub(crate) fn compile_monomorphized(
+        &mut self,
+        name: &str,
+        ty_arg: &Type,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodeGenError> {
+        let ty_key = format!("{ty_arg:?}");
+        let mono_key = (name.to_string(), ty_key.clone());
+
+        // Check if we already have this monomorphized version
+        if let Some(specialized_name) = self.monomorph.instances.get(&mono_key) {
+            if let Some(func) = self.module.get_function(specialized_name) {
+                return Ok(Some(self.wrap_function_as_closure(func)?));
+            }
+        }
+
+        // Extract the polymorphic body — returns None if not available / not polymorphic
+        let Some((type_var, inner_term, inner_type)) = self.extract_poly_body(name) else {
+            return Ok(None);
+        };
+
+        // Guard: when the single-owner mono pipeline is active (ADR 8.5.26g §2.1.1),
+        // all instances must come from the pre-seeded ownership map.
+        if self.monomorph.mono_map_active {
+            let unit = self.naming.module_prefix.as_deref().unwrap_or("<unknown>");
+            return Err(CodeGenError::LlvmError(format!(
+                "ICE: ad-hoc monomorphization of '{name}<{ty_arg:?}>' rejected in unit '{unit}' — \
+                 mono_map is active but no pre-seeded instance found. \
+                 Canonical type args: {ty_key:?}. \
+                 Run with --trace-mono for discovery/ownership details."
+            )));
+        }
+
+        // Generate specialized name (include module prefix to avoid cross-module collisions)
+        let specialized_name = if let Some(ref prefix) = self.naming.module_prefix {
+            format!("{}__mono_{}_{}", name, prefix, self.naming.counter)
+        } else {
+            format!("{}__mono_{}", name, self.naming.counter)
+        };
+        self.naming.counter += 1;
+
+        self.monomorph
+            .instances
+            .insert(mono_key.clone(), specialized_name.clone());
+        self.monomorph.in_progress.insert(mono_key.clone());
+
+        let specialized_ty = inner_type.substitute(&type_var, ty_arg);
+        self.declare_def(&specialized_name, &specialized_ty)?;
+
+        // Compile the specialized function body under saved/restored state
+        let result = self.compile_with_type_subst(
+            &type_var,
+            ty_arg,
+            &specialized_name,
+            &inner_term,
+            &specialized_ty,
+        );
+
+        self.monomorph.in_progress.remove(&mono_key);
+        result?;
+
+        if let Some(func) = self.module.get_function(&specialized_name) {
+            Ok(Some(self.wrap_function_as_closure(func)?))
+        } else {
+            Err(CodeGenError::LlvmError(format!(
+                "Failed to get monomorphized function {specialized_name}"
+            )))
+        }
+    }
+
+    /// Try to compile a monomorphized version of a multi-type-param polymorphic function.
+    ///
+    /// Like `compile_monomorphized` but handles `[A, B, ...]` type args.
+    pub(crate) fn compile_monomorphized_multi(
+        &mut self,
+        name: &str,
+        type_args: &[Type],
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodeGenError> {
+        let ty_key = Self::format_type_args_key(type_args);
+        let mono_key = (name.to_string(), ty_key.clone());
+
+        // Check if we already have this monomorphized version
+        if let Some(specialized_name) = self.monomorph.instances.get(&mono_key) {
+            if let Some(func) = self.module.get_function(specialized_name) {
+                return Ok(Some(self.wrap_function_as_closure(func)?));
+            }
+        }
+
+        // Extract ALL polymorphic layers
+        let Some((type_vars, inner_term, inner_type)) = self.extract_poly_body_multi(name) else {
+            return Ok(None);
+        };
+
+        // Guard: when mono_map is active, all instances must be pre-seeded
+        if self.monomorph.mono_map_active {
+            let unit = self.naming.module_prefix.as_deref().unwrap_or("<unknown>");
+            return Err(CodeGenError::LlvmError(format!(
+                "ICE: ad-hoc monomorphization of '{name}<{ty_key}>' rejected in unit '{unit}' — \
+                 mono_map is active but no pre-seeded instance found. \
+                 Run with --trace-mono for discovery/ownership details."
+            )));
+        }
+
+        // Generate specialized name
+        let specialized_name = if let Some(ref prefix) = self.naming.module_prefix {
+            format!("{}__mono_{}_{}", name, prefix, self.naming.counter)
+        } else {
+            format!("{}__mono_{}", name, self.naming.counter)
+        };
+        self.naming.counter += 1;
+
+        self.monomorph
+            .instances
+            .insert(mono_key.clone(), specialized_name.clone());
+        self.monomorph.in_progress.insert(mono_key.clone());
+
+        // Substitute all type args
+        let mut specialized_ty = inner_type.clone();
+        for (var, arg) in type_vars.iter().zip(type_args.iter()) {
+            specialized_ty = specialized_ty.substitute(var, arg);
+        }
+        self.declare_def(&specialized_name, &specialized_ty)?;
+
+        let result = self.compile_with_multi_type_subst(
+            &type_vars,
+            type_args,
+            &specialized_name,
+            &inner_term,
+            &specialized_ty,
+        );
+
+        self.monomorph.in_progress.remove(&mono_key);
+        result?;
+
+        if let Some(func) = self.module.get_function(&specialized_name) {
+            Ok(Some(self.wrap_function_as_closure(func)?))
+        } else {
+            Err(CodeGenError::LlvmError(format!(
+                "Failed to get monomorphized function {specialized_name}"
+            )))
+        }
+    }
+
+    /// Compile a monomorphized instance with a specific target symbol name.
+    ///
+    /// Used by the single-owner mono pipeline (ADR 8.5.26g): the owner unit
+    /// compiles each assigned instance under the mangled symbol from the
+    /// ownership map, instead of generating a fresh per-unit name.
+    ///
+    /// `global_name` is the original polymorphic definition name (e.g. `"map"`).
+    /// `type_args` is the concrete type argument(s) (e.g. `[Type::TyVar("Nat")]`).
+    /// `target_symbol` is the mangled symbol from the mono ownership map.
+    ///
+    /// Returns `Ok(())` on success. The function is emitted as `define @target_symbol(...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CodeGenError::LlvmError`] if `global_name` has no polymorphic
+    /// body or is given more type arguments than it has type parameters, and
+    /// propagates any error from declaring or compiling the specialized body.
+    pub fn compile_monomorphized_named(
+        &mut self,
+        global_name: &str,
+        type_args: &[Type],
+        target_symbol: &str,
+    ) -> Result<(), CodeGenError> {
+        // Check if already compiled (idempotent)
+        if self.module.get_function(target_symbol).is_some() {
+            return Ok(());
+        }
+
+        let (type_vars, inner_term, inner_type) = self.extract_poly_body_multi(global_name)
+            .ok_or_else(|| CodeGenError::LlvmError(format!(
+                "mono owner: '{global_name}' has no polymorphic body (TyAbs/Forall) for '{target_symbol}'"
+            )))?;
+
+        if type_args.len() > type_vars.len() {
+            return Err(CodeGenError::LlvmError(format!(
+                "mono owner: '{}' has {} type params but {} type args for '{}'",
+                global_name,
+                type_vars.len(),
+                type_args.len(),
+                target_symbol
+            )));
+        }
+
+        // Substitute all type args into the inner type
+        let mut specialized_ty = inner_type.clone();
+        for (var, ty_arg) in type_vars.iter().zip(type_args.iter()) {
+            specialized_ty = specialized_ty.substitute(var, ty_arg);
+        }
+
+        // Register in MonomorphState so call-site resolution finds it
+        let ty_key = Self::format_type_args_key(type_args);
+        let mono_key = (global_name.to_string(), ty_key);
+        self.monomorph
+            .instances
+            .insert(mono_key.clone(), target_symbol.to_string());
+
+        self.declare_def(target_symbol, &specialized_ty)?;
+
+        let result = self.compile_with_multi_type_subst(
+            &type_vars,
+            type_args,
+            target_symbol,
+            &inner_term,
+            &specialized_ty,
+        );
+
+        self.monomorph.in_progress.remove(&mono_key);
+        result?;
+        Ok(())
+    }
+
+    /// Resolve a saturated generic call's monomorphized instance symbol for
+    /// the direct-call path (ADR 23.7.26c).
+    ///
+    /// Mirrors `compile_ty_app`'s key resolution exactly — applies the current
+    /// type substitution and strips `@`-prefix `TyVars` so the mono key matches
+    /// the registered instance map — but never *creates* an instance: a miss
+    /// (unregistered instance, or a mono-blocking `TyVar` in a still-polymorphic
+    /// body) returns `None` and the call site falls back to the closure path.
+    ///
+    /// Self-recursion resolves because both `compile_monomorphized_named` and
+    /// the per-unit pre-seeding (`register_mono_instance`) insert the instance
+    /// into `monomorph.instances` before the body compiles.
+    pub(crate) fn resolve_saturated_mono_callee(
+        &self,
+        global_name: &str,
+        ty_args: &[&Type],
+    ) -> Option<String> {
+        let resolved_args: Vec<Type> = ty_args
+            .iter()
+            .map(|ty_arg| {
+                let substituted = self.types.apply_type_subst(ty_arg);
+                Self::strip_at_prefix_tyvars(&substituted)
+            })
+            .collect();
+        if resolved_args
+            .iter()
+            .any(|ty_arg| self.has_mono_blocking_tyvar(ty_arg))
+        {
+            return None;
+        }
+        let ty_key = Self::format_type_args_key(&resolved_args);
+        self.monomorph
+            .instances
+            .get(&(global_name.to_string(), ty_key))
+            .cloned()
+    }
+
+    /// Render the type-argument half of a `monomorph.instances` key.
+    ///
+    /// The single source of truth for mono-key formatting: `compile_ty_app`'s
+    /// resolution, `resolve_saturated_mono_callee` (the direct-call path), and
+    /// `register_mono_instance` (the pre-seeding side) MUST all render the key
+    /// identically or a call site silently misses its pre-registered instance
+    /// (ADR 23.7.26c). Keep this the only implementation.
+    pub(crate) fn format_type_args_key(type_args: &[Type]) -> String {
+        if type_args.len() == 1 {
+            format!("{:?}", type_args[0])
+        } else {
+            let parts: Vec<String> = type_args.iter().map(|t| format!("{t:?}")).collect();
+            parts.join(", ")
+        }
+    }
+}

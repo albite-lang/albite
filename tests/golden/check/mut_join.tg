@@ -1,0 +1,11 @@
+// Golden test (ADR 13.10.26r AC 5): §1.2's join with `let mut` — each arm
+// assigns one of two bindings, and the code after the `if` sees the arm that
+// ran. Both compilers accept it.
+fn pick(c: Bool) -> Nat {
+    let mut x = 1;
+    let mut y = 10;
+    if c { x = 2; } else { y = 30; };
+    x + y
+}
+
+fn main() -> Nat { pick(true) + pick(false) }

@@ -1,0 +1,9 @@
+[E0016] Error: function `internal` is private (defined in `lib_a`) and cannot be accessed from `<root>`
+   ╭─[tests/golden/error/package_crate_item/main.tg:2:20]
+   │
+ 2 │ fn main() -> Nat { lib_a::internal() }
+   │                    ───────┬───────  
+   │                           ╰───────── 
+───╯
+
+error: aborting due to 1 error

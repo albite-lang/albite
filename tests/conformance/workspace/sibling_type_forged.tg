@@ -1,0 +1,7 @@
+// A `Nat` passed off as a sibling's type (ADR 2.10.26g §2.4, D3): the forged
+// direction of `sibling_type_misuse.tg`.
+use boxes::{Box};
+
+fn rebox(count: Nat) -> Box { count }
+
+fn main() -> Nat { 0 }

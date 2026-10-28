@@ -1,0 +1,9 @@
+[E0092] Error: handle `sb` is used after it was consumed, in `twice`
+    ╭─[tests/golden/error/mut_handle_reused.tg:33:20]
+    │
+ 33 │     s ++ to_string(sb)
+    │                    ─┬  
+    │                     ╰── 
+────╯
+
+error: aborting due to 1 error

@@ -1,0 +1,93 @@
+// src/compiler/driver/pipeline/test/records/xml_escape.tg
+// XML 1.0 escaping for the JUnit document (ADR 1.10.26i D5), a port of
+// `bootstrap/src/test_runner/junit/escape.rs` (ADR 30.9.26k D7).
+//
+// A test body's captured output is arbitrary text, and one unescaped byte makes
+// the whole report unparseable. So every string the renderer writes goes
+// through one of these two, and no CDATA section is ever written: `]]>` needs
+// no special case once `>` is an entity. A character XML 1.0 cannot carry at
+// all is written as Rust's `escape_unicode` text (ESC → `\u{1b}`), so the two
+// runners' documents stay byte-identical.
+//
+// Every name is `xml_`-prefixed: both compilers key values on the bare name.
+
+use driver::ffi::types::{string_len, string_char_at_internal};
+use driver::ffi::builder::{StringBuilder, string_builder_new, push_str, push_char, to_string};
+use driver::util::strings::scalars::{utf8_width, utf8_scalar_at, string_copy_range};
+
+/// Escape `text` for an element's character content: `&` `<` `>` as
+/// entities, `\r` as `&#13;`; tab and newline pass through.
+pub fn xml_escape_text(text: String) -> String {
+    to_string(xml_escape_into(string_builder_new(), text, false, 0, string_len(text)))
+}
+
+/// Escape `value` for a double-quoted attribute: everything
+/// `xml_escape_text` does, plus `"`, tab and newline as references.
+pub fn xml_escape_attr(value: String) -> String {
+    to_string(xml_escape_into(string_builder_new(), value, true, 0, string_len(value)))
+}
+
+// Partial (ADR 11.8.26b): `i` ascends toward `len` — a measure recursion.
+#[partial]
+fn xml_escape_into(sb: StringBuilder, s: String, in_attribute: Bool, i: Nat, len: Nat) -> StringBuilder {
+    if i >= len {
+        sb
+    } else {
+        let width = utf8_width(string_char_at_internal(s, i));
+        let scalar = utf8_scalar_at(s, i, width);
+        xml_escape_into(xml_push_escaped(sb, scalar, in_attribute), s, in_attribute, i + width, len)
+    }
+}
+
+fn xml_push_escaped(sb: StringBuilder, c: Nat, in_attribute: Bool) -> StringBuilder {
+    if c == 38 {
+        push_str(sb, "&amp;")
+    } else if c == 60 {
+        push_str(sb, "&lt;")
+    } else if c == 62 {
+        push_str(sb, "&gt;")
+    } else if c == 13 {
+        push_str(sb, "&#13;")
+    } else if in_attribute {
+        xml_push_attr_scalar(sb, c)
+    } else {
+        xml_push_plain(sb, c)
+    }
+}
+
+/// The three characters only an attribute escapes, then the rest.
+fn xml_push_attr_scalar(sb: StringBuilder, c: Nat) -> StringBuilder {
+    if c == 34 {
+        push_str(sb, "&quot;")
+    } else if c == 9 {
+        push_str(sb, "&#9;")
+    } else if c == 10 {
+        push_str(sb, "&#10;")
+    } else {
+        xml_push_plain(sb, c)
+    }
+}
+
+fn xml_push_plain(sb: StringBuilder, c: Nat) -> StringBuilder {
+    if xml_forbidden(c) { push_str(sb, xml_escape_unicode(c)) } else { push_char(sb, c) }
+}
+
+/// A character XML 1.0 cannot carry at all, not even as a reference.
+pub fn xml_forbidden(c: Nat) -> Bool {
+    c <= 8 || c == 11 || c == 12 || (c >= 14 && c <= 31) || c == 65534 || c == 65535
+}
+
+/// `\u{<lowercase hex>}`, as Rust's `char::escape_unicode` writes it.
+pub fn xml_escape_unicode(c: Nat) -> String {
+    "\\u{" ++ xml_hex(c) ++ "}"
+}
+
+// Partial: descends on `n / 16`, a measure recursion.
+#[partial]
+fn xml_hex(n: Nat) -> String {
+    if n < 16 { xml_hex_digit(n) } else { xml_hex(n / 16) ++ xml_hex_digit(n % 16) }
+}
+
+fn xml_hex_digit(d: Nat) -> String {
+    string_copy_range("0123456789abcdef", d, d + 1)
+}

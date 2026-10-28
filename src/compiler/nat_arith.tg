@@ -1,0 +1,181 @@
+// The Tier-1 arithmetic library (ADR 30.9.26e slice 1, ADR 1.10.26d slice 2),
+// plus `ring`'s `mul_one_left`, `add_left_comm` and `mul_left_comm` (ADR 4.10.26g D5).
+//
+// Addition's basic laws and multiplication's algebra over the PRIMITIVE `+`
+// and `*`, which compute on their RIGHT operand only, so `n + 0`,
+// `n + (m + 1)`, `n * 0` and `n * (m + 1)` all reduce, while `0 * n` and
+// `(m + 1) * n` do not: those two are lemmas (`mul_zero_left`,
+// `mul_succ_left`), never rules (1.10.26d D1). Each lemma is a `pub theorem`
+// whose statement names its parameters (30.9.26d), proved by `refl`, by
+// induction on the right operand, or by a `trans`/`sym` chain over earlier
+// lemmas. No lemma is postulated or left as a hole.
+//
+// A FLAT sibling, imported with `mod nat_arith;` from any file in this
+// directory (1.10.26d D4). `mod X;` looks for `X.tg` or `X/mod.tg` beside the
+// declaring file, so a directory is entered only through its `mod.tg`; a flat
+// file needs none.
+//
+// SOURCE ORDER IS A RULE (30.9.26e D3, 1.10.26d D3): every lemma precedes the
+// first signature or body that cites it. A signature naming a later function
+// is E0001 (30.9.26d D9).
+//
+// Suites: test_nat_lemmas.tg (slice 1) and test_nat_mul_lemmas.tg (slice 2),
+// each with a must-fail twin; test_tactic_ring.tg re-proves the semiring laws
+// with `ring`, which cites this file. This file is the kernel-census corpus.
+
+// ── Slice 1 (30.9.26e D3's table, in its order) ─────────────────────────────
+
+pub theorem add_zero_right(n: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+pub theorem add_succ_right(n: Nat, m: Nat) -> Eq<Nat, n + (m + 1), (n + m) + 1> { refl }
+
+pub theorem add_zero_left(n: Nat) -> Eq<Nat, 0 + n, n> {
+    natind(|i: Nat| Eq<Nat, 0 + i, i>, refl, fn(j: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+pub theorem add_succ_left(m: Nat, n: Nat) -> Eq<Nat, (m + 1) + n, (m + n) + 1> {
+    natind(|i: Nat| Eq<Nat, (m + 1) + i, (m + i) + 1>, refl,
+           fn(j: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+pub theorem add_assoc(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n + m) + k, n + (m + k)> {
+    natind(|i: Nat| Eq<Nat, (n + m) + i, n + (m + i)>, refl,
+           fn(j: Nat, ih) => cong(|x: Nat| x + 1, ih), k)
+}
+
+// Flagship Example 1. The step at `j` cites `add_succ_left` at the step's own
+// variable — possible only because the lemma is named and quantified.
+pub theorem add_comm(n: Nat, m: Nat) -> Eq<Nat, n + m, m + n> {
+    natind(|i: Nat| Eq<Nat, n + i, i + n>,
+           sym(add_zero_left(n)),
+           fn(j: Nat, ih) => trans(cong(|x: Nat| x + 1, ih), sym(add_succ_left(j, n))),
+           m)
+}
+
+pub theorem mul_zero_right(n: Nat) -> Eq<Nat, n * 0, 0> { refl }
+
+pub theorem mul_succ_right(n: Nat, m: Nat) -> Eq<Nat, n * (m + 1), n * m + n> { refl }
+
+pub theorem mul_zero_left(n: Nat) -> Eq<Nat, 0 * n, 0> {
+    natind(|i: Nat| Eq<Nat, 0 * i, 0>, refl, fn(j: Nat, ih) => ih, n)
+}
+
+// `n * 1 ≡ n * 0 + n ≡ 0 + n` (30.9.26e D2), so the bare citation meets the
+// declared return only through 30.9.26e D5's endpoint conversion.
+pub theorem mul_one_right(n: Nat) -> Eq<Nat, n * 1, n> { add_zero_left(n) }
+
+// ── Slice 2 (1.10.26d D2's table, in its order) ─────────────────────────────
+
+// The sketch's `succ_mul`. The step lifts `ih` by `+ m`, then regroups
+// `(m*j + j) + m` into `(m*j + m) + j` with a four-link chain.
+pub theorem mul_succ_left(m: Nat, n: Nat) -> Eq<Nat, (m + 1) * n, m * n + n> {
+    natind(|i: Nat| Eq<Nat, (m + 1) * i, m * i + i>, refl,
+           fn(j: Nat, ih) => cong(|x: Nat| x + 1,
+               trans(cong(|x: Nat| x + m, ih),
+                 trans(add_assoc(m * j, j, m),
+                   trans(cong(|x: Nat| m * j + x, add_comm(j, m)),
+                         sym(add_assoc(m * j, m, j)))))),
+           n)
+}
+
+pub theorem mul_comm(n: Nat, m: Nat) -> Eq<Nat, n * m, m * n> {
+    natind(|i: Nat| Eq<Nat, n * i, i * n>,
+           sym(mul_zero_left(n)),
+           fn(j: Nat, ih) => trans(cong(|x: Nat| x + n, ih), sym(mul_succ_left(j, n))),
+           m)
+}
+
+// Named for the left-hand side's shape, as Lean 4's `Nat.mul_add` is.
+pub theorem mul_add(n: Nat, m: Nat, k: Nat) -> Eq<Nat, n * (m + k), n * m + n * k> {
+    natind(|i: Nat| Eq<Nat, n * (m + i), n * m + n * i>, refl,
+           fn(j: Nat, ih) => trans(cong(|x: Nat| x + n, ih), add_assoc(n * m, n * j, n)),
+           k)
+}
+
+// No induction: commute, distribute on the left, commute each product back.
+pub theorem add_mul(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n + m) * k, n * k + m * k> {
+    trans(mul_comm(n + m, k),
+          trans(mul_add(k, n, m),
+                trans(cong(|x: Nat| x + k * m, mul_comm(k, n)),
+                      cong(|x: Nat| n * k + x, mul_comm(k, m)))))
+}
+
+pub theorem mul_assoc(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n * m) * k, n * (m * k)> {
+    natind(|i: Nat| Eq<Nat, (n * m) * i, n * (m * i)>, refl,
+           fn(j: Nat, ih) => trans(cong(|x: Nat| x + n * m, ih), sym(mul_add(n, m * j, m))),
+           k)
+}
+
+// ── `ring`'s three (ADR 4.10.26g D5) ────────────────────────────────────────
+
+// Term mode, not S3's `induction`: both compilers check this file, and the
+// self-host has no tactic parser. Each is a short chain over the lemmas above.
+// `mul_one_left` is test_nat_mul_lemmas.tg's `nat_mul_one_left`, promoted.
+pub theorem mul_one_left(n: Nat) -> Eq<Nat, 1 * n, n> {
+    trans(mul_comm(1, n), mul_one_right(n))
+}
+
+pub theorem add_left_comm(n: Nat, m: Nat, k: Nat) -> Eq<Nat, n + (m + k), m + (n + k)> {
+    trans(sym(add_assoc(n, m, k)),
+          trans(cong(|x: Nat| x + k, add_comm(n, m)), add_assoc(m, n, k)))
+}
+
+pub theorem mul_left_comm(n: Nat, m: Nat, k: Nat) -> Eq<Nat, n * (m * k), m * (n * k)> {
+    trans(sym(mul_assoc(n, m, k)),
+          trans(cong(|x: Nat| x * k, mul_comm(n, m)), mul_assoc(m, n, k)))
+}
+
+// ── `omega`'s two (ADR 6.10.26f D4) ─────────────────────────────────────────
+
+// Term mode again, and with no implication motive: the bootstrap compares a
+// step lambda's annotation with the motive's `succ(j)` syntactically, and
+// `albite1` will not take one unannotated. Cancellation is instead
+// `cong(· - k)` and `(x + k) - k == x`, truncated subtraction spelled inline
+// as `natrec` over an inline predecessor: `albite1`'s conversion reduces a
+// `natrec` (ι) but never unfolds a named function (δ), so no `nat_pred` or
+// `nat_sub` can be cited here.
+
+// `pred(y + 1 - k) == y - k`.
+pub theorem nat_pred_sub_succ(y: Nat, k: Nat)
+    -> Eq<Nat,
+          natrec(Nat, 0, fn(p: Nat, a: Nat) => p,
+                 natrec(Nat, y + 1, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), k)),
+          natrec(Nat, y, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), k)> {
+    natind(|i: Nat| Eq<Nat,
+                       natrec(Nat, 0, fn(p: Nat, a: Nat) => p,
+                              natrec(Nat, y + 1, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), i)),
+                       natrec(Nat, y, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), i)>,
+           refl,
+           fn(j: Nat, ih) => cong(|x: Nat| natrec(Nat, 0, fn(p: Nat, a: Nat) => p, x), ih), k)
+}
+
+// `(x + k) - k == x`.
+pub theorem nat_sub_add_cancel(x: Nat, k: Nat)
+    -> Eq<Nat, natrec(Nat, x + k, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), k), x> {
+    natind(|i: Nat| Eq<Nat, natrec(Nat, x + i, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), i), x>,
+           refl,
+           fn(j: Nat, ih) => trans(nat_pred_sub_succ(x + j, j), ih), k)
+}
+
+// `0 - k == 0`.
+pub theorem nat_sub_zero_left(k: Nat)
+    -> Eq<Nat, natrec(Nat, 0, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), k), 0> {
+    natind(|i: Nat| Eq<Nat, natrec(Nat, 0, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), i), 0>,
+           refl,
+           fn(j: Nat, ih) => cong(|x: Nat| natrec(Nat, 0, fn(p: Nat, a: Nat) => p, x), ih), k)
+}
+
+// `n + k == m + k` gives `n == m`: subtract `k` from both sides.
+pub theorem add_right_cancel(n: Nat, m: Nat, k: Nat, h: Eq<Nat, n + k, m + k>) -> Eq<Nat, n, m> {
+    trans(sym(nat_sub_add_cancel(n, k)),
+          trans(cong(|x: Nat| natrec(Nat, x, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), k), h),
+                nat_sub_add_cancel(m, k)))
+}
+
+// `n + k == 0` gives `n == 0`: subtract `k`, and `0 - k` is `0`.
+pub theorem add_eq_zero_left(n: Nat, k: Nat, h: Eq<Nat, n + k, 0>) -> Eq<Nat, n, 0> {
+    trans(sym(nat_sub_add_cancel(n, k)),
+          trans(cong(|x: Nat| natrec(Nat, x, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), k), h),
+                nat_sub_zero_left(k)))
+}
+

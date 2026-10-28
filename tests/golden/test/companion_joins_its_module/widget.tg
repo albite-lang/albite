@@ -1,0 +1,6 @@
+// A submodule with a private helper its companion tests directly.
+use asserts::assert_eq_nat;
+
+fn double(n: Nat) -> Nat { n + n }
+
+pub fn scaled(n: Nat) -> Nat { double(n) + 1 }

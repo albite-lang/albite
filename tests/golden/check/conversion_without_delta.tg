@@ -1,0 +1,25 @@
+// == δ-free conversion, the one both compilers share (ADR 30.9.26g AC 5)
+// Every proof here needs computation and no definition opened, so the
+// bootstrap AND tungsten1 must accept it; `make selfcompiled-conversion-check`
+// runs this file through both. Twins are in tests/selfcompiled_conversion/.
+
+// A closed sum: `eval ==`.
+fn closed_sum(k: Nat) -> Nat { let _p: Eq<Nat, 2 + 2, 4> = refl; 0 }
+
+// `+` computes on its right operand: `k + 0 ≡ k`.
+fn right_zero(k: Nat) -> Nat { let _p: Eq<Nat, k + 0, k> = refl; 0 }
+
+fn succ_right_zero(k: Nat) -> Nat { let _p: Eq<Nat, (k + 1) + 0, (k + 0) + 1> = refl; 0 }
+
+// `*` computes on its right operand too: `k * 0 ≡ 0` (ADR 30.9.26e).
+fn times_zero(k: Nat) -> Nat { let _p: Eq<Nat, k * 0, 0> = refl; 0 }
+
+// `trans`'s shared endpoints are `k + 0` and `k`: equal only by the `+` rule.
+fn via_right_zero(k: Nat) -> Nat {
+    let a: Eq<Nat, k, k + 0> = refl;
+    let b: Eq<Nat, k, k> = refl;
+    let _p: Eq<Nat, k, k> = trans(a, b);
+    0
+}
+
+fn main() -> Nat { 0 }

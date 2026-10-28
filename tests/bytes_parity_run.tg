@@ -1,0 +1,93 @@
+// tests/bytes_parity_run.tg — ADR 3.10.26n AC 5 parity battery
+//
+// One program over all six `tg_bytes_*` intrinsics, in range. `tungsten diff
+// exec` runs it on the evaluator (the handle table in
+// `albite_core/src/eval/env/handlers/externs/bytes/`) AND natively (the
+// inline lowering in `albite_codegen/src/codegen/data/ops/bytes/`) and
+// compares stdout, so a store, a load or a blit that one side gets wrong is a
+// divergence. It never prints a handle: a handle is a table key on one side
+// and a header address on the other, different by design.
+//
+// Standalone on purpose, like `int_parity_run.tg`: it declares its own externs.
+
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_len(h: Nat) -> Nat
+extern "C" fn tg_bytes_get(h: Nat, i: Nat) -> Nat
+extern "C" fn tg_bytes_set(h: Nat, i: Nat, v: Nat) -> Nat
+extern "C" fn tg_bytes_blit_string(h: Nat, at: Nat, s: String) -> Nat
+extern "C" fn tg_bytes_into_string(h: Nat) -> String
+
+pub fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+fn digit(d: Nat) -> String {
+    if d == 0 { "0" } else if d == 1 { "1" } else if d == 2 { "2" }
+    else if d == 3 { "3" } else if d == 4 { "4" } else if d == 5 { "5" }
+    else if d == 6 { "6" } else if d == 7 { "7" } else if d == 8 { "8" }
+    else { "9" }
+}
+
+/// Render a Nat in decimal.
+#[partial]
+fn nat_to_string(n: Nat) -> String {
+    if n < 10 {
+        digit(n)
+    } else {
+        nat_to_string(n / 10) ++ digit(n % 10)
+    }
+}
+
+/// Store byte `i` at index `i` for every `i` from `i` up to 255. The handle is
+/// threaded through, so each store is ordered after the last.
+#[partial]
+fn fill_every_byte(h: Nat, i: Nat) -> Nat {
+    if i == 256 { h } else { fill_every_byte(tg_bytes_set(h, i, i), i + 1) }
+}
+
+/// `Σ get(h, i) × (i + 1)` over `i` from `i` up to 255 — position-weighted,
+/// so a swapped pair of bytes changes it.
+#[partial]
+fn weighted_checksum(h: Nat, i: Nat, sum: Nat) -> Nat {
+    if i == 256 { sum } else { weighted_checksum(h, i + 1, sum + tg_bytes_get(h, i) * (i + 1)) }
+}
+
+fn every_byte_value() -> Unit {
+    let h = fill_every_byte(tg_bytes_new(256), 0);
+    println("len " ++ nat_to_string(tg_bytes_len(h)));
+    println("byte 0 " ++ nat_to_string(tg_bytes_get(h, 0)));
+    println("byte 255 " ++ nat_to_string(tg_bytes_get(h, 255)));
+    println("checksum " ++ nat_to_string(weighted_checksum(h, 0, 0)))
+}
+
+fn blits_and_conversion() -> Unit {
+    // "héllo" is six bytes (é is two), "!!!" three more: nine in all.
+    let h = tg_bytes_new(9);
+    let fresh = tg_bytes_get(h, 8);
+    let h = tg_bytes_blit_string(h, 0, "héllo");
+    let h = tg_bytes_blit_string(h, 6, "!!!");
+    let h = tg_bytes_set(h, 0, 72);
+    let text = tg_bytes_into_string(h);
+    println("fresh byte " ++ nat_to_string(fresh));
+    println(text);
+    println("text len " ++ nat_to_string(tg_string_len_internal(text)))
+}
+
+fn empty_buffer() -> Unit {
+    let text = tg_bytes_into_string(tg_bytes_new(0));
+    println("empty [" ++ text ++ "] " ++ nat_to_string(tg_string_len_internal(text)))
+}
+
+fn main() -> Unit {
+    every_byte_value();
+    blits_and_conversion();
+    empty_buffer()
+}

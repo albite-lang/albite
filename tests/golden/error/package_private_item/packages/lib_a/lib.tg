@@ -1,0 +1,2 @@
+fn hidden() -> Nat { 1 }
+pub fn f() -> Nat { hidden() }

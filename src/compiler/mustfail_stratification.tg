@@ -1,0 +1,52 @@
+// Negative control for test_stratification.tg (ADR 28.9.26c § 2.3, AC 6).
+//
+// The positive suite pins each universe-paradox shape to the error code the
+// elaborator raises, plus one impredicative positive control. An `expect_*`
+// that silently stopped being compared would leave that suite green while
+// asserting nothing. So this file is the same suite with EVERY expectation
+// wrong — the E0002/E0001/E0066 codes become E0010, the E0010 becomes E0002, and
+// `Nat` becomes `Bool` — and `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires it to fail with exactly
+//
+//   albite test src/compiler/mustfail_stratification.tg --require-tests
+//     -> aborting due to 6 errors
+//
+// The count is the point: six errors means every case was compared and every
+// one failed. A case that stops being checked lowers the count and the gate
+// goes red.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design. For the same reason it is
+// outside `must_declare` in tg-test-tiers.toml.
+
+type Pick = PA | PB
+
+fn id<T>(x: T) -> T { x }
+
+fn use_poly(f: forall a. a -> a) -> Nat { f(3) }
+
+fn self_app(x: forall a. a -> a) -> forall a. a -> a { x(x) }
+
+pub fn test_type_names_nothing() -> Unit {
+    expect_error({ let x: Type = 0; x }, "E0010")
+}
+
+pub fn test_value_cannot_be_a_type() -> Unit {
+    expect_error({ let t: Nat = 0; let y: t = 0; y }, "E0010")
+}
+
+pub fn test_type_cannot_be_a_value() -> Unit {
+    expect_error(Pick, "E0010")
+}
+
+pub fn test_no_term_has_type_prop() -> Unit {
+    expect_error(|p: Prop| p, "E0010")
+}
+
+pub fn test_empty_forall_is_not_inhabited_by_a_literal() -> Unit {
+    expect_error({ let e: forall a. a = 0; e }, "E0002")
+}
+
+pub fn test_impredicative_instantiation_is_admitted() -> Unit {
+    expect_type(use_poly(id), "Bool")
+}

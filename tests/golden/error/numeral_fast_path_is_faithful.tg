@@ -1,0 +1,10 @@
+// == a nested operand keeps its operator (ADR 13.10.26e AC 5)
+//
+// The elaborator's conversion fast path evaluates both sides with the
+// closed-term evaluator. It used to rebuild a stepped operand as `+` whatever
+// the operator, so `(2 + 1) - 1` became `3 + 1` and this `refl` was accepted,
+// and a theorem citing `wrong_sub` was kernel-admitted. Now it is E0071.
+
+fn wrong_sub() -> Eq<Nat, (2 + 1) - 1, 4> { refl }
+
+fn main() -> Nat { 0 }

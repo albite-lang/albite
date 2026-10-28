@@ -1,0 +1,299 @@
+// ADT match elaboration.
+//
+// Handles the core ADT match dispatch: determines arm count, reorders arms,
+// and delegates to binary match, catch-all, or multi-arm elaboration.
+
+use parser::ast::{
+    Pattern, PatVar, PatWildcard, PatConstructor, MatchArm, Expr,
+    Ident, Path
+};
+use lexer::span::Span;
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{
+    TermHandle, TypeHandle,
+    tg_term_unfold, tg_term_let, tg_term_var_named, tg_string_to_cstr,
+    tg_type_is_mu, tg_type_get_mu_body,
+    tg_type_is_product
+};
+use elab::cir::{CodegenIR, CIRUnfold, CIRLet, CIRVar, ct_unit, type_handle_to_codegen_type};
+use elab::env::{Env, env_push_scope, env_pop_scope, env_bind_local};
+use elab::exprs::forms::result::{ElabExprResult, ElabExprOk, ElabExprErr};
+use elab::exprs::forms::result::{elab_expr_error_coded};
+use elab::exprs::{check, synth};
+use elab::exprs::matches::patterns::{
+    is_catch_all_pattern, is_newtype_unwrap,
+    bind_pattern_in_scope, wrap_scrutinee_projections
+};
+use elab::exprs::matches::patterns::catch_all::{
+    arms_have_variable_catch_all, scrutinee_is_variable
+};
+use elab::exprs::matches::patterns::resolve::{
+    MaybeElabExprError, NoElabExprError, SomeElabExprError
+};
+use elab::exprs::matches::binary_match::{
+    elab_binary_match, elab_binary_match_checked
+};
+use elab::exprs::matches::arm_reorder::arrange_arms;
+use elab::exprs::matches::arm_coverage::refuse_unplaceable_arms;
+use elab::exprs::matches::multi_arm::{
+    elab_multi_arm_match, elab_multi_arm_match_checked
+};
+use elab::exprs::matches::desugar::{
+    DesugarResult, DesugarOk, DesugarErr
+};
+use elab::exprs::matches::{ScrutInfo};
+
+// ===========================================================================
+// INTERNAL RECORD TYPES
+// ===========================================================================
+
+/// Extended scrutinee for ADT match internals (post-unfold).
+pub type AdtMatchScrutInfo = {
+    term: TermHandle,
+    sum_ty: TypeHandle,
+    orig_ty: TypeHandle,
+    cir: CodegenIR,
+    // The value the source `match` names, before any unfold: what a variable
+    // catch-all binds (ADR 9.10.26e D3). Below the first arm `term` is
+    // `_rest`, so every rebuild copies this field unchanged.
+    scrut: ScrutInfo
+}
+
+/// Target for check-mode match: expected type + span.
+pub type MatchCheckTarget = {
+    expected: TypeHandle,
+    span: Span
+}
+
+// ===========================================================================
+// ADT MATCH DISPATCH
+// ===========================================================================
+
+/// Elaborate an ADT match expression in synth mode. An unresolved arm, or a
+/// match missing a constructor, is refused here, before any helper can type
+/// or sort it (ADR 3.10.26l D1, 13.10.26l D2).
+pub fn elab_adt_match(env: Env, scrut: ScrutInfo, arms: List<MatchArm>, span: Span) -> ElabExprResult {
+    match refuse_unplaceable_arms(env, scrut, arms, span) {
+        SomeElabExprError(e) => ElabExprErr(e),
+        NoElabExprError() => elab_adt_match_hoisting(env, scrut, arms, span)
+    }
+}
+
+fn elab_adt_match_hoisting(env: Env, scrut: ScrutInfo, arms: List<MatchArm>, span: Span) -> ElabExprResult {
+    if needs_scrutinee_hoist(scrut, arms) {
+        wrap_hoisted_scrutinee(elab_resolved_adt_match(hoisted_env(env, scrut), hoist_scrutinee(scrut), arms, span), scrut)
+    } else {
+        elab_resolved_adt_match(env, scrut, arms, span)
+    }
+}
+
+fn elab_resolved_adt_match(env: Env, scrut: ScrutInfo, arms: List<MatchArm>, span: Span) -> ElabExprResult {
+    // If μ-type, unfold first
+    let match_scrut: ScrutInfo = if tg_type_is_mu(scrut.ty) {
+        { term: tg_term_unfold(scrut.ty, scrut.term), ty: tg_type_get_mu_body(scrut.ty), cir: CIRUnfold(ct_unit(), scrut.cir) }
+    } else {
+        scrut
+    };
+    
+    // Sort, desugar nested patterns, pad a gapped catch-all (ADR 13.10.26k)
+    match arrange_arms(env, scrut, arms, span) {
+        DesugarErr(msg, s) => ElabExprErr(elab_expr_error_coded(msg, s, "E0307")),
+        DesugarOk(desugared_arms) =>
+    match desugared_arms {
+        Nil() =>
+            ElabExprErr(elab_expr_error_coded("empty match arms", span, "E0300")),
+        Cons(arm1, rest) =>
+            match rest {
+                Nil() =>
+                    if is_catch_all_pattern(arm1.pattern) {
+                        let catch_all_scrut: ScrutInfo = { term: scrut.term, ty: scrut.ty, cir: match_scrut.cir };
+                        elab_catch_all_arm(env, catch_all_scrut, arm1, span)
+                    } else if tg_type_is_product(match_scrut.ty) {
+                        // The POST-unfold term, to match the post-unfold type
+                        // and the already-post-unfold CIR: the arm now binds
+                        // this value, so a folded term under an unfolded type
+                        // would project through the μ (ADR 21.8.26a).
+                        let catch_all_scrut: ScrutInfo = { term: match_scrut.term, ty: match_scrut.ty, cir: match_scrut.cir };
+                        elab_catch_all_arm(env, catch_all_scrut, arm1, span)
+                    } else if is_newtype_unwrap(env, arm1, scrut.ty) {
+                        let catch_all_scrut: ScrutInfo = { term: scrut.term, ty: scrut.ty, cir: match_scrut.cir };
+                        elab_catch_all_arm(env, catch_all_scrut, arm1, span)
+                    } else {
+                        ElabExprErr(elab_expr_error_coded("non-exhaustive match: single non-catch-all arm", span, "E0300"))
+                    },
+                Cons(arm2, rest2) =>
+                    let ms: AdtMatchScrutInfo = { term: match_scrut.term, sum_ty: match_scrut.ty, orig_ty: scrut.ty, cir: match_scrut.cir, scrut: scrut };
+                    match rest2 {
+                        Nil() =>
+                            elab_binary_match(env, ms, arm1, arm2, span),
+                        Cons(_, _) =>
+                            elab_multi_arm_match(env, ms, desugared_arms, span)
+                    }
+            }
+    }
+    }
+}
+
+/// Elaborate ADT match with expected type, behind the same guard (D1).
+pub fn elab_adt_match_checked(
+    env: Env,
+    scrut: ScrutInfo,
+    arms: List<MatchArm>,
+    expected: TypeHandle,
+    span: Span
+) -> ElabExprResult {
+    match refuse_unplaceable_arms(env, scrut, arms, span) {
+        SomeElabExprError(e) => ElabExprErr(e),
+        NoElabExprError() => elab_adt_match_hoisting_checked(env, scrut, arms, expected, span)
+    }
+}
+
+fn elab_adt_match_hoisting_checked(
+    env: Env,
+    scrut: ScrutInfo,
+    arms: List<MatchArm>,
+    expected: TypeHandle,
+    span: Span
+) -> ElabExprResult {
+    if needs_scrutinee_hoist(scrut, arms) {
+        wrap_hoisted_scrutinee(elab_resolved_adt_match_checked(hoisted_env(env, scrut), hoist_scrutinee(scrut), arms, expected, span), scrut)
+    } else {
+        elab_resolved_adt_match_checked(env, scrut, arms, expected, span)
+    }
+}
+
+fn elab_resolved_adt_match_checked(
+    env: Env,
+    scrut: ScrutInfo,
+    arms: List<MatchArm>,
+    expected: TypeHandle,
+    span: Span
+) -> ElabExprResult {
+    let match_scrut: ScrutInfo = if tg_type_is_mu(scrut.ty) {
+        { term: tg_term_unfold(scrut.ty, scrut.term), ty: tg_type_get_mu_body(scrut.ty), cir: CIRUnfold(ct_unit(), scrut.cir) }
+    } else {
+        scrut
+    };
+    
+    // Sort, desugar nested patterns, pad a gapped catch-all (ADR 13.10.26k)
+    match arrange_arms(env, scrut, arms, span) {
+        DesugarErr(msg, s) => ElabExprErr(elab_expr_error_coded(msg, s, "E0307")),
+        DesugarOk(desugared_arms) =>
+    match desugared_arms {
+        Nil() =>
+            ElabExprErr(elab_expr_error_coded("empty match arms", span, "E0300")),
+        Cons(arm1, rest) =>
+            match rest {
+                Nil() =>
+                    if is_catch_all_pattern(arm1.pattern) {
+                        let catch_all_scrut: ScrutInfo = { term: scrut.term, ty: scrut.ty, cir: match_scrut.cir };
+                        elab_catch_all_arm_checked(env, catch_all_scrut, arm1, expected, span)
+                    } else if tg_type_is_product(match_scrut.ty) {
+                        // Post-unfold term, as in the synth arm above.
+                        let catch_all_scrut: ScrutInfo = { term: match_scrut.term, ty: match_scrut.ty, cir: match_scrut.cir };
+                        elab_catch_all_arm_checked(env, catch_all_scrut, arm1, expected, span)
+                    } else if is_newtype_unwrap(env, arm1, scrut.ty) {
+                        let catch_all_scrut: ScrutInfo = { term: scrut.term, ty: scrut.ty, cir: match_scrut.cir };
+                        elab_catch_all_arm_checked(env, catch_all_scrut, arm1, expected, span)
+                    } else {
+                        ElabExprErr(elab_expr_error_coded("non-exhaustive match", span, "E0300"))
+                    },
+                Cons(arm2, rest2) =>
+                    let ms: AdtMatchScrutInfo = { term: match_scrut.term, sum_ty: match_scrut.ty, orig_ty: scrut.ty, cir: match_scrut.cir, scrut: scrut };
+                    match rest2 {
+                        Nil() =>
+                            let target: MatchCheckTarget = { expected: expected, span: span };
+                            elab_binary_match_checked(env, ms, arm1, arm2, target),
+                        Cons(_, _) =>
+                            elab_multi_arm_match_checked(env, ms, desugared_arms, expected, span)
+                    }
+            }
+    }
+    }
+}
+
+// ===========================================================================
+// CATCH-ALL ARM
+// ===========================================================================
+
+/// Elaborate a catch-all arm (single arm with variable/wildcard pattern).
+///
+/// This arm emits no `Case` — the body replaces the whole match — so the
+/// scrutinee has to be `let`-bound here or it leaves the term entirely, taking
+/// the pattern's variables' provenance with it (ADR 21.8.26a). A single-arm
+/// record destructure is the commonest shape that lands here.
+fn elab_catch_all_arm(env: Env, scrut: ScrutInfo, arm: MatchArm, span: Span) -> ElabExprResult {
+    let env1 = env_push_scope(env);
+    let (env1, arm_var) = bind_pattern_in_scope(env1, arm.pattern, scrut.ty);
+    match synth(env1, arm.body) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, body, result_ty, body_cir) =>
+            let term = wrap_scrutinee_projections(arm.pattern, scrut.ty, arm_var, scrut.term, body);
+            ElabExprOk(env_pop_scope(env2), term, result_ty, body_cir)
+    }
+}
+
+/// Elaborate catch-all arm with expected type.
+fn elab_catch_all_arm_checked(
+    env: Env,
+    scrut: ScrutInfo,
+    arm: MatchArm,
+    expected: TypeHandle,
+    span: Span
+) -> ElabExprResult {
+    let env1 = env_push_scope(env);
+    let (env1, arm_var) = bind_pattern_in_scope(env1, arm.pattern, scrut.ty);
+    match check(env1, arm.body, expected) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, body, _, body_cir) =>
+            let term = wrap_scrutinee_projections(arm.pattern, scrut.ty, arm_var, scrut.term, body);
+            ElabExprOk(env_pop_scope(env2), term, expected, body_cir)
+    }
+}
+
+// ===========================================================================
+// A SCRUTINEE A CATCH-ALL NAMES (ADR 9.10.26e D3)
+// ===========================================================================
+
+/// The fixed name a non-variable scrutinee is bound to, after `_int_scrut`'s
+/// precedent: the self-host has no fresh-name counter, and an inner match's
+/// binding shadows an outer one exactly where its own arms read it.
+fn hoisted_scrutinee_name() -> String {
+    "_scrut"
+}
+
+/// A variable catch-all over a non-variable scrutinee (`match p.pattern`)
+/// reads the scrutinee in every arm it covers, so it is evaluated once first.
+fn needs_scrutinee_hoist(scrut: ScrutInfo, arms: List<MatchArm>) -> Bool {
+    if arms_have_variable_catch_all(arms) {
+        !scrutinee_is_variable(scrut)
+    } else {
+        false
+    }
+}
+
+/// `_scrut` in scope, so a catch-all pushed into a nested group reads it (ADR 16.10.26d D2).
+fn hoisted_env(env: Env, scrut: ScrutInfo) -> Env { env_bind_local(env_push_scope(env), hoisted_scrutinee_name(), scrut.ty) }
+
+/// The scrutinee as the variable it is bound to.
+fn hoist_scrutinee(scrut: ScrutInfo) -> ScrutInfo {
+    let name = hoisted_scrutinee_name();
+    {
+        term: tg_term_var_named(tg_string_to_cstr(name)),
+        ty: scrut.ty,
+        cir: CIRVar(name, type_handle_to_codegen_type(scrut.ty))
+    } : ScrutInfo
+}
+
+/// `let _scrut = <scrutinee> in <match>`, on the term and the CIR alike.
+fn wrap_hoisted_scrutinee(result: ElabExprResult, scrut: ScrutInfo) -> ElabExprResult {
+    match result {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, term, result_ty, cir) =>
+            let name = hoisted_scrutinee_name();
+            ElabExprOk(env_pop_scope(env2),
+                tg_term_let(tg_string_to_cstr(name), scrut.ty, scrut.term, term),
+                result_ty,
+                CIRLet(name, type_handle_to_codegen_type(scrut.ty), scrut.cir, cir))
+    }
+}

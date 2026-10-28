@@ -1,0 +1,23 @@
+[E0071] Error: `refl` requires both sides to be equal, but found `(n * m)` and `(m * n)`
+    ╭─[tests/golden/error/nat_mul_lemma_false_statements.tg:12:69]
+    │
+ 12 │ theorem mul_comm_by_refl(n: Nat, m: Nat) -> Eq<Nat, n * m, m * n> { refl }
+    │                                                                     ──┬─  
+    │                                                                       ╰─── 
+────╯
+[E0071] Error: `refl` requires both sides to be equal, but found `((m + (succ zero)) * n)` and `((m * n) + n)`
+    ╭─[tests/golden/error/nat_mul_lemma_false_statements.tg:14:84]
+    │
+ 14 │ theorem mul_succ_left_by_refl(m: Nat, n: Nat) -> Eq<Nat, (m + 1) * n, m * n + n> { refl }
+    │                                                                                    ──┬─  
+    │                                                                                      ╰─── 
+────╯
+[E0010] Error: expected `Eq<Nat, NatMul(NatMul(Var("n"), Var("m")), Succ(Var("j"))), NatMul(Var("n"), NatMul(Var("m"), Succ(Var("j"))))>`, found `Eq<Nat, NatMul(NatMul(Var("n"), Var("m")), Var("j")), NatMul(Var("n"), NatMul(Var("m"), Var("j")))>`
+    ╭─[tests/golden/error/nat_mul_lemma_false_statements.tg:17:80]
+    │
+ 17 │     natind(|i: Nat| Eq<Nat, (n * m) * i, n * (m * i)>, refl, fn(j: Nat, ih) => ih, k)
+    │                                                                                ─┬  
+    │                                                                                 ╰── expected `Eq<Nat, NatMul(NatMul(Var("n"), Var("m")), Succ(Var("j"))), NatMul(Var("n"), NatMul(Var("m"), Succ(Var("j"))))>`, found `Eq<Nat, NatMul(NatMul(Var("n"), Var("m")), Var("j")), NatMul(Var("n"), NatMul(Var("m"), Var("j")))>`
+────╯
+
+error: aborting due to 3 errors

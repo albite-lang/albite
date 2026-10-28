@@ -1,0 +1,11 @@
+// One constructor spelled two ways in one nested match (ADR 3.10.26l §2.4,
+// D1): grouping is by the full path, so the two spellings form two groups.
+// Recorded on both compilers; a self-host refusal here is a Non-Goal.
+type InnerMix = NadaMix | AlgoMix(Nat)
+type OuterMix = WrapMix(InnerMix) | EmptyMix
+
+fn pick(o: OuterMix) -> Nat {
+    match o { WrapMix(AlgoMix(k)) => k, OuterMix::WrapMix(NadaMix) => 1, _ => 0 }
+}
+
+fn main() -> Nat { pick(EmptyMix) }

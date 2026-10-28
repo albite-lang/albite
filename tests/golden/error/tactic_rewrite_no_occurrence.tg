@@ -1,0 +1,9 @@
+// A `rewrite` rule whose side does not occur is E0085 (ADR 2.10.26e D7).
+//
+// `ih : n + j = j + n` rewrites `n + j`, which the goal does not contain; its
+// right side, `j + n`, does — so the message suggests `<-`, the
+// wrong-direction case. Written `rewrite [<- ih]`, the proof goes through.
+theorem wrong_way(n: Nat, j: Nat, ih: Eq<Nat, n + j, j + n>) -> Eq<Nat, (j + n) + 1, n + (j + 1)> by {
+    rewrite [ih];
+    refl
+}

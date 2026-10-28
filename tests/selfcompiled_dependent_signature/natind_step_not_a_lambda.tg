@@ -1,0 +1,11 @@
+// ADR 3.10.26i §2.5 (D2): a dependent motive's step must be a literal
+// two-parameter lambda. A named function is refused by both compilers.
+
+fn keep(j: Nat, acc: Nat) -> Nat { acc }
+
+fn named_step(n: Nat) -> Nat {
+    let _p: Eq<Nat, n, n> = natind(|k: Nat| Eq<Nat, k, k>, refl, keep, n);
+    0
+}
+
+fn main() -> Nat { named_step(2) }

@@ -1,0 +1,63 @@
+// tests/nested_lone_arm_run.tg — ADR 13.10.26u AC 3 parity fixture
+//
+// A lone arm that names an inner constructor, `B(Som(n))`, beside a trailing
+// `_`. `B(Non())` must run the catch-all. Before the fix both sides ran a
+// synthesised hole instead: the evaluator printed nothing past `sorry` and the
+// native binary printed 0, so `tungsten diff exec` exited 1. The two-field row
+// of the ADR's table is E0021 now, so it has no runtime fixture.
+//
+// Standalone on purpose, like `int_parity_run.tg`: it declares its own
+// externs so the fixture costs a handful of symbols, not the compiler.
+
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+pub fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+fn digit(d: Nat) -> String {
+    if d == 0 { "0" } else if d == 1 { "1" } else if d == 2 { "2" }
+    else if d == 3 { "3" } else if d == 4 { "4" } else if d == 5 { "5" }
+    else if d == 6 { "6" } else if d == 7 { "7" } else if d == 8 { "8" }
+    else { "9" }
+}
+
+type M = Som(Nat) | Non
+type P = A(Nat) | B(M) | C(Nat)
+type T3 = Tri1(Nat) | Tri2 | Tri3
+type R = RA(Nat) | RB(T3) | RC(Nat)
+
+fn f(q: P) -> Nat {
+    match q {
+        A(n) => 1,
+        B(Som(n)) => 2,
+        C(n) => 3,
+        _ => 7
+    }
+}
+
+// Three inner constructors: the flat path's hole, not the binary walk's.
+fn g(r: R) -> Nat {
+    match r {
+        RA(n) => 1,
+        RB(Tri1(n)) => 2,
+        RC(n) => 3,
+        _ => 7
+    }
+}
+
+fn main() -> Unit {
+    println("A = " ++ digit(f(A(0))));
+    println("B(Som) = " ++ digit(f(B(Som(0)))));
+    println("B(Non) = " ++ digit(f(B(Non()))));
+    println("C = " ++ digit(f(C(0))));
+    println("RB(Tri1) = " ++ digit(g(RB(Tri1(0)))));
+    println("RB(Tri2) = " ++ digit(g(RB(Tri2()))));
+    println("done")
+}

@@ -1,0 +1,2 @@
+// E0122: the key must equal the package's own name (D3).
+fn main() -> Nat { 0 }

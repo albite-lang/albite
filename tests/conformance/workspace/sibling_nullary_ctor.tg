@@ -1,0 +1,8 @@
+// A sibling's nullary constructor used as a value (ADR 2.10.26g §2.4, D2): no
+// application to type-check, so only the lookup guard can refuse it.
+use boxes::{Shut};
+
+fn main() -> Nat {
+    let _lid = Shut;
+    0
+}

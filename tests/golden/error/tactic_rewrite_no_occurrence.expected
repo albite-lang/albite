@@ -1,0 +1,9 @@
+[E0085] Error: `rewrite` rule 1 (`Eq Nat (n + j) (j + n)`) finds no occurrence of `(n + j)` in the goal `Eq Nat ((j + n) + (succ zero)) (n + (j + (succ zero)))`; the right-hand side occurs: did you mean `<-`?
+   ╭─[tests/golden/error/tactic_rewrite_no_occurrence.tg:7:14]
+   │
+ 7 │     rewrite [ih];
+   │              ─┬  
+   │               ╰── 
+───╯
+
+error: aborting due to 1 error

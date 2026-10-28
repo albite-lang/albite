@@ -1,0 +1,2 @@
+// The imported `helper`, which returns 1.
+pub fn helper() -> Nat { 1 }

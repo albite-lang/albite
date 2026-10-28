@@ -1,0 +1,12 @@
+// Golden test (ADR 13.10.26l): a payload match missing the MIDDLE
+// constructor. The self-host used to return `inl(5)` on `B(5)`, a sum where
+// the type says `Nat`. Both compilers now refuse it at the `match`. E0020.
+type P = A(Nat) | B(Nat) | C(Nat)
+
+fn f(q: P) -> Nat {
+    match q { A(x) => x, C(y) => y }
+}
+
+fn main() -> Nat {
+    f(B(5))
+}

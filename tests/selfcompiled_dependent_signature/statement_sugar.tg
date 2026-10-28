@@ -1,0 +1,5 @@
+// ADR 2.10.26f D7: the `==` statement sugar with a leading identifier.
+
+fn r(n: Nat) -> n + 0 == n { refl }
+
+fn main() -> Nat { let _p: Eq<Nat, 2 + 0, 2> = r(2); 0 }

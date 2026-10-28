@@ -1,0 +1,93 @@
+// src/compiler/driver/pipeline/test/records/json.tg
+// A frame as a schema-1 test record, and the run's summary (ADR 1.10.26i D4).
+//
+// The field order is 29.9.26i's, byte for byte, as
+// `tests/golden/test/json_verdicts.expected` pins it. The verdict set is the
+// self-host's own — `passed` or `failed` — so every count the self-host cannot
+// produce is 0. The summary's `duration_ms` is the SUM of the frames': the
+// driver has no clock, so it is not the bootstrap's wall time; goldens and the
+// parity gate normalise it to 0.
+//
+// EVALUATOR. Pure over `json.tg`'s writer, whose externs are all executable.
+// No name here starts with `test_`: the self-host's discovery scans every def.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::json::{json_object, json_field, json_string, json_nat, json_null};
+use driver::pipeline::test::records::frames::{TestFrame};
+
+/// One frame's record, for the entry `file` as the user spelled it.
+pub fn json_test_record(frame: TestFrame, file: String) -> String {
+    json_object(
+        Cons(json_field("schema", json_nat(1)),
+        Cons(json_field("kind", json_string("test")),
+        Cons(json_field("name", json_string(frame.name)),
+        Cons(json_field("module", json_null()),
+        Cons(json_field("file", json_string(file)),
+        Cons(json_field("verdict", json_string(json_frame_verdict(frame))),
+        Cons(json_field("gating", json_bool_text(frame.failed)),
+        Cons(json_field("message", json_frame_message(frame)),
+        Cons(json_field("assertions", json_nat(frame.assertions)),
+        Cons(json_field("duration_ms", json_nat(frame.duration_ms)),
+        Cons(json_field("expected_failure", json_null()),
+        Cons(json_field("stdout", json_string(frame.stdout)),
+        Cons(json_field("stderr", json_string(frame.stderr)),
+        Nil))))))))))))))
+}
+
+/// The run's summary record over every frame.
+pub fn json_test_summary(frames: List<TestFrame>) -> String {
+    let failed = json_failed_count(frames);
+    let total = json_frame_count(frames);
+    json_object(
+        Cons(json_field("schema", json_nat(1)),
+        Cons(json_field("kind", json_string("test_summary")),
+        Cons(json_field("total", json_nat(total)),
+        Cons(json_field("passed", json_nat(total - failed)),
+        Cons(json_field("failed", json_nat(failed)),
+        Cons(json_field("skipped", json_nat(0)),
+        Cons(json_field("timed_out", json_nat(0)),
+        Cons(json_field("black_holed", json_nat(0)),
+        Cons(json_field("never_compared", json_nat(0)),
+        Cons(json_field("asserted_nothing", json_nat(0)),
+        Cons(json_field("did_not_finish", json_nat(0)),
+        Cons(json_field("expected_failures", json_nat(0)),
+        Cons(json_field("duration_ms", json_nat(json_duration_sum(frames))),
+        Cons(json_field("result", json_string(if failed == 0 { "ok" } else { "failed" })),
+        Nil)))))))))))))))
+}
+
+/// `passed` or `failed` — the self-host's two verdicts.
+pub fn json_frame_verdict(frame: TestFrame) -> String {
+    if frame.failed { "failed" } else { "passed" }
+}
+
+/// `"assertion failed"` for a failure, `null` for a pass, as the bootstrap.
+fn json_frame_message(frame: TestFrame) -> String {
+    if frame.failed { json_string("assertion failed") } else { json_null() }
+}
+
+fn json_bool_text(b: Bool) -> String {
+    if b { "true" } else { "false" }
+}
+
+fn json_frame_count(frames: List<TestFrame>) -> Nat {
+    match frames {
+        Nil() => 0,
+        Cons(_, rest) => 1 + json_frame_count(rest)
+    }
+}
+
+fn json_failed_count(frames: List<TestFrame>) -> Nat {
+    match frames {
+        Nil() => 0,
+        Cons(frame, rest) => (if frame.failed { 1 } else { 0 }) + json_failed_count(rest)
+    }
+}
+
+/// Every frame's duration, summed (D4).
+pub fn json_duration_sum(frames: List<TestFrame>) -> Nat {
+    match frames {
+        Nil() => 0,
+        Cons(frame, rest) => frame.duration_ms + json_duration_sum(rest)
+    }
+}

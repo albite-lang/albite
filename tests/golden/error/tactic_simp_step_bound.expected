@@ -1,0 +1,9 @@
+[E0086] Error: `simp` took 64 rewrite steps and a rule still applies to the goal `Eq Nat (b + a) c`; the last rules applied were 1, 2, 1, 2: rules that undo each other loop, so give `rewrite` the steps instead
+   ╭─[tests/golden/error/tactic_simp_step_bound.tg:5:65]
+   │
+ 5 │ theorem loops(a: Nat, b: Nat, c: Nat) -> Eq<Nat, a + b, c> by { simp [add_comm(a, b), add_comm(b, a)] }
+   │                                                                 ──────────────────┬──────────────────  
+   │                                                                                   ╰──────────────────── 
+───╯
+
+error: aborting due to 1 error

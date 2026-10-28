@@ -1,0 +1,194 @@
+// src/compiler/elab/items/collect/duplicates.tg
+// Two definitions of one name in a file are refused (ADR 13.10.26f D3).
+//
+// The self-host's half of the bootstrap's `duplicate_definitions`
+// (`bootstrap/src/driver/modules/definitions.rs`): one walk over a module's
+// top-level items with the same three namespaces, raising E0103 (the
+// bootstrap's E0004) at every definition whose name an earlier definition in
+// a colliding namespace already holds. Like `check_positivity_pass`, it is the
+// caller's to run after the collection pass, never `collect_items`'s own.
+
+use lexer::span::Span;
+use parser::ast::{
+    Item, ItemFn, ItemType, ItemTypeAlias, ItemTheorem, ItemLemma,
+    ItemAxiom, ItemExtern, ItemMod, ItemUse, ItemError,
+    TypeDefBody, TypeDefAlias, TypeDefAdt, TypeDefRecord, Variant,
+    UseTree, UseTreePath, UseTreeSimple, UseTreeAlias, UseTreeRename,
+    UseTreeGroup, UseTreeNested, UseTreeGlob,
+    Ident, ident_name, ident_span, path_item_name
+};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_len};
+use elab::error::elab_error_duplicate;
+use elab::items::result::{ElabContext, elab_context_add_error};
+
+// ===========================================================================
+// NAMESPACES
+// ===========================================================================
+
+/// One top-level name: what it is called, where, and which namespace it
+/// lives in (`definition_namespace_*`).
+pub type DefinitionSite = { name: String, span: Span, namespace: Nat }
+
+/// `fn`, `theorem`, `lemma`, `axiom`, `extern fn` and every constructor.
+fn definition_namespace_value() -> Nat { 0 }
+
+/// `type` and type alias.
+fn definition_namespace_type() -> Nat { 1 }
+
+/// A name a `use` brings in. Its namespace is unknown before resolution, so
+/// it meets both of the others.
+fn definition_namespace_import() -> Nat { 2 }
+
+/// Whether two sites of one name collide. Import against import does not:
+/// that is the duplicate-import error, raised by Import Resolution.
+pub fn definition_namespaces_collide(first: Nat, second: Nat) -> Bool {
+    let import = definition_namespace_import();
+    if first == import && second == import {
+        false
+    } else {
+        first == import || second == import || first == second
+    }
+}
+
+fn definition_site_new(id: Ident, namespace: Nat) -> DefinitionSite {
+    { name: ident_name(id), span: ident_span(id), namespace: namespace }
+}
+
+// ===========================================================================
+// THE PASS
+// ===========================================================================
+
+/// Record one E0103 at every later definition of a name already defined in
+/// `items`, in source order.
+pub fn check_duplicate_definitions_pass(ctx: ElabContext, items: List<Item>) -> ElabContext {
+    let none_yet: List<DefinitionSite> = Nil();
+    report_item_duplicates(ctx, items, none_yet)
+}
+
+/// The items whose bodies are elaborated after the pass: none once it has
+/// refused a duplicate, because the bootstrap refuses such a file before any
+/// elaboration — a body checked against the definition that won would add an
+/// error the bootstrap never reaches (§1.2's theorem, E0402).
+pub fn items_to_elaborate_after_duplicates(
+    before: ElabContext,
+    after: ElabContext,
+    items: List<Item>
+) -> List<Item> {
+    let none: List<Item> = Nil();
+    if list_len(after.errors) == list_len(before.errors) { items } else { none }
+}
+
+fn report_item_duplicates(
+    ctx: ElabContext,
+    items: List<Item>,
+    earlier: List<DefinitionSite>
+) -> ElabContext {
+    match items {
+        Nil() => ctx,
+        Cons(item, rest) =>
+            let (ctx2, earlier2) = report_site_duplicates(ctx, item_definition_sites(item), earlier);
+            report_item_duplicates(ctx2, rest, earlier2)
+    }
+}
+
+fn report_site_duplicates(
+    ctx: ElabContext,
+    sites: List<DefinitionSite>,
+    earlier: List<DefinitionSite>
+) -> (ElabContext, List<DefinitionSite>) {
+    match sites {
+        Nil() => (ctx, earlier),
+        Cons(site, rest) =>
+            let ctx2 = if earlier_site_collides(earlier, site) {
+                elab_context_add_error(ctx, elab_error_duplicate(site.name, site.span))
+            } else {
+                ctx
+            };
+            report_site_duplicates(ctx2, rest, Cons(site, earlier))
+    }
+}
+
+/// Whether any earlier site holds `site`'s name in a colliding namespace.
+pub fn earlier_site_collides(earlier: List<DefinitionSite>, site: DefinitionSite) -> Bool {
+    match earlier {
+        Nil() => false,
+        Cons(first, rest) =>
+            if first.name == site.name && definition_namespaces_collide(first.namespace, site.namespace) {
+                true
+            } else {
+                earlier_site_collides(rest, site)
+            }
+    }
+}
+
+// ===========================================================================
+// WHAT AN ITEM DEFINES
+// ===========================================================================
+
+/// Every top-level name an item defines, a type's constructors included.
+pub fn item_definition_sites(item: Item) -> List<DefinitionSite> {
+    let none: List<DefinitionSite> = Nil();
+    let value = definition_namespace_value();
+    match item {
+        ItemFn(f) => Cons(definition_site_new(f.name, value), none),
+        ItemType(t) =>
+            Cons(definition_site_new(t.name, definition_namespace_type()), type_body_definition_sites(t.body)),
+        ItemTypeAlias(a) => Cons(definition_site_new(a.name, definition_namespace_type()), none),
+        ItemTheorem(t) => Cons(definition_site_new(t.name, value), none),
+        ItemLemma(t) => Cons(definition_site_new(t.name, value), none),
+        ItemAxiom(a) => Cons(definition_site_new(a.name, value), none),
+        ItemExtern(e) => Cons(definition_site_new(e.name, value), none),
+        ItemUse(u) => use_tree_definition_sites(u.tree, none),
+        ItemMod(_) => none,
+        ItemError(_) => none
+    }
+}
+
+/// A sum type's constructors, in source order; nothing for any other body.
+fn type_body_definition_sites(body: TypeDefBody) -> List<DefinitionSite> {
+    let none: List<DefinitionSite> = Nil();
+    match body {
+        TypeDefAdt(variants) => variant_definition_sites(variants),
+        TypeDefAlias(_) => none,
+        TypeDefRecord(_) => none
+    }
+}
+
+fn variant_definition_sites(variants: List<Variant>) -> List<DefinitionSite> {
+    match variants {
+        Nil() => Nil(),
+        Cons(variant, rest) =>
+            Cons(definition_site_new(variant.name, definition_namespace_value()), variant_definition_sites(rest))
+    }
+}
+
+/// The names a `use` brings in — each path's last segment, or its alias —
+/// pushed onto `acc`. A glob names nothing that can be checked before
+/// resolution. Order within one `use` does not matter: its names are all
+/// imports, which never collide with one another.
+// Partial (ADR 11.8.26b): a group recurses through its list of subtrees, a
+// nested walk the structural check does not follow. Executable compiler code
+// no proof reaches; E0063 guards that.
+#[partial]
+pub fn use_tree_definition_sites(tree: UseTree, acc: List<DefinitionSite>) -> List<DefinitionSite> {
+    let import = definition_namespace_import();
+    match tree {
+        UseTreePath(path) => Cons(definition_site_new(path_item_name(path), import), acc),
+        UseTreeSimple(path) => Cons(definition_site_new(path_item_name(path), import), acc),
+        UseTreeAlias(_, alias) => Cons(definition_site_new(alias, import), acc),
+        UseTreeRename(_, alias, _) => Cons(definition_site_new(alias, import), acc),
+        UseTreeGroup(_, trees, _) => use_tree_list_definition_sites(trees, acc),
+        UseTreeNested(_, trees, _) => use_tree_list_definition_sites(trees, acc),
+        UseTreeGlob(_, _) => acc
+    }
+}
+
+#[partial]
+fn use_tree_list_definition_sites(trees: List<UseTree>, acc: List<DefinitionSite>) -> List<DefinitionSite> {
+    match trees {
+        Nil() => acc,
+        Cons(tree, rest) =>
+            use_tree_list_definition_sites(rest, use_tree_definition_sites(tree, acc))
+    }
+}

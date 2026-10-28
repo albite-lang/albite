@@ -1,0 +1,400 @@
+//! Phase 1 Core Types
+//!
+//! Defines the type syntax for the Tungsten core calculus:
+//! τ ::= Bool | Nat | Unit | Void | String | τ → τ | τ × τ | τ + τ | α | ∀α. τ | Eq τ t t | μα. τ
+//!     | *τ | Ref τ  (Phase 3-Prep)
+
+use serde::{Deserialize, Serialize};
+
+/// A type variable name (e.g., α, β)
+pub type TyVar = String;
+
+/// Phase 1 Core Types
+///
+/// τ ::= Bool
+///     | Nat
+///     | Unit
+///     | Void
+///     | String
+///     | τ → τ
+///     | τ × τ
+///     | τ + τ
+///     | α
+///     | ∀α. τ
+///     | Eq τ t t
+///     | μα. τ
+///     | *τ (Pointer, Phase 3-Prep)
+///     | Ref τ (Mutable reference, Phase 3-Prep)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Type {
+    /// Booleans
+    Bool,
+
+    /// Natural numbers (primitive in Phase 1)
+    Nat,
+
+    /// Signed 64-bit integers (ADR 14.9.26c): a primitive beside `Nat`, never
+    /// a re-typing of it — the evaluator dispatches on term shape alone.
+    Int,
+
+    /// Unit type - single inhabitant ()
+    Unit,
+
+    /// Empty type - no inhabitants (logical False)
+    Void,
+
+    /// String type (Phase 2A)
+    String,
+
+    /// Function type τ₁ → τ₂
+    Arrow(Box<Type>, Box<Type>),
+
+    /// Product type τ₁ × τ₂
+    Product(Box<Type>, Box<Type>),
+
+    /// Sum type τ₁ + τ₂
+    Sum(Box<Type>, Box<Type>),
+
+    /// Type variable α
+    TyVar(TyVar),
+
+    /// For-all type ∀α. τ — impredicative (type application accepts any
+    /// well-formed type, including a `∀`-type; ADR 28.9.26c)
+    Forall(TyVar, Box<Type>),
+
+    /// Equality type Eq τ t₁ t₂ (quasi-dependent)
+    /// - τ is the type of both terms
+    /// - t₁ and t₂ are the terms being compared
+    Eq(Box<Type>, Box<crate::terms::Term>, Box<crate::terms::Term>),
+
+    /// Recursive type μα. τ (Phase 2A)
+    /// - α is bound in τ
+    /// - Represents the least fixed point
+    Mu(TyVar, Box<Type>),
+
+    /// Pointer type *τ (Phase 3-Prep, FFI)
+    /// Raw pointer for interop with C code
+    Ptr(Box<Type>),
+
+    /// Ref type Ref<τ> (Phase 3-Prep)
+    /// Mutable reference cell
+    Ref(Box<Type>),
+
+    /// Deferred type application (elaboration-only)
+    ///
+    /// Used during elaboration when a generic type is referenced before its
+    /// definition is fully elaborated. For example, when `Tree<T>` references
+    /// `Forest<T>` and `Forest` is still a stub, we store `App("Forest", [T])`
+    /// instead of losing the type arguments.
+    ///
+    /// This variant is resolved in Deferred-TyVar Resolution after all types are elaborated.
+    /// It should never appear in the final Core output.
+    App(String, Vec<Type>),
+
+    /// Algebraic Data Type (flat enum representation)
+    ///
+    /// For ADTs with n >= 3 constructors, we use a flat representation:
+    /// - `{ i32 tag, [max_payload x i8] data }`
+    /// - Enables O(1) variant dispatch via switch instead of O(n) nested branches
+    ///
+    /// Fields:
+    /// - name: The ADT name (e.g., "`TokenKind`")
+    /// - `type_args`: Type parameters (e.g., [T] for Option<T>)
+    /// - variants: List of (`constructor_name`, `payload_type`) pairs
+    ///
+    /// See ADR 2.2.26 for rationale.
+    Adt(String, Vec<Type>, Vec<(String, Type)>),
+
+    /// Error/poison type for cascade prevention.
+    ///
+    /// Unifies silently with any type to prevent secondary error diagnostics.
+    /// Introduced when elaboration of a definition body fails — the definition's
+    /// type is set to `Error` instead of leaving it as `INVALID_HANDLE`, so that
+    /// downstream callers don't each generate a "type mismatch" error.
+    ///
+    /// `TypeError` is a poison value, not a wildcard: it suppresses new error
+    /// generation but never converts an error path into a success path.
+    Error,
+
+    /// Dependent function type Π x:τ₁. τ₂ (ADR 30.9.26d).
+    ///
+    /// Built only by [`Type::pi_or_arrow`], so it exists only when `x` is free
+    /// in τ₂; every non-dependent function type stays an `Arrow`. `x` is a TERM
+    /// variable and can occur only inside an `Eq` argument, so no type is ever
+    /// computed from a value (D7). Appended last so every older variant keeps
+    /// its serialized index.
+    Pi(crate::terms::Var, Box<Type>, Box<Type>),
+
+    /// Dependent pair type Σ x:τ₁. τ₂ — "there is an `x : τ₁` with τ₂" (ADR
+    /// 4.10.26h, `universe_hierarchy.md` Q4).
+    ///
+    /// Built only by [`Type::sigma`], and unlike `Pi` it never collapses: a
+    /// `Sigma` whose binder is unused stays a `Sigma`, never a `Product`, so
+    /// the binder check always runs (D1). `x` is a TERM variable, occurring
+    /// only inside `Eq` arguments. Its terms are `Annot(Pair(a, b), Sigma)`.
+    /// Appended last so every older variant keeps its serialized index.
+    Sigma(crate::terms::Var, Box<Type>, Box<Type>),
+
+    /// The predicate binders (ADR 6.10.26h D4), appended; see `types/predicate`.
+    /// `P<t₁, …, tₙ>` sorts `Prop`; beside `Eq`'s, its terms are the only
+    /// place a term variable occurs in a type.
+    PredApp(TyVar, Vec<crate::terms::Term>),
+    /// `∀P : A₁ → … → Aₙ → Prop. τ`, admitted by the kernel only in a
+    /// global's prenex signature prefix (D6).
+    ForallPred(TyVar, Vec<Type>, Box<Type>),
+    /// `λx₁:A₁ … xₙ:Aₙ. τ`, valid only as a `TyApp` argument against a
+    /// `ForallPred`; substituting it is hereditary.
+    PredAbs(Vec<(crate::terms::Var, Type)>, Box<Type>),
+}
+
+impl Type {
+    /// Substitute a type variable: τ[α := τ']
+    #[must_use]
+    pub fn substitute(&self, var: &str, replacement: &Type) -> Type {
+        match self {
+            Type::Bool
+            | Type::Nat
+            | Type::Int
+            | Type::Unit
+            | Type::Void
+            | Type::String
+            | Type::Error => self.clone(),
+
+            Type::TyVar(v) => {
+                if v == var {
+                    replacement.clone()
+                } else {
+                    Type::TyVar(v.clone())
+                }
+            }
+
+            Type::Arrow(t1, t2) => Type::arrow(
+                t1.substitute(var, replacement),
+                t2.substitute(var, replacement),
+            ),
+
+            // The binder is a term name, so it never shadows a type variable.
+            Type::Pi(x, t1, t2) => Type::pi(
+                x.clone(),
+                t1.substitute(var, replacement),
+                t2.substitute(var, replacement),
+            ),
+            Type::Sigma(x, t1, t2) => Type::sigma(
+                x.clone(),
+                t1.substitute(var, replacement),
+                t2.substitute(var, replacement),
+            ),
+
+            Type::Product(t1, t2) => Type::product(
+                t1.substitute(var, replacement),
+                t2.substitute(var, replacement),
+            ),
+
+            Type::Sum(t1, t2) => Type::sum(
+                t1.substitute(var, replacement),
+                t2.substitute(var, replacement),
+            ),
+
+            Type::Forall(v, body) => {
+                let new_body = if v == var {
+                    body.as_ref().clone()
+                } else {
+                    body.substitute(var, replacement)
+                };
+                Type::Forall(v.clone(), Box::new(new_body))
+            }
+
+            Type::Eq(ty, t1, t2) => Type::Eq(
+                Box::new(ty.substitute(var, replacement)),
+                Box::new(t1.substitute_type(var, replacement)),
+                Box::new(t2.substitute_type(var, replacement)),
+            ),
+
+            Type::Mu(v, body) => {
+                let new_body = if v == var {
+                    body.as_ref().clone()
+                } else {
+                    body.substitute(var, replacement)
+                };
+                Type::Mu(v.clone(), Box::new(new_body))
+            }
+
+            Type::Ptr(inner) => Type::ptr(inner.substitute(var, replacement)),
+            Type::Ref(inner) => Type::ref_ty(inner.substitute(var, replacement)),
+
+            Type::App(name, args) => Type::app(
+                name.clone(),
+                args.iter()
+                    .map(|a| a.substitute(var, replacement))
+                    .collect(),
+            ),
+
+            Type::Adt(name, type_args, variants) => Type::adt(
+                name.clone(),
+                type_args
+                    .iter()
+                    .map(|a| a.substitute(var, replacement))
+                    .collect(),
+                variants
+                    .iter()
+                    .map(|(ctor, payload)| (ctor.clone(), payload.substitute(var, replacement)))
+                    .collect(),
+            ),
+
+            Type::PredApp(..) | Type::ForallPred(..) | Type::PredAbs(..) => {
+                self.substitute_predicate_form(var, replacement)
+            }
+        }
+    }
+
+    /// Get free type variables in this type
+    #[must_use]
+    pub fn free_type_vars(&self) -> std::collections::HashSet<TyVar> {
+        use std::collections::HashSet;
+        match self {
+            Type::Bool
+            | Type::Nat
+            | Type::Int
+            | Type::Unit
+            | Type::Void
+            | Type::String
+            // Error type has no free variables
+            | Type::Error => HashSet::new(),
+
+            Type::TyVar(v) => {
+                let mut set = HashSet::new();
+                set.insert(v.clone());
+                set
+            }
+
+            Type::Arrow(t1, t2)
+            | Type::Product(t1, t2)
+            | Type::Sum(t1, t2)
+            | Type::Pi(_, t1, t2)
+            | Type::Sigma(_, t1, t2) => {
+                let mut set = t1.free_type_vars();
+                set.extend(t2.free_type_vars());
+                set
+            }
+
+            Type::Forall(v, body) | Type::Mu(v, body) => {
+                let mut set = body.free_type_vars();
+                set.remove(v);
+                set
+            }
+
+            Type::Eq(ty, t1, t2) => {
+                let mut set = ty.free_type_vars();
+                set.extend(t1.free_type_vars());
+                set.extend(t2.free_type_vars());
+                set
+            }
+
+            Type::Ptr(inner) | Type::Ref(inner) => inner.free_type_vars(),
+
+            Type::App(_, args) => {
+                let mut set = std::collections::HashSet::new();
+                for arg in args {
+                    set.extend(arg.free_type_vars());
+                }
+                set
+            }
+
+            Type::Adt(_, type_args, variants) => {
+                let mut set = std::collections::HashSet::new();
+                for arg in type_args {
+                    set.extend(arg.free_type_vars());
+                }
+                for (_, payload) in variants {
+                    set.extend(payload.free_type_vars());
+                }
+                set
+            }
+
+            Type::PredApp(..) | Type::ForallPred(..) | Type::PredAbs(..) => {
+                self.predicate_form_free_type_vars()
+            }
+        }
+    }
+
+    /// Check if this type is well-formed given a set of type variables in scope
+    #[must_use]
+    pub fn is_well_formed(&self, type_vars: &std::collections::HashSet<TyVar>) -> bool {
+        match self {
+            Type::Bool
+            | Type::Nat
+            | Type::Int
+            | Type::Unit
+            | Type::Void
+            | Type::String
+            // Error type is always "well-formed" — it's a sentinel, not a real type
+            | Type::Error => true,
+
+            Type::TyVar(v) => type_vars.contains(v),
+
+            Type::Arrow(t1, t2)
+            | Type::Product(t1, t2)
+            | Type::Sum(t1, t2)
+            | Type::Pi(_, t1, t2)
+            | Type::Sigma(_, t1, t2) => {
+                t1.is_well_formed(type_vars) && t2.is_well_formed(type_vars)
+            }
+
+            Type::Forall(v, body) | Type::Mu(v, body) => {
+                let mut extended = type_vars.clone();
+                extended.insert(v.clone());
+                body.is_well_formed(&extended)
+            }
+
+            Type::Eq(ty, _t1, _t2) => {
+                // No context here, so the witnesses cannot be typed: the
+                // kernel's proof mode types them, under every binder in
+                // scope (`typecheck/eq_witnesses.rs`, ADR 1.10.26c D7).
+                ty.is_well_formed(type_vars)
+            }
+
+            Type::Ptr(inner) | Type::Ref(inner) => inner.is_well_formed(type_vars),
+
+            Type::App(_, args) => args.iter().all(|a| a.is_well_formed(type_vars)),
+
+            Type::Adt(_, type_args, variants) => {
+                type_args.iter().all(|a| a.is_well_formed(type_vars))
+                    && variants
+                        .iter()
+                        .all(|(_, payload)| payload.is_well_formed(type_vars))
+            }
+
+            Type::PredApp(..) | Type::ForallPred(..) | Type::PredAbs(..) => {
+                self.predicate_form_well_formed(type_vars)
+            }
+        }
+    }
+
+    // `node_count` / `depth` fold over `children()` in `reconstruction.rs`.
+}
+
+mod constructors;
+mod display;
+mod equality;
+pub mod mu_unfold;
+mod poison;
+pub mod positivity;
+mod predicate; // predicate binders (ADR 6.10.26h D4)
+mod primitives; // the one primitive type table (ADR 18.9.26f)
+mod reconstruction;
+mod sort; // the sort judgment (ADR 4.10.26i D1)
+mod tyvar_ops;
+pub(crate) use equality::types_equal_with_env;
+pub use equality::{
+    eq_witnesses_equal_modulo_spans, types_equal_alpha, types_equal_strict,
+    types_equal_strict_with, EqWitnessComparator, EqWitnessPairs,
+};
+pub use mu_unfold::unfold_mu_type;
+pub use primitives::PRIMITIVE_TYPES;
+pub use sort::Sort;
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod tyvar_ops_tests;

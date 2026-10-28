@@ -1,0 +1,63 @@
+// A pair can be taken apart at the surface (ADR 6.10.26c AC 2, D7).
+//
+// `let (k, e) = h` over a dependent pair binds the witness `k` and the
+// evidence `e : B[k]`, and lowers to the β-redex
+// `(λk. λe. body) (fst h) (snd h)`, which the kernel types with its own λ and
+// Π-application rules. `albite doctor check proof kernel-census` reports
+// every theorem below admitted.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_pair_pattern.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+mod nat_arith;
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+
+pub theorem le_rebuilt(n: Nat, m: Nat, h: Le<n, m>) -> Le<n, m> {
+    let (k, e) = h;
+    (k, e)
+}
+
+// A family's arguments are bare variable names in this slice, so
+// `Le<n, m + 1>` is spelled as its expansion.
+pub theorem le_succ_right(n: Nat, m: Nat, h: Le<n, m>) -> exists j: Nat. n + j == m + 1 {
+    let (k, e) = h;
+    (k + 1, cong(|x: Nat| x + 1, e))
+}
+
+pub theorem le_trans_by_hand(a: Nat, b: Nat, c: Nat, h1: Le<a, b>, h2: Le<b, c>) -> Le<a, c> {
+    let (k1, e1) = h1;
+    let (k2, e2) = h2;
+    (k1 + k2, trans(sym(nat_arith::add_assoc(a, k1, k2)),
+                    trans(cong(|x: Nat| x + k2, e1), e2)))
+}
+
+// A `let` binding is opaque, so each citation's hypothesis is `Le<x, x>`,
+// whose witness `0` holds whatever `x` is.
+fn test_le_rebuilt_is_cited() -> Unit {
+    let x: Nat = 2;
+    let h: Le<x, x> = (0, refl);
+    let _r: Le<x, x> = le_rebuilt(x, x, h);
+    ()
+}
+
+fn test_le_succ_right_is_cited() -> Unit {
+    let x: Nat = 2;
+    let h: Le<x, x> = (0, refl);
+    let _r: exists j: Nat. x + j == x + 1 = le_succ_right(x, x, h);
+    ()
+}
+
+fn test_le_trans_by_hand_is_cited() -> Unit {
+    let x: Nat = 1;
+    let h: Le<x, x> = (0, refl);
+    let _r: Le<x, x> = le_trans_by_hand(x, x, x, h, h);
+    ()
+}
+
+// The witness is substituted, not erased: the result is at `x`, not `y`.
+fn test_a_citation_at_other_arguments_is_refused() -> Unit {
+    expect_error({ let x: Nat = 1; let y: Nat = 2; let h: Le<x, x> = (0, refl);
+                   let r: Le<x, y> = le_rebuilt(x, x, h); r }, "E0010")
+}

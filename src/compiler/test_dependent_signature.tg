@@ -1,0 +1,124 @@
+// A signature can mention its parameters (ADR 30.9.26d AC 1–2).
+//
+// Signature collection binds a signature's parameters left to right, so a
+// return type, a proposition or a later parameter's type may name an earlier
+// parameter; a mentioned parameter makes the function type dependent, and
+// each citation substitutes its argument into the result. Every typed `let`
+// below is an E0010 if a citation returned the result as written.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// Refusals of a SIGNATURE stop collection for the whole file, so they live in
+// `bootstrap/src/elaborate/tests/items/equality/dependent_signature.rs`; the
+// ones here are refusals inside an expression. The must-fail twin is
+// `mustfail_dependent_signature.tg`, checked by `make check-mustfail-fixtures`.
+
+// ── The lemmas ──────────────────────────────────────────────────────────────
+
+// 29.9.26d's `zero_add` proof, unchanged, now stated by its own signature.
+fn dep_sig_add_zero_left(n: Nat) -> Eq<Nat, 0 + n, n> {
+    natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+theorem dep_sig_add_zero_left_thm(n: Nat): 0 + n == n {
+    natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+fn dep_sig_add_zero_right(n: Nat) -> n + 0 == n {
+    refl
+}
+
+fn dep_sig_flip(n: Nat, h: Eq<Nat, n, 0>) -> Eq<Nat, 0, n> {
+    sym(h)
+}
+
+fn dep_sig_refl_at<T>(x: T) -> Eq<T, x, x> {
+    refl
+}
+
+fn dep_sig_two(n: Nat, m: Nat) -> Eq<Nat, n + m, n + m> {
+    refl
+}
+
+axiom dep_sig_ax(n: Nat, h: Eq<Nat, n, 0>): Eq<Nat, 0, n>
+
+// ── AC 1: each lemma is cited by name ───────────────────────────────────────
+
+fn dep_sig_cites(m: Nat) -> Eq<Nat, 0 + m, m> {
+    dep_sig_add_zero_left(m)
+}
+
+fn dep_sig_swapped(n: Nat, m: Nat) -> Eq<Nat, m + n, m + n> {
+    dep_sig_two(m, n)
+}
+
+fn test_a_lemma_is_cited_at_a_literal() -> Unit {
+    let _p: Eq<Nat, 0 + 3, 3> = dep_sig_add_zero_left(3);
+    ()
+}
+
+fn test_a_lemma_is_cited_at_another_functions_parameter() -> Unit {
+    let _p: Eq<Nat, 0 + 5, 5> = dep_sig_cites(5);
+    ()
+}
+
+fn test_a_theorem_is_cited_the_same_way() -> Unit {
+    let _p: Eq<Nat, 0 + 4, 4> = dep_sig_add_zero_left_thm(4);
+    ()
+}
+
+fn test_a_hypothesis_over_an_earlier_parameter_is_cited() -> Unit {
+    let _p: Eq<Nat, 0, 0> = dep_sig_flip(0, refl);
+    ()
+}
+
+fn test_a_generic_dependent_signature_is_instantiated() -> Unit {
+    let _p: Eq<Nat, 5, 5> = dep_sig_refl_at(5);
+    ()
+}
+
+fn test_a_swapped_citation_is_not_captured() -> Unit {
+    let _p: Eq<Nat, 2 + 1, 2 + 1> = dep_sig_swapped(1, 2);
+    ()
+}
+
+fn test_an_axiom_hypothesis_over_an_earlier_parameter_is_cited() -> Unit {
+    let _p: Eq<Nat, 0, 0> = dep_sig_ax(0, refl);
+    ()
+}
+
+fn test_the_statement_sugar_is_cited() -> Unit {
+    let _p: Eq<Nat, 6 + 0, 6> = dep_sig_add_zero_right(6);
+    ()
+}
+
+fn test_a_lemma_bound_by_let_is_cited() -> Unit {
+    let f = dep_sig_add_zero_left;
+    let _p: Eq<Nat, 0 + 7, 7> = f(7);
+    ()
+}
+
+fn test_a_lemma_is_cited_through_the_pipe() -> Unit {
+    let _p: Eq<Nat, 0 + 8, 8> = 8 |> dep_sig_add_zero_left;
+    ()
+}
+
+// ── AC 2: wrong citations are refused ───────────────────────────────────────
+
+fn test_a_citation_at_the_wrong_argument_is_refused() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0 + 4, 4> = dep_sig_add_zero_left(3); 0 }, "E0010")
+}
+
+// Formerly a known-refused control (30.9.26d §3), flipped by ADR 30.9.26e D5:
+// an `Eq` meets an `Eq` in check mode by converting its endpoints, so the
+// citation's `0 + 3` meets the annotation's `3`.
+fn test_a_citation_converts_at_its_annotation() -> Unit {
+    let _p: Eq<Nat, 3, 3> = dep_sig_add_zero_left(3);
+    ()
+}
+
+// Known-behaviour control: the block's type keeps `k` after `k` leaves its
+// scope. It flips when a `let`'s definition is substituted into the block's
+// type, or the escape is refused (30.9.26d §3).
+fn test_a_let_bound_argument_escapes_its_block() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0 + 3, 3> = { let k = 3; dep_sig_add_zero_left(k) }; 0 }, "E0010")
+}

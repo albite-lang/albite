@@ -1,0 +1,197 @@
+// src/compiler/driver/pipeline/errors.tg
+// Error rendering helpers for pipeline operations.
+
+use driver::ffi::{
+    eprintln, print, read_file,
+    FfiResult, FfiOk, FfiErr
+};
+use driver::util::{nat_to_string, string_eq};
+use driver::ffi::{List, Nil, Cons};
+use driver::modules::{
+    ParsedModule,
+    parsed_module_path, parsed_module_lex_errors, parsed_module_parse_errors,
+    parsed_module_submodules
+};
+use parser::error::{
+    ParseErrors, NoParseErrors, ConsParseError,
+    parse_error_count, format_parse_error_coded
+};
+use lexer::error::{LexErrors, NoLexErrors, ConsLexError, error_count, has_errors, format_lex_error};
+use elab::error::{SourceInfo, source_info_new, ElabError};
+use elab::error::render::colors::{colorize_bold, ColorRed};
+use elab::error::{json_parse_error_record, json_lex_error_record};
+use driver::util::json::{json_line};
+use driver::cli::format::{ErrorFormat, FormatHuman, FormatJson, error_format_is_json};
+
+// ===========================================================================
+// ERROR RENDERING HELPERS
+// ===========================================================================
+
+/// Render lex and parse errors for a parsed module.
+pub fn render_lex_parse_errors(module: ParsedModule, max_errors: Nat, use_color: Bool) -> Unit {
+    let total = render_module_errors_only(module, FormatHuman, use_color);
+    render_abort_summary(total, use_color)
+}
+
+/// Render lex and parse errors for EVERY module in the tree, returning the
+/// total count.
+///
+/// **This walk is the deliverable, not a refactor** (ADR 12.8.26b P1/AC6). Each
+/// `ParsedModule` records its own lex/parse errors, but the pipelines read only
+/// the ROOT's — so a parse error in any imported module was stored and never
+/// looked at, and `check` reported "all OK" over a file it had failed to parse.
+/// That is what made `#[partial]` invisible: the annotations live in imported
+/// modules, where the error went unread, while the same annotation in an ENTRY
+/// file has always been reported. A silent accept in the import path is the
+/// worst direction for the error to be lost in, because the import path is
+/// where all 115 of the corpus's annotations are.
+///
+/// In JSON mode (ADR 30.9.26h D1/D5) each lex and parse error is one schema-1
+/// record on stdout, lex errors located like parse errors, and there is no
+/// abort summary: stdout holds records only.
+pub fn render_module_tree_errors(module: ParsedModule, format: ErrorFormat,
+                                 max_errors: Nat, use_color: Bool) -> Nat {
+    let total = render_module_tree_acc(module, format, use_color, 0);
+    if total > 0 && !error_format_is_json(format) {
+        render_abort_summary(total, use_color)
+    } else {
+        {}
+    };
+    total
+}
+
+// Partial (ADR 11.8.26b): descends into a list of submodules, so the recursive
+// call passes a list element rather than a strict subterm of `module`.
+// Executable compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn render_module_tree_acc(module: ParsedModule, format: ErrorFormat, use_color: Bool, acc: Nat) -> Nat {
+    let here = render_module_errors_only(module, format, use_color);
+    render_submodule_list(parsed_module_submodules(module), format, use_color, acc + here)
+}
+
+#[partial]
+fn render_submodule_list(mods: List<ParsedModule>, format: ErrorFormat, use_color: Bool, acc: Nat) -> Nat {
+    match mods {
+        Nil() => acc,
+        Cons(m, rest) => render_submodule_list(rest, format, use_color, render_module_tree_acc(m, format, use_color, acc))
+    }
+}
+
+/// Render one module's own lex/parse errors, with no summary line, returning
+/// how many it reported.
+fn render_module_errors_only(module: ParsedModule, format: ErrorFormat, use_color: Bool) -> Nat {
+    let lex_errs = parsed_module_lex_errors(module);
+    let parse_errs = parsed_module_parse_errors(module);
+    let lex_count = error_count(lex_errs);
+    let parse_count = parse_error_count(parse_errs);
+
+    // Get source for line/col computation
+    let path = parsed_module_path(module);
+    let source = get_module_source(module);
+    let src_info = source_info_new(path, source);
+
+    if error_format_is_json(format) {
+        print_lex_error_records(lex_errs, src_info);
+        print_parse_error_records(parse_errs, src_info)
+    } else {
+        print_lex_errors_detail(lex_errs, src_info);
+        print_parse_errors_detail(parse_errs, src_info)
+    };
+
+    lex_count + parse_count
+}
+
+/// Human mode: one located, coded line per lex error (ADR 1.10.26h D10).
+fn print_lex_errors_detail(errs: LexErrors, src: SourceInfo) -> Unit {
+    match errs {
+        NoLexErrors() => {},
+        ConsLexError(err, rest) => {
+            eprintln(format_lex_error(err, src));
+            print_lex_errors_detail(rest, src)
+        }
+    }
+}
+
+/// JSON mode: one located record per lex error.
+fn print_lex_error_records(errs: LexErrors, src: SourceInfo) -> Unit {
+    match errs {
+        NoLexErrors() => {},
+        ConsLexError(err, rest) => {
+            print(json_line(json_lex_error_record(err, src)));
+            print_lex_error_records(rest, src)
+        }
+    }
+}
+
+/// JSON mode: one record per parse error.
+fn print_parse_error_records(errs: ParseErrors, src: SourceInfo) -> Unit {
+    match errs {
+        NoParseErrors() => {},
+        ConsParseError(err, rest) => {
+            print(json_line(json_parse_error_record(err, src)));
+            print_parse_error_records(rest, src)
+        }
+    }
+}
+
+fn render_abort_summary(total: Nat, use_color: Bool) -> Unit {
+    eprintln(colorize_bold("error", ColorRed, use_color) ++
+            ": aborting due to " ++ nat_to_string(total) ++ " previous error(s)")
+}
+
+/// Print individual parse errors, one coded header each (ADR 1.10.26h D10).
+fn print_parse_errors_detail(errs: ParseErrors, src: SourceInfo) -> Unit {
+    match errs {
+        NoParseErrors() => {},
+        ConsParseError(err, rest) => {
+            eprintln(format_parse_error_coded(err, src));
+            print_parse_errors_detail(rest, src)
+        }
+    }
+}
+
+/// Get the source content from a parsed module.
+pub fn get_module_source(module: ParsedModule) -> String {
+    // TODO: Access the source from the parsed module
+    // For now, re-read the file (inefficient but works)
+    let path = parsed_module_path(module);
+    match read_file(path) {
+        FfiOk(s) => s,
+        FfiErr(_) => ""
+    }
+}
+
+/// One `SourceInfo` per file that has an elaboration error, read from disk —
+/// the reading EDGE of ADR 30.9.26h D2, shared by `check`, `run` and `test`.
+/// The choice among them is `elab::error::source_for_file`, which is pure.
+pub fn sources_for_errors(errors: List<ElabError>) -> List<SourceInfo> {
+    sources_for_errors_acc(errors, Nil)
+}
+
+fn sources_for_errors_acc(errors: List<ElabError>, acc: List<SourceInfo>) -> List<SourceInfo> {
+    match errors {
+        Nil() => acc,
+        Cons(err, rest) =>
+            if sources_have_file(acc, err.span.file) {
+                sources_for_errors_acc(rest, acc)
+            } else {
+                sources_for_errors_acc(rest, Cons(source_info_new(err.span.file, read_source_or_empty(err.span.file)), acc))
+            }
+    }
+}
+
+fn sources_have_file(sources: List<SourceInfo>, file: String) -> Bool {
+    match sources {
+        Nil() => false,
+        Cons(src, rest) => string_eq(src.path, file) || sources_have_file(rest, file)
+    }
+}
+
+/// The file's contents, or `""` when it cannot be read — which renders a
+/// blank snippet at the right file and offset, never another file's line.
+fn read_source_or_empty(path: String) -> String {
+    match read_file(path) {
+        FfiOk(s) => s,
+        FfiErr(_) => ""
+    }
+}

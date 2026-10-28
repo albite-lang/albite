@@ -1,0 +1,47 @@
+// Negative control for test_nat_tactics.tg (ADR 2.10.26c D10, AC 6).
+//
+// The same shapes with every proof wrong, one fault per theorem, and
+// `check-mustfail-fixtures` (make/quality/tg-tests.mk) requires exactly
+//
+//   albite test src/compiler/mustfail_nat_tactics.tg --require-tests
+//     -> aborting due to 7 errors
+//
+// The count is the point: a case that stops being checked lowers it, and the
+// gate goes red. The kernel's own refusal (E0081) is not a row here — it is
+// raised only once everything else elaborated — so it is the golden
+// `tests/golden/error/tactic_kernel_refuses_a_delta_proof`.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+// Cited by qualified path, as test_nat_tactics.tg does.
+mod nat_arith;
+
+// E0010: `exact` checks its term as the elaborator always does.
+pub theorem wrong_exact_by_tactic(n: Nat) -> Eq<Nat, n * 1, n> by { exact nat_arith::add_zero_right(n) }
+
+// E0071: `refl` on an equation that does not hold.
+pub theorem false_refl_by_tactic(n: Nat) -> Eq<Nat, n + 1, n> by { refl }
+
+// E0082: `intro` on a goal that is not a function type.
+pub theorem intro_on_an_equation_by_tactic(n: Nat) -> Eq<Nat, n, n> by { intro h; refl }
+
+// E0082: `intro n` where `n` is already a parameter (D4).
+pub theorem intro_shadows_a_parameter_by_tactic(n: Nat) -> Eq<Nat, n, 0> -> Eq<Nat, n, 0> by {
+    intro n;
+    exact n
+}
+
+// E0082: `apply` is syntactic, and `0 + ?n` does not match `k * 1`.
+pub theorem apply_that_does_not_match_by_tactic(k: Nat) -> Eq<Nat, k * 1, k> by { apply nat_arith::add_zero_left }
+
+// E0083: the block ends with the goal `h ⊢ …` open.
+pub theorem goal_left_open_by_tactic(n: Nat) -> Eq<Nat, n, 0> -> Eq<Nat, n, 0> by { intro h }
+
+// E0082: a tactic after the last goal.
+pub theorem tactic_after_the_last_goal_by_tactic(n: Nat) -> Eq<Nat, n + 0, n> by { refl; refl }
+
+fn test_the_wrong_proofs_are_cited() -> Unit {
+    let _p: Eq<Nat, 3 + 0, 3> = tactic_after_the_last_goal_by_tactic(3);
+    ()
+}

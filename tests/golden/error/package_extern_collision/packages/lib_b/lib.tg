@@ -1,0 +1,2 @@
+pub extern "C" fn tg_x(n: Nat) -> Nat
+pub fn b() -> Nat { 2 }

@@ -1,0 +1,12 @@
+// ADR 13.10.26k AC2/AC3: the matched type is declared in another module, so
+// the constructor count is found through the import: 7 * 1000 + 100 * 10 + 7.
+mod shapes;
+use shapes::{P, A, B, C};
+
+fn f(q: P) -> Nat {
+    match q { B(x) => 100, _ => 7 }
+}
+
+fn main() -> Nat {
+    f(A(0)) * 1000 + f(B(1)) * 10 + f(C(2))
+}

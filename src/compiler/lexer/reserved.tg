@@ -1,0 +1,54 @@
+// src/compiler/lexer/reserved.tg
+// The self-host's reserved words as data (ADR 6.10.26j D2).
+//
+// The lexer classifies keywords with an `if` chain (`classify_keyword` and
+// `is_reserved_keyword` in `token.tg`), which nothing can enumerate. The
+// package planner needs the set as a list — a package or dependency named
+// after a reserved word could never be imported — so it is written out here.
+//
+// Two tests keep this list and the chain one set. `test_reserved_words.tg`
+// asserts every word below classifies as a keyword; a bootstrap `#[test]`
+// (`explain/keyword_catalogue.rs`) asserts the converse, that every literal the
+// chain compares with is listed here, and that the list equals the
+// bootstrap's `ALL_KEYWORDS` — P0.5 found the two sets identical, so both
+// compilers refuse the same package names (ADR 6.10.26j).
+//
+// Not consulted by `classify_keyword`: a list walk per identifier on the
+// self-compile's hottest path, to settle what a test settles (D2).
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_append, string_join};
+
+/// Every word the lexer reserves: its keyword tokens, then the words it holds
+/// back as `TokReserved`. `_` is a token, not a word, and is not listed.
+pub fn reserved_words() -> List<String> {
+    list_append(keyword_token_words(), held_back_words())
+}
+
+/// The reserved words, one per line: the form the planner's FFI takes.
+pub fn reserved_words_lines() -> String {
+    string_join(reserved_words(), "\n")
+}
+
+/// The words `classify_keyword` gives a keyword token of their own.
+fn keyword_token_words() -> List<String> {
+    Cons("fn", Cons("let", Cons("if", Cons("else", Cons("match",
+    Cons("return", Cons("type", Cons("struct", Cons("enum", Cons("true",
+    Cons("false", Cons("theorem", Cons("lemma", Cons("axiom", Cons("by",
+    Cons("have", Cons("show", Cons("assume", Cons("forall", Cons("exists",
+    Cons("Prop", Cons("sorry", Cons("refl", Cons("subst", Cons("sym",
+    Cons("trans", Cons("cong", Cons("natind", Cons("natrec", Cons("Bool",
+    Cons("Nat", Cons("Unit", Cons("Void", Cons("extern", Cons("ref",
+    Cons("mod", Cons("use", Cons("pub", Cons("try", Cons("region", Cons("crate",
+    Cons("mut", Nil))))))))))))))))))))))))))))))))))))))))))
+}
+
+/// The words `is_reserved_keyword` holds back as `TokReserved`.
+fn held_back_words() -> List<String> {
+    Cons("async", Cons("await", Cons("impl", Cons("trait", Cons("where",
+    Cons("self", Cons("Self", Cons("move", Cons("loop",
+    Cons("while", Cons("for", Cons("in", Cons("break", Cons("continue",
+    Cons("const", Cons("static", Cons("super", Cons("dyn",
+    Cons("unsafe", Cons("as",
+    Nil))))))))))))))))))))
+}

@@ -1,0 +1,15 @@
+// Golden test (ADR 13.10.26n AC 3): an early `return` in a statement-position
+// `match` arm leaves the function; the other arm falls through to the tail.
+type Opt = None | Some(Nat)
+
+fn pick(o: Opt) -> Nat {
+    match o {
+        Some(n) => { return n + 100 },
+        None => ()
+    };
+    7
+}
+
+fn main() -> Nat {
+    pick(Some(5)) * 100 + pick(None)
+}

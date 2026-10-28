@@ -1,0 +1,8 @@
+// ADR 2.10.26f D12: instantiating a generic dependent global at an arrow
+// annotation does not erase its binder.
+
+fn refl_at<T>(x: T) -> Eq<T, x, x> { refl }
+
+fn k(x: Nat) -> Nat { let g: Nat -> Eq<Nat, x, x> = refl_at; 0 }
+
+fn main() -> Nat { k(0) }

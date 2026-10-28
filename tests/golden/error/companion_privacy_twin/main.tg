@@ -1,0 +1,7 @@
+// ADR 2.10.26j AC 3's twin: the private call companion_joins_its_module makes
+// from widget_test.tg is refused from an ordinary declared module. What lets
+// a companion make it is shared module identity, not lax privacy.
+pub mod widget;
+pub mod widget_probe;
+
+fn main() -> Nat { widget_probe::probe() }

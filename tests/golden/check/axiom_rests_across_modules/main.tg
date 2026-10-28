@@ -1,0 +1,7 @@
+// ADR 16.10.26g: a theorem resting on an axiom imported from another module
+// is counted by both compilers, keyed by the name the definition carries.
+
+mod trusted;
+use trusted::{ax};
+
+theorem bad2(): Void { ax() }

@@ -1,0 +1,14 @@
+warning: Signature Collection global collection failed with 1 error; cross-module imports may not resolve.
+  first error: error[E0005]: cannot find module `lib_a::app_util` (at 4..15)
+  hint: run `albite doctor check module signature-collection <file>` for details
+[E0005] Error: cannot find module `lib_a::app_util`
+   ╭─[tests/golden/error/package_reaches_dependent/packages/lib_a/lib.tg:1:5]
+   │
+ 1 │ use app_util::g;
+   │     ─────┬─────  
+   │          ╰─────── 
+   │ 
+   │ Note: Signature Collection global collection failed — this error may be caused by a bad import in another module. Run `albite doctor check module signature-collection <file>` for details.
+───╯
+
+error: aborting due to 1 error

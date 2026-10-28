@@ -1,0 +1,22 @@
+// Unit test for ADR 20.10.26b AC1: the self-host's `--help` names Albite.
+//
+// The macOS archive ships the self-host, so its banner is the first line a
+// macOS beta user reads. `cli_help_banner` is the value `print_help` prints;
+// asserting it here avoids capturing stdout.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_string};
+use driver::cli::output::{cli_help_banner};
+
+// 20.10.26b AC1 and 27.10.26f AC4: the banner says Albite and carries the old
+// name once, saying whose it was.
+fn test_the_help_banner_names_albite_formerly_tungsten() -> Unit {
+    assert_eq_string(
+        cli_help_banner(),
+        "Albite (formerly Tungsten by Spinning Cat Studios) - A proof language compiler"
+    )
+}

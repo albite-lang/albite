@@ -1,0 +1,11 @@
+// Golden test (ADR 9.10.26g): `Nat` division and remainder by zero are both
+// `0` — the evaluator's rule, which the kernel admits by `refl` and compiled
+// code now matches (`make check-nat-parity`). The divisor is a parameter, a
+// run-time value, not a literal folded at the call site.
+fn divide_both(dividend: Nat, divisor: Nat) -> (Nat, Nat) {
+    (dividend / divisor, dividend % divisor)
+}
+
+pub fn main() -> (Nat, Nat) {
+    divide_both(7, 0)
+}

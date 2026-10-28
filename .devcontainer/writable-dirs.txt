@@ -1,0 +1,26 @@
+# The directories a devcontainer (or lane) may write (ADR 16.10.26p D1).
+#
+# The workspace root is mounted READ-ONLY and each entry below is bound
+# writable on top of it, so every spelling of a name NOT listed here — `.CLAUDE`
+# included, on a case-insensitive host — resolves inside the read-only root.
+# One path component per line: no `/`, no `..`, and nothing that case-folds to
+# a protected name (.claude .codex .github tools .devcontainer make).
+# `docker-vm ro-check` (make devcontainer-ro-check) enforces all of that, and
+# that each config binds exactly these sources.
+#
+# Adding an entry widens what a container can write. Keep the list to what a
+# container workflow actually writes, and update both devcontainer.json files
+# in the same commit.
+.git
+out
+src
+bootstrap
+tungsten_core
+tungsten_codegen
+tungsten_runtime
+stdlib
+tests
+examples
+benchmarks
+build
+.tmp

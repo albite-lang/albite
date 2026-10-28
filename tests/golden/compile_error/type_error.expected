@@ -1,0 +1,12 @@
+[E0010] Error: expected `Nat`, found `Bool`
+   ╭─[tests/golden/compile_error/type_error.tg:2:20]
+   │
+ 2 │ fn main() -> Nat { true }
+   │              ─┬─   ──┬─  
+   │               ╰────────── expected due to return type
+   │                      │   
+   │                      ╰─── expected `Nat`, found `Bool`
+───╯
+
+error: aborting due to 1 error
+error: compilation failed: elaboration errors

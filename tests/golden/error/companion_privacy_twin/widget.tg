@@ -1,0 +1,4 @@
+// The same private helper companion_joins_its_module's widget.tg declares.
+fn double(n: Nat) -> Nat { n + n }
+
+pub fn scaled(n: Nat) -> Nat { double(n) + 1 }

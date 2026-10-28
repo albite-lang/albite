@@ -1,0 +1,9 @@
+[E0122] Error: dependency `lib_a` conflicts: that package is named `other`; the key must match it
+   ╭─[tests/golden/error/package_name_conflict/albite.toml:5:1]
+   │
+ 5 │ lib_a = { path = "packages/lib_a" }
+   │ ──┬──  
+   │   ╰──── 
+───╯
+
+error: aborting due to 1 error

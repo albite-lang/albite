@@ -1,0 +1,5 @@
+// Imports a sibling's constructor and never uses it (ADR 2.10.26g §2.4, D2):
+// the import check still finds the name, so both compilers accept.
+use boxes::{MkBox};
+
+fn main() -> Nat { 0 }

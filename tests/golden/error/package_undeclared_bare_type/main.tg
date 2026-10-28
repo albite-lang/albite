@@ -1,0 +1,10 @@
+// E0002 (ADR 4.10.26j D5): `Colour` is defined in `lib_c`, which the
+// application never declares. `lib_a` re-exports it and its path sorts
+// first, which used to make it the type's owner and let a bare `Colour`
+// through; a type is now owned by its definer, so the bare name does not
+// exist here. `use lib_a::Colour` would still resolve.
+use lib_a::paint;
+
+fn shade(c: Colour) -> Nat { paint(c) }
+
+fn main() -> Nat { 0 }

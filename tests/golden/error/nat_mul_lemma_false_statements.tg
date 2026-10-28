@@ -1,0 +1,20 @@
+// == false multiplication lemmas, stated as `theorem` items, are refused (ADR 1.10.26d AC 5)
+//
+// `expect_error` cannot hold a whole theorem, so the refusals live here:
+//   - `n * m == m * n` and `(m + 1) * n == m * n + n` by `refl` are each
+//     E0071: `*` recurses on the RIGHT operand only (D1), so a product whose
+//     right operand is a variable does not reduce;
+//   - a `mul_assoc` whose step is its bare IH is E0010 against the successor
+//     case, naming both `Eq` types.
+// Evidence beside test_nat_mul_lemmas.tg's accepted citations. Imports and
+// cites nothing.
+
+theorem mul_comm_by_refl(n: Nat, m: Nat) -> Eq<Nat, n * m, m * n> { refl }
+
+theorem mul_succ_left_by_refl(m: Nat, n: Nat) -> Eq<Nat, (m + 1) * n, m * n + n> { refl }
+
+theorem mul_assoc_step_is_its_ih(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n * m) * k, n * (m * k)> {
+    natind(|i: Nat| Eq<Nat, (n * m) * i, n * (m * i)>, refl, fn(j: Nat, ih) => ih, k)
+}
+
+fn main() -> Nat { 0 }

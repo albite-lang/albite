@@ -1,0 +1,5 @@
+// The control (ADR 30.9.26i §2.5): no sibling is named `nosuch`, so this is
+// module-not-found on both compilers, before and after any merge.
+use nosuch::{double};
+
+fn main() -> Nat { double(2) }

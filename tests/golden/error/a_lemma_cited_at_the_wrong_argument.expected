@@ -1,0 +1,12 @@
+[E0010] Error: expected `Eq<Nat, NatAdd(Zero, Succ(Succ(Succ(Succ(Zero))))), Succ(Succ(Succ(Succ(Zero))))>`, found `Eq<Nat, NatAdd(Zero, Succ(Succ(Succ(Zero)))), Succ(Succ(Succ(Zero)))>`
+   ╭─[tests/golden/error/a_lemma_cited_at_the_wrong_argument.tg:9:33]
+   │
+ 8 │ fn cites_at_the_wrong_argument() -> Bool {
+   │                                     ──┬─  
+   │                                       ╰─── expected due to return type
+ 9 │     let _p: Eq<Nat, 0 + 4, 4> = add_zero_left(3);
+   │                                 ────────┬───────  
+   │                                         ╰───────── expected `Eq<Nat, NatAdd(Zero, Succ(Succ(Succ(Succ(Zero))))), Succ(Succ(Succ(Succ(Zero))))>`, found `Eq<Nat, NatAdd(Zero, Succ(Succ(Succ(Zero)))), Succ(Succ(Succ(Zero)))>`
+───╯
+
+error: aborting due to 1 error

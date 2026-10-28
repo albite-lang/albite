@@ -1,0 +1,76 @@
+// src/compiler/driver/cli/deprecation.tg
+// The one-line notice the self-hosted compiler prints when it is run under
+// its pre-rename name, `tungsten` (ADR 20.10.26d D2).
+//
+// The macOS archive ships the self-hosted `albite` a second time as
+// `tungsten`, so the old name warns there exactly as the Linux archive's Rust
+// shim does. The decision is a pure function of `argv[0]` and the JSON flag;
+// `warn_if_invoked_by_old_name` is the effectful caller `main` runs.
+
+use driver::ffi::{get_args, eprintln, List, Nil, Cons};
+use parser::option::{Option, Some, None};
+use driver::util::{string_eq, ends_with};
+
+/// The deprecation line — the same words as the Rust shim's.
+pub fn deprecation_notice_text() -> String {
+    "note: `tungsten` is now `albite`; this name is removed in 2.1"
+}
+
+/// The notice for a run whose program name is `argv0`, or `None` when the
+/// name is not `tungsten` or JSON errors were asked for — a machine
+/// consumer's stderr is unchanged.
+pub fn deprecation_notice(argv0: String, json_errors: Bool) -> Option<String> {
+    if json_errors {
+        None
+    } else if program_stem_is_tungsten(argv0) {
+        Some(deprecation_notice_text())
+    } else {
+        None
+    }
+}
+
+/// Is the file stem of `path` exactly `tungsten`? A bare name, a path ending
+/// in `/tungsten`, and either with `.exe`. A pre-rename `tungsten1`
+/// and `albite` are not.
+pub fn program_stem_is_tungsten(path: String) -> Bool {
+    string_eq(path, "tungsten") || string_eq(path, "tungsten.exe") ||
+        ends_with(path, "/tungsten") || ends_with(path, "/tungsten.exe")
+}
+
+/// Do these arguments (after the program name) ask for JSON errors — the
+/// two tokens `--error-format json`, or `--error-format=json`?
+pub fn args_request_json_errors(args: List<String>) -> Bool {
+    match args {
+        Nil() => false,
+        Cons(arg, rest) =>
+            if string_eq(arg, "--error-format=json") {
+                true
+            } else if string_eq(arg, "--error-format") && next_arg_is_json(rest) {
+                true
+            } else {
+                args_request_json_errors(rest)
+            }
+    }
+}
+
+fn next_arg_is_json(args: List<String>) -> Bool {
+    match args {
+        Nil() => false,
+        Cons(value, _) => string_eq(value, "json")
+    }
+}
+
+/// Print the notice to stderr when this run was invoked as `tungsten`.
+pub fn warn_if_invoked_by_old_name() -> Unit {
+    match get_args() {
+        Nil() => (),
+        Cons(argv0, rest) => print_notice(deprecation_notice(argv0, args_request_json_errors(rest)))
+    }
+}
+
+fn print_notice(notice: Option<String>) -> Unit {
+    match notice {
+        Some(line) => eprintln(line),
+        None() => ()
+    }
+}

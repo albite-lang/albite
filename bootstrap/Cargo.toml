@@ -1,0 +1,78 @@
+[package]
+name = "albite_bootstrap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Bootstrap compiler for the Albite proof language"
+
+[lib]
+name = "albite_bootstrap"
+path = "src/lib.rs"
+
+# The compiler's one binary (ADR 20.10.26d D1). The pre-rename `tungsten`
+# command is `tools/tungsten-shim`, which execs this one beside it.
+[[bin]]
+name = "albite"
+path = "src/main.rs"
+
+[features]
+default = ["codegen"]
+codegen = ["dep:albite_codegen"]
+compress = ["dep:zstd"]
+profile = ["dep:tracing", "dep:tracing-chrome", "dep:tracing-subscriber"]
+
+[dependencies]
+albite_core = { path = "../albite_core" }
+# The settings seam, `ALBITE_*` first (ADR 20.10.26e D1).
+albite_runtime = { path = "../albite_runtime" }
+albite_codegen = { path = "../albite_codegen", optional = true }
+clap = { version = "4", features = ["derive"] }
+ariadne = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3"
+sha2 = "0.10"
+rayon = "1.10"
+toml = "0.8"
+tempfile = "3.24.0"
+# `albite info ffi exports --classify` parses the core's sources (ADR 5.10.26f
+# D2); both are already in the workspace through `tools/code-health`.
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"
+zstd = { version = "0.14.3", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-chrome = { version = "0.7", optional = true }
+tracing-subscriber = { version = "0.3", features = ["registry"], optional = true }
+
+# The agent sidecar's two dependencies, scoped away from `wasm32` (ADR 28.7.26a
+# §2.1). `heed` is LMDB — C compiled through `cc`, and `wasm32-unknown-unknown`
+# has no libc headers to compile it against; `uuid`'s `v4` needs a randomness
+# source that target does not provide either. Compiling the *modules* out is not
+# enough on its own: cargo builds a dependency for the target regardless of
+# which modules use it, so the subtraction has to happen here in the manifest.
+#
+# Scoped by target rather than behind a cargo feature deliberately. This repo
+# uses `--no-default-features` throughout to mean "without LLVM" — clippy,
+# coverage, mutation, and every `.tg` lane — and a default-on `sidecar` feature
+# would make all of those quietly drop the sidecar as well. A target scope
+# leaves every native invocation byte-identical and cannot be got wrong by a
+# caller forgetting a flag.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+heed = "0.20"
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# Parses every JUnit document the test runner renders back, so a
+# well-formedness regression fails a test (ADR 30.9.26k D10).
+roxmltree = "0.20"
+
+# `ftok`, for the SysV semaphore reclaim test (ADR 18.8.26d): the census must
+# derive the same key LMDB does, and macOS is the only platform where LMDB
+# locks with SysV semaphores (D2a), so the dependency is scoped with the test.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc = "0.2"

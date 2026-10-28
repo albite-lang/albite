@@ -1,0 +1,152 @@
+// Unit tests for the checked byte buffer (ADR 3.10.26n AC 2).
+//
+// Cost 5: every assertion compares a value the six `tg_bytes_*` intrinsics
+// produced at run time. They are code-generator intrinsics, not exports: the
+// bootstrap lowers them inline, and the evaluator runs them from a handle
+// table (`albite_core/src/eval/env/handlers/externs/bytes/`), so `albite
+// test --assertion-census` is what proves none went Stuck. The refusals are
+// traps, which end a test body, so they are pinned by the Rust tests, the
+// `run/bytes_trap_*` goldens and `make check-bytes-parity` instead.
+//
+// THE WRAPPER LIVES HERE, for now. `Bytes` wraps the handle in a
+// single-constructor ADT, as `StringBuilder` does, so `b + 1` does not
+// type-check; a port that keeps `MkBytes` private to its module makes a handle
+// unforgeable without declaring the intrinsics. Where the native core's `.tg`
+// sources live is the first port's decision (ADR 3.10.26n D9), so this suite
+// carries the wrapper rather than inventing that home.
+//
+// This file is its own entry and must NEVER be imported from
+// `src/compiler/main.tg`: the self-hosted compiler does not lower the
+// intrinsics (D8), so a call reachable from `main.tg` would fail to link.
+
+// Full module tree (matches test_string_builder.tg): with only `mod driver`,
+// Signature Collection fails resolving `Option` in driver::util (ADR 2.7.26b T5b).
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_string, assert_eq_nat};
+
+// ---------------------------------------------------------------------------
+// The wrapper: one function per intrinsic
+// ---------------------------------------------------------------------------
+
+pub type Bytes = MkBytes(Nat)
+
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_len(h: Nat) -> Nat
+extern "C" fn tg_bytes_get(h: Nat, i: Nat) -> Nat
+extern "C" fn tg_bytes_set(h: Nat, i: Nat, v: Nat) -> Nat
+extern "C" fn tg_bytes_blit_string(h: Nat, at: Nat, s: String) -> Nat
+extern "C" fn tg_bytes_into_string(h: Nat) -> String
+
+/// A zero-filled buffer of `len` bytes.
+pub fn bytes_new(len: Nat) -> Bytes { MkBytes(tg_bytes_new(len)) }
+
+/// The buffer's length.
+pub fn bytes_len(b: Bytes) -> Nat {
+    match b { MkBytes(h) => tg_bytes_len(h) }
+}
+
+/// The byte at `i`, `0..=255`.
+pub fn bytes_get(b: Bytes, i: Nat) -> Nat {
+    match b { MkBytes(h) => tg_bytes_get(h, i) }
+}
+
+/// Store `v` at `i`; the same buffer comes back, for threading.
+pub fn bytes_set(b: Bytes, i: Nat, v: Nat) -> Bytes {
+    match b { MkBytes(h) => MkBytes(tg_bytes_set(h, i, v)) }
+}
+
+/// Copy all of `s` in at `at`; the same buffer comes back.
+pub fn bytes_blit_string(b: Bytes, at: Nat, s: String) -> Bytes {
+    match b { MkBytes(h) => MkBytes(tg_bytes_blit_string(h, at, s)) }
+}
+
+/// The buffer as a `String`. The buffer is dead afterwards.
+pub fn bytes_into_string(b: Bytes) -> String {
+    match b { MkBytes(h) => tg_bytes_into_string(h) }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Store byte `v` at index `v` for every `v` from `v` up to 255.
+// Partial (ADR 11.8.26b): a counted loop, which the termination gate refuses.
+#[partial]
+fn store_every_byte(b: Bytes, v: Nat) -> Bytes {
+    if v == 256 { b } else { store_every_byte(bytes_set(b, v, v), v + 1) }
+}
+
+/// How many indices `i` from `i` up to 255 hold the byte `i`.
+#[partial]
+fn count_identity_bytes(b: Bytes, i: Nat, found: Nat) -> Nat {
+    if i == 256 { found }
+    else if bytes_get(b, i) == i { count_identity_bytes(b, i + 1, found + 1) }
+    else { count_identity_bytes(b, i + 1, found) }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+pub fn test_a_new_buffer_has_its_length() -> Unit {
+    assert_eq_nat(bytes_len(bytes_new(5)), 5)
+}
+
+pub fn test_a_new_buffer_is_zero_filled() -> Unit {
+    let b = bytes_new(3);
+    assert_eq_nat(bytes_get(b, 0) + bytes_get(b, 1) + bytes_get(b, 2), 0)
+}
+
+pub fn test_every_byte_value_reads_back() -> Unit {
+    let b = store_every_byte(bytes_new(256), 0);
+    assert_eq_nat(count_identity_bytes(b, 0, 0), 256)
+}
+
+pub fn test_the_highest_byte_reads_back_as_255() -> Unit {
+    let b = bytes_set(bytes_new(1), 0, 255);
+    assert_eq_nat(bytes_get(b, 0), 255)
+}
+
+// ADR 7.10.26t P0.7: this test read `b` after `bytes_set` had consumed it —
+// the double use the affine handle rule (E0092) refuses. "The same buffer"
+// now compares the raw handle numbers, below the rule, as D4 leaves them.
+pub fn test_a_set_returns_the_same_buffer() -> Unit {
+    let raw = bytes_handle_number(bytes_new(2));
+    let c = bytes_set(MkBytes(raw), 1, 7);
+    assert_eq_nat(bytes_handle_number(c), raw)
+}
+
+/// The raw handle a buffer wraps, for comparing two buffers' identity.
+fn bytes_handle_number(b: Bytes) -> Nat {
+    match b { MkBytes(h) => h }
+}
+
+pub fn test_blits_land_where_asked() -> Unit {
+    let b = bytes_blit_string(bytes_new(5), 0, "ab");
+    let b = bytes_blit_string(b, 2, "cde");
+    assert_eq_string(bytes_into_string(b), "abcde")
+}
+
+pub fn test_a_blit_carries_multi_byte_scalars_whole() -> Unit {
+    let b = bytes_blit_string(bytes_new(5), 0, "é€");
+    assert_eq_nat(bytes_get(b, 0), 195);
+    assert_eq_string(bytes_into_string(b), "é€")
+}
+
+pub fn test_an_empty_blit_at_the_end_is_in_range() -> Unit {
+    let b = bytes_blit_string(bytes_new(2), 2, "");
+    assert_eq_nat(bytes_len(b), 2)
+}
+
+pub fn test_conversion_returns_the_bytes_written() -> Unit {
+    let b = bytes_set(bytes_set(bytes_new(2), 0, 104), 1, 105);
+    assert_eq_string(bytes_into_string(b), "hi")
+}
+
+pub fn test_an_empty_buffer_converts_to_the_empty_string() -> Unit {
+    assert_eq_string(bytes_into_string(bytes_new(0)), "")
+}

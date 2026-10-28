@@ -1,0 +1,4 @@
+// ADR 30.9.26g twin: `k + 1` is `succ(k)`, never `k`. Both compilers must refuse it.
+fn successor_is_not_self(k: Nat) -> Nat { let _p: Eq<Nat, k + 1, k> = refl; 0 }
+
+fn main() -> Nat { 0 }

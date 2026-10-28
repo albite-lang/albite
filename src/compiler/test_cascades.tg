@@ -1,0 +1,210 @@
+// Unit tests for ADR 7.10.26g: the self-host stops two cascades the bootstrap
+// never writes. AC 1 — a value whose signature fails is still registered, at
+// the poison type, so its uses resolve and stay silent (D2). AC 2 — a `use`
+// path that starts at the entry module's own name resolves from the root, in
+// the elaborator and in the driver's flatten pass alike (D4).
+//
+// Every subject runs over hand-built `Env`s, `ModuleInfo`s and paths; nothing
+// here lists a directory or parses a file. The poison handle is injected as
+// `cascade_poison()`, because `type_error_handle()` is the extern
+// `tg_type_error`, which the evaluator cannot run (D2, P0.3).
+//
+// The fixture program for AC 2: the entry `prog/main.tg` declares `a` and `b`.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_string, assert_eq_nat, assert_eq_bool};
+use driver::util::{Option, Some, None, list_len, string_join};
+use parser::ast::common::{VisPublic, Ident, ident_new, Path, MkPath};
+use parser::ast::nodes::{Item, ItemUse, UseDecl, UseTreeSimple};
+use lexer::span::{Span, span_new};
+use driver::modules::path::{ModulePath, module_path_root, module_path_new, entry_prefix_stripped};
+use driver::modules::info::{
+    ModuleInfo, ModuleRegInfo, ModuleFileEntry,
+    module_info_empty, module_item_names_empty, module_info_register_module
+};
+use driver::modules::build::{entry_module_name, entry_alias_segments};
+use driver::modules::build::resolve::{resolve_use_paths};
+use elab::env::{env_new, populate_module_info, Env, elab_module_path_to_string};
+use elab::env::module::path::{elab_module_path_new};
+use elab::env::defs::{value_def_info_new, ResolvedGlobal, ValuePathResult, ValuePathOk, ValuePathErr};
+use elab::env::resolve_path::{env_resolve_value_path};
+use elab::types::{ElabTypeError};
+use elab::items::result::{elab_context_new};
+use elab::items::collect::values::{record_failed_signature};
+use elab::items::imports::paths::{resolve_use_module_path, path_to_string};
+use elab::items::imports::reach::{use_module_admissible};
+
+// --- Builders ----------------------------------------------------------------
+
+fn cascade_span() -> Span { span_new(0, 0, "") }
+
+/// Stands in for `type_error_handle()`; any handle no real type uses.
+fn cascade_poison() -> Nat { 4242 }
+
+fn cascade_path(segments: List<String>) -> Path { MkPath(cascade_idents(segments), cascade_span()) }
+
+fn cascade_idents(segments: List<String>) -> List<Ident> {
+    match segments {
+        Nil() => Nil,
+        Cons(s, rest) => Cons(ident_new(s, cascade_span()), cascade_idents(rest))
+    }
+}
+
+fn cascade_two(first: String, second: String) -> List<String> { Cons(first, Cons(second, Nil)) }
+
+/// `helper`'s return type is unknown: one error, and the name registered at
+/// the injected poison.
+fn cascade_failed_env() -> Env {
+    let err: ElabTypeError = { message: "unknown type: NoSuchType", span: cascade_span(), code: "E0100" };
+    let info = value_def_info_new("helper", cascade_poison(), VisPublic, cascade_span());
+    record_failed_signature(elab_context_new(env_new()), err, info).env
+}
+
+/// The type a resolved global carries, or 0 for anything else.
+fn cascade_global_type(result: ValuePathResult) -> Nat {
+    match result {
+        ValuePathOk(ResolvedGlobal(_, ty)) => ty,
+        _ => 0
+    }
+}
+
+/// `ok`, or the code of the refusal.
+fn cascade_value_code(result: ValuePathResult) -> String {
+    match result {
+        ValuePathOk(_) => "ok",
+        ValuePathErr(err) => err.code
+    }
+}
+
+fn cascade_register(info: ModuleInfo, segments: List<String>, file: String) -> ModuleInfo {
+    let reg: ModuleRegInfo = { path: module_path_new(segments), contents: module_item_names_empty(), visibility: VisPublic, parent: None };
+    module_info_register_module(info, reg, file)
+}
+
+/// The entry `prog/main.tg` with its modules `a` and `b`.
+fn cascade_program() -> ModuleInfo {
+    let root = cascade_register(module_info_empty(), Nil, "prog/main.tg");
+    let with_a = cascade_register(root, Cons("a", Nil), "prog/a.tg");
+    cascade_register(with_a, Cons("b", Nil), "prog/b.tg")
+}
+
+fn cascade_program_env() -> Env { populate_module_info(env_new(), cascade_program()) }
+
+fn cascade_resolved(segments: List<String>) -> String {
+    elab_module_path_to_string(resolve_use_module_path(cascade_program_env(), Nil, elab_module_path_new(segments)))
+}
+
+fn cascade_option_path(segments: Option<List<String>>) -> String {
+    match segments {
+        None() => "none",
+        Some(s) => string_join(s, "::")
+    }
+}
+
+fn cascade_option_name(name: Option<String>) -> String {
+    match name {
+        None() => "none",
+        Some(n) => n
+    }
+}
+
+/// `use <segments>;` in module `b`, through the driver's flatten pass.
+fn cascade_flattened(segments: List<String>) -> String {
+    let decl: UseDecl = { vis: VisPublic, tree: UseTreeSimple(cascade_path(segments)), span: cascade_span() };
+    let items: List<Item> = resolve_use_paths(Cons(ItemUse(decl), Nil), module_path_new(Cons("b", Nil)), cascade_program());
+    cascade_first_use_path(items)
+}
+
+fn cascade_first_use_path(items: List<Item>) -> String {
+    match items {
+        Cons(item, _) => cascade_item_use_path(item),
+        _ => "no use"
+    }
+}
+
+// A lone `Cons(ItemUse(decl), _)` arm is refused (E0021) since ADR 13.10.26u,
+// so the head is matched on its own.
+fn cascade_item_use_path(item: Item) -> String {
+    match item {
+        ItemUse(decl) => cascade_tree_path(decl),
+        _ => "no use"
+    }
+}
+
+fn cascade_tree_path(decl: UseDecl) -> String {
+    match decl.tree {
+        UseTreeSimple(path) => path_to_string(path),
+        _ => "not simple"
+    }
+}
+
+// --- AC 1: a failed signature is silent at its uses ---------------------------
+
+// 7.10.26g AC1
+fn test_a_failed_signature_records_its_one_error() -> Unit {
+    let err: ElabTypeError = { message: "unknown type: NoSuchType", span: cascade_span(), code: "E0100" };
+    let info = value_def_info_new("helper", cascade_poison(), VisPublic, cascade_span());
+    let ctx = record_failed_signature(elab_context_new(env_new()), err, info);
+    assert_eq_nat(list_len(ctx.errors), 1)
+}
+
+// 7.10.26g AC1
+fn test_a_failed_signature_resolves_at_the_poison_type() -> Unit {
+    let result = env_resolve_value_path(cascade_failed_env(), cascade_path(Cons("helper", Nil)));
+    assert_eq_string(cascade_value_code(result), "ok");
+    assert_eq_nat(cascade_global_type(result), cascade_poison())
+}
+
+// 7.10.26g AC1 must-fail twin: a name never declared is still `E0101`.
+fn test_a_name_never_declared_is_still_unknown() -> Unit {
+    let result = env_resolve_value_path(cascade_failed_env(), cascade_path(Cons("never_declared", Nil)));
+    assert_eq_string(cascade_value_code(result), "E0101")
+}
+
+// --- AC 2: an entry-prefixed `use` resolves ----------------------------------
+
+// 7.10.26g AC2
+fn test_the_entry_name_is_stripped_and_no_other() -> Unit {
+    assert_eq_string(cascade_option_path(entry_prefix_stripped("main", cascade_two("main", "a"))), "a");
+    assert_eq_string(cascade_option_path(entry_prefix_stripped("main", cascade_two("prog", "a"))), "none");
+    assert_eq_string(cascade_option_path(entry_prefix_stripped("main", Nil)), "none")
+}
+
+// 7.10.26g AC2
+fn test_the_entry_module_is_named_by_its_file() -> Unit {
+    let files: List<ModuleFileEntry> = cascade_program().module_files;
+    assert_eq_string(cascade_option_name(entry_module_name(files)), "main");
+    assert_eq_string(cascade_option_name(entry_module_name(Nil)), "none");
+    assert_eq_string(cascade_option_path(entry_alias_segments(files, cascade_two("main", "a"))), "a")
+}
+
+// 7.10.26g AC2
+fn test_an_entry_prefixed_use_resolves_from_the_root() -> Unit {
+    assert_eq_string(cascade_resolved(cascade_two("main", "a")), "a");
+    assert_eq_string(cascade_resolved(Cons("a", Nil)), "a")
+}
+
+// 7.10.26g AC2: the driver's flatten pass rewrites it to the absolute path,
+// so the elaborator then takes it as written.
+fn test_the_flatten_pass_rewrites_an_entry_prefixed_use() -> Unit {
+    assert_eq_string(cascade_flattened(Cons("main", cascade_two("a", "h"))), "a::h")
+}
+
+// 7.10.26g AC2 must-fail twin: `main::nope` is still not a module, so the
+// import is `ErrImportNotFound` at its path.
+fn test_an_entry_prefixed_missing_module_is_still_not_found() -> Unit {
+    let env = cascade_program_env();
+    let resolved = resolve_use_module_path(env, Nil, elab_module_path_new(cascade_two("main", "nope")));
+    assert_eq_string(elab_module_path_to_string(resolved), "main::nope");
+    assert_eq_bool(use_module_admissible(env, Nil, resolved), false)
+}
+
+// 7.10.26g AC2 must-fail twin: another name than the entry's is not stripped.
+fn test_another_prefix_is_not_the_entry() -> Unit {
+    assert_eq_string(cascade_resolved(cascade_two("prog", "a")), "prog::a")
+}

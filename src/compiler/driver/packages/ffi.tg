@@ -1,0 +1,160 @@
+// src/compiler/driver/packages/ffi.tg
+// The package planner's FFI (ADR 6.10.26j D3): `albite_core::ffi::packages`.
+//
+// The planner is the bootstrap's own, moved into the core so both compilers
+// share it, as the termination mirror shares its engine. Plan once, then read
+// the plan back by index. Lists cross as newline-separated strings, and every
+// accessor answers zero or "" for a bad handle or index, never a crash.
+//
+// None of these runs on the bootstrap evaluator (they are not in `albite info
+// eval externs`), so the decisions built on them sit in `mount.tg`'s pure
+// helpers and the planner's own Rust tests.
+
+use driver::ffi::types::{CString, string_to_cstring, cstring_to_string};
+
+/// A plan's handle in the core's registry.
+pub type PlanHandle = Nat
+
+extern "C" fn tg_packages_plan(entry: CString, app_modules: CString, reserved: CString) -> PlanHandle
+extern "C" fn tg_packages_has_manifest(plan: PlanHandle) -> Bool
+extern "C" fn tg_packages_manifest_dir(plan: PlanHandle) -> CString
+extern "C" fn tg_packages_count(plan: PlanHandle) -> Nat
+extern "C" fn tg_packages_name(plan: PlanHandle, index: Nat) -> CString
+extern "C" fn tg_packages_library_root(plan: PlanHandle, index: Nat) -> CString
+extern "C" fn tg_packages_problem_count(plan: PlanHandle) -> Nat
+extern "C" fn tg_packages_problem_tag(plan: PlanHandle, index: Nat) -> Nat
+extern "C" fn tg_packages_problem_file(plan: PlanHandle, index: Nat) -> CString
+extern "C" fn tg_packages_problem_start(plan: PlanHandle, index: Nat) -> Nat
+extern "C" fn tg_packages_problem_end(plan: PlanHandle, index: Nat) -> Nat
+extern "C" fn tg_packages_problem_message(plan: PlanHandle, index: Nat) -> CString
+
+/// Plan the graph governing `entry`. `app_modules` and `reserved` are one
+/// name per line.
+pub fn packages_plan(entry: String, app_modules: String, reserved: String) -> PlanHandle {
+    tg_packages_plan(string_to_cstring(entry), string_to_cstring(app_modules), string_to_cstring(reserved))
+}
+
+/// Whether a manifest governs the plan's entry, even a refused one.
+pub fn packages_has_manifest(plan: PlanHandle) -> Bool {
+    tg_packages_has_manifest(plan)
+}
+
+/// The governing manifest's directory — the sibling root — or "".
+pub fn packages_manifest_dir(plan: PlanHandle) -> String {
+    cstring_to_string(tg_packages_manifest_dir(plan))
+}
+
+/// How many packages the plan mounts.
+pub fn packages_count(plan: PlanHandle) -> Nat {
+    tg_packages_count(plan)
+}
+
+/// Package `index`'s name: the module it mounts as.
+pub fn packages_name(plan: PlanHandle, index: Nat) -> String {
+    cstring_to_string(tg_packages_name(plan, index))
+}
+
+/// Package `index`'s `lib.tg`.
+pub fn packages_library_root(plan: PlanHandle, index: Nat) -> String {
+    cstring_to_string(tg_packages_library_root(plan, index))
+}
+
+/// How many refusals the plan holds.
+pub fn packages_problem_count(plan: PlanHandle) -> Nat {
+    tg_packages_problem_count(plan)
+}
+
+/// Problem `index`'s tag: the bootstrap's code number, 120-122 or 124.
+pub fn packages_problem_tag(plan: PlanHandle, index: Nat) -> Nat {
+    tg_packages_problem_tag(plan, index)
+}
+
+/// The file problem `index` spans into.
+pub fn packages_problem_file(plan: PlanHandle, index: Nat) -> String {
+    cstring_to_string(tg_packages_problem_file(plan, index))
+}
+
+/// Problem `index`'s byte range, start then end.
+pub fn packages_problem_range(plan: PlanHandle, index: Nat) -> (Nat, Nat) {
+    (tg_packages_problem_start(plan, index), tg_packages_problem_end(plan, index))
+}
+
+/// Problem `index`'s message, as the core rendered it.
+pub fn packages_problem_message(plan: PlanHandle, index: Nat) -> String {
+    cstring_to_string(tg_packages_problem_message(plan, index))
+}
+
+// Read back for the reach table and the post-mount refusals (ADR 6.10.26p).
+extern "C" fn tg_packages_declares_count(plan: PlanHandle, index: Nat) -> Nat
+extern "C" fn tg_packages_declares(plan: PlanHandle, index: Nat, nth: Nat) -> Nat
+extern "C" fn tg_packages_application_declares_count(plan: PlanHandle) -> Nat
+extern "C" fn tg_packages_application_declares(plan: PlanHandle, nth: Nat) -> Nat
+extern "C" fn tg_packages_application_name(plan: PlanHandle) -> CString
+extern "C" fn tg_packages_manifest_path(plan: PlanHandle, index: Nat) -> CString
+extern "C" fn tg_packages_introduced_file(plan: PlanHandle, index: Nat) -> CString
+extern "C" fn tg_packages_introduced_start(plan: PlanHandle, index: Nat) -> Nat
+extern "C" fn tg_packages_introduced_end(plan: PlanHandle, index: Nat) -> Nat
+extern "C" fn tg_packages_dependency_keys(plan: PlanHandle, index: Nat) -> CString
+extern "C" fn tg_packages_dependency_key_start(plan: PlanHandle, index: Nat, nth: Nat) -> Nat
+extern "C" fn tg_packages_dependency_key_end(plan: PlanHandle, index: Nat, nth: Nat) -> Nat
+
+/// How many packages package `index` declares.
+pub fn packages_declares_count(plan: PlanHandle, index: Nat) -> Nat {
+    tg_packages_declares_count(plan, index)
+}
+
+/// The `nth` package package `index` declares, as a package index.
+pub fn packages_declares(plan: PlanHandle, index: Nat, nth: Nat) -> Nat {
+    tg_packages_declares(plan, index, nth)
+}
+
+/// How many packages the application declares.
+pub fn packages_application_declares_count(plan: PlanHandle) -> Nat {
+    tg_packages_application_declares_count(plan)
+}
+
+/// The `nth` package the application declares, as a package index.
+pub fn packages_application_declares(plan: PlanHandle, nth: Nat) -> Nat {
+    tg_packages_application_declares(plan, nth)
+}
+
+/// The application's `[package] name`.
+pub fn packages_application_name(plan: PlanHandle) -> String {
+    cstring_to_string(tg_packages_application_name(plan))
+}
+
+// The plan's non-fatal notes: a manifest still named `tungsten.toml` (ADR
+// 20.10.26i D2). The text is the core's, printed after `note: `.
+extern "C" fn tg_packages_note_count(plan: PlanHandle) -> Nat
+extern "C" fn tg_packages_note_text(plan: PlanHandle, index: Nat) -> CString
+
+/// How many notes the plan holds.
+pub fn packages_note_count(plan: PlanHandle) -> Nat {
+    tg_packages_note_count(plan)
+}
+
+/// Note `index`'s text, as the core rendered it.
+pub fn packages_note_text(plan: PlanHandle, index: Nat) -> String {
+    cstring_to_string(tg_packages_note_text(plan, index))
+}
+
+/// Package `index`'s own manifest.
+pub fn packages_manifest_path(plan: PlanHandle, index: Nat) -> String {
+    cstring_to_string(tg_packages_manifest_path(plan, index))
+}
+
+/// The manifest whose key first named package `index`, and that key's range.
+pub fn packages_introduced_by(plan: PlanHandle, index: Nat) -> (String, Nat, Nat) {
+    (cstring_to_string(tg_packages_introduced_file(plan, index)),
+     tg_packages_introduced_start(plan, index), tg_packages_introduced_end(plan, index))
+}
+
+/// Package `index`'s `[dependencies]` keys, one per line, in manifest order.
+pub fn packages_dependency_keys(plan: PlanHandle, index: Nat) -> String {
+    cstring_to_string(tg_packages_dependency_keys(plan, index))
+}
+
+/// Package `index`'s `nth` dependency key's byte range in its manifest.
+pub fn packages_dependency_key_range(plan: PlanHandle, index: Nat, nth: Nat) -> (Nat, Nat) {
+    (tg_packages_dependency_key_start(plan, index, nth), tg_packages_dependency_key_end(plan, index, nth))
+}

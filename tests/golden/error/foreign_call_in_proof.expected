@@ -1,0 +1,13 @@
+[E0063] Error: `handles_equal` is a proof, so it may not depend on `tg_type_nat`, which reaches foreign code (`tg_type_nat`)
+   ╭─[tests/golden/error/foreign_call_in_proof.tg:6:1]
+   │
+ 6 │ theorem handles_equal(): tg_type_nat() == tg_type_nat() { refl }
+   │ ────────────────────────────────┬───────────────────────────────  
+   │                                 ╰───────────────────────────────── 
+   │ 
+   │ Help: the checker never runs a foreign call, so a proof may not depend on one — state the theorem about something that does not reach the call
+   │ 
+   │ Note: `tg_type_nat` calls the foreign function `tg_type_nat`
+───╯
+
+error: aborting due to 1 error

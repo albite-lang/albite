@@ -1,0 +1,7 @@
+// The error is on line 5 of this file, far past main.tg's own length.
+
+
+pub fn test_mistyped() -> Unit {
+    let _n: Nat = true;
+    ()
+}

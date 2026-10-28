@@ -1,0 +1,75 @@
+// `simp` re-proves S2's and S3's hand proofs (ADR 4.10.26e D5, AC 4).
+//
+// `simp [r₁, …, rₙ]` applies the first listed rule that occurs in the goal,
+// again and again, then closes by `refl` when it can (D2). Each proof below
+// is a `rewrite` proof in test_tactic_rewrite.tg with the steps written out;
+// here the list is given once and the order of steps is `simp`'s.
+//
+// Steps per proof, against the bound of 64 (P0.4): base 1, step 2, add_comm
+// 1 + 2, add_mul 4 — each plus the closing `refl`.
+//
+// Every proof below also goes through the kernel's `check_proof` at the
+// admission boundary — a refusal is E0081 and would fail this file. Each
+// theorem is cited by a typed `let`, at a literal and at swapped arguments.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_tactic_simp.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+// Cited by qualified path, as test_tactic_rewrite.tg does.
+mod nat_arith;
+
+// ── `add_comm`'s cases, and `add_comm` whole ────────────────────────────────
+
+// S2's rw_add_comm_base: a bare lemma, then `n + 0` reduces to `n`.
+pub theorem simp_add_comm_base(n: Nat) -> Eq<Nat, n + 0, 0 + n> by {
+    simp [nat_arith::add_zero_left]
+}
+
+// S2's rw_add_comm_step: a bare lemma and a reversed hypothesis.
+pub theorem simp_add_comm_step(n: Nat, j: Nat, ih: Eq<Nat, n + j, j + n>)
+    -> Eq<Nat, n + (j + 1), (j + 1) + n> by {
+    simp [nat_arith::add_succ_left, <- ih]
+}
+
+// S3 builds the skeleton, and `simp` closes both cases — no `exact`.
+pub theorem simp_add_comm(n: Nat, m: Nat) -> Eq<Nat, n + m, m + n> by {
+    induction m;
+    simp [nat_arith::add_zero_left];
+    intro j;
+    intro ih;
+    simp [nat_arith::add_succ_left, <- ih]
+}
+
+// ── `add_mul`, whole ────────────────────────────────────────────────────────
+
+// S2's rw_add_mul: applied instances of a permutative lemma beside a bare
+// one, four rules in one call.
+pub theorem simp_add_mul(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n + m) * k, (n * k) + (m * k)> by {
+    simp [nat_arith::mul_comm(n + m, k), nat_arith::mul_add,
+          nat_arith::mul_comm(k, n), nat_arith::mul_comm(k, m)]
+}
+
+// ── Each one cited ──────────────────────────────────────────────────────────
+
+fn test_add_comm_by_simp_is_cited() -> Unit {
+    let _base: Eq<Nat, 3 + 0, 0 + 3> = simp_add_comm_base(3);
+    let _comm: Eq<Nat, 2 + 5, 5 + 2> = simp_add_comm(2, 5);
+    let _swapped: Eq<Nat, 5 + 2, 2 + 5> = simp_add_comm(5, 2);
+    ()
+}
+
+fn simp_add_comm_step_at(j: Nat, ih: Eq<Nat, 4 + j, j + 4>) -> Unit {
+    let _p: Eq<Nat, 4 + (j + 1), (j + 1) + 4> = simp_add_comm_step(4, j, ih);
+    ()
+}
+
+fn test_the_simp_step_is_cited() -> Unit {
+    simp_add_comm_step_at(0, refl)
+}
+
+fn test_add_mul_by_simp_is_cited() -> Unit {
+    let _p: Eq<Nat, (2 + 3) * 4, (2 * 4) + (3 * 4)> = simp_add_mul(2, 3, 4);
+    let _q: Eq<Nat, (3 + 2) * 4, (3 * 4) + (2 * 4)> = simp_add_mul(3, 2, 4);
+    ()
+}

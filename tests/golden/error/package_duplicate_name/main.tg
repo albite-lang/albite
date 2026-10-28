@@ -1,0 +1,4 @@
+// E0122: two directories both name their package `lib_c`, which cannot
+// share the module root (ADR 3.10.26m D4).
+use lib_a::a;
+fn main() -> Nat { a() }

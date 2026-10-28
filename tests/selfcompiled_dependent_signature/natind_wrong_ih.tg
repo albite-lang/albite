@@ -1,0 +1,9 @@
+// ADR 3.10.26i §2.5 (D2): the IH is written at P(succ j) instead of P(j).
+// Both compilers must refuse the annotation.
+
+fn wrong_ih(n: Nat) -> Eq<Nat, 0 + n, n> {
+    natind(|k: Nat| Eq<Nat, 0 + k, k>, refl,
+           fn(j: Nat, ih: Eq<Nat, 0 + (j + 1), j + 1>) => cong(|x: Nat| x + 1, ih), n)
+}
+
+fn main() -> Nat { 0 }

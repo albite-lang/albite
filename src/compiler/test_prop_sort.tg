@@ -1,0 +1,44 @@
+// Propositions are a sort, and `Le` is declared (ADR 4.10.26i AC 2, D7).
+//
+// `type Le(n: Nat, m: Nat): Prop = …` is a statement family: an alias with
+// term parameters whose body must sort `Prop`. A use `Le<a, b>` is expanded
+// by substitution before the kernel sees it, so `le_refl` is checked against
+// `exists k: Nat. n + k == n` and the kernel never meets the name `Le`.
+// `albite doctor check proof kernel-census` reports it admitted.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// A family's refusals stop collection for the whole file, so they live in
+// `bootstrap/src/elaborate/tests/items/sorts/`; the must-fail twin is
+// `mustfail_prop_sort.tg`, checked by `make check-mustfail-fixtures`.
+//
+// A family's arguments are bare variable names in this slice (literals and
+// expressions are batch 8's), so each citation binds its argument first.
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+
+pub theorem le_refl(n: Nat) -> Le<n, n> { (0, refl) }
+
+// A hypothesis of the family type is the family's expansion, both ways round.
+pub theorem le_hypothesis_is_kept(n: Nat, m: Nat, h: Le<m, n>) -> Le<m, n> { h }
+
+fn test_le_refl_is_cited_at_its_argument() -> Unit {
+    let x: Nat = 3;
+    let _r: Le<x, x> = le_refl(x);
+    ()
+}
+
+fn test_le_is_its_expansion() -> Unit {
+    let x: Nat = 4;
+    let _r: exists k: Nat. Eq<Nat, x + k, x> = le_refl(x);
+    ()
+}
+
+// `Le<x, y>` is not `Le<x, x>`: the arguments are substituted, not erased.
+fn test_a_citation_at_other_arguments_is_refused() -> Unit {
+    expect_error({ let x: Nat = 1; let y: Nat = 2; let r: Le<x, y> = le_refl(x); r }, "E0010")
+}
+
+// No term has type `Prop` (D3).
+fn test_prop_is_not_a_type() -> Unit {
+    expect_error({ let p: Prop = sorry; p }, "E0066")
+}

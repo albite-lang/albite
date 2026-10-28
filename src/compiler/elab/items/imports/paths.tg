@@ -1,0 +1,219 @@
+// src/compiler/elab/items/imports/paths.tg
+// Path manipulation helpers for import resolution.
+
+use parser::ast::{
+    Path, MkPath,
+    Ident, ident_name
+};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Option, Some, None, list_reverse, list_init_string};
+use driver::modules::build::{entry_alias_segments};
+use elab::env::ops::{elab_path_segments};
+use lexer::span::Span;
+use elab::env::{
+    Env, ElabModulePath, MkElabModulePath, elab_module_path_new,
+    module_map_lookup, SomeModuleContents, NoModuleContents
+};
+use elab::items::imports::warn::{warn_elab_relative_fallback, warn_elab_relative_failure};
+use elab::items::imports::reach::{use_module_admissible};
+
+/// Convert a Path AST to module path and final item name.
+pub fn path_to_module_and_name(path: Path) -> (ElabModulePath, String) {
+    match path {
+        MkPath(segments, _) =>
+            let (module_segs, name) = split_last(segments);
+            (elab_module_path_new(module_segs), name)
+    }
+}
+
+/// Split a list into all-but-last and last.
+fn split_last(list: List<Ident>) -> (List<String>, String) {
+    match list {
+        Nil() => (Nil, ""),
+        Cons(id, rest) =>
+            if list_is_empty_ident(rest) {
+                let result: (List<String>, String) = (Nil, ident_name(id));
+                result
+            } else {
+                let (prefix, last) = split_last(rest);
+                (Cons(ident_name(id), prefix), last)
+            }
+    }
+}
+
+fn list_is_empty_ident(list: List<Ident>) -> Bool {
+    match list {
+        Nil() => true,
+        Cons(_, _) => false
+    }
+}
+
+/// Extend a prefix with a path.
+pub fn extend_prefix_with_path(prefix: ElabModulePath, path: Path) -> ElabModulePath {
+    match path {
+        MkPath(segments, _) => extend_prefix_with_idents(prefix, segments)
+    }
+}
+
+/// Extend a prefix with ident segments.
+/// Uses cons-then-reverse pattern for O(n) total instead of O(n²).
+fn extend_prefix_with_idents(prefix: ElabModulePath, segments: List<Ident>) -> ElabModulePath {
+    match prefix {
+        MkElabModulePath(prefix_segs) =>
+            let reversed_prefix = list_reverse(prefix_segs);
+            let extended_reversed = extend_prefix_acc(reversed_prefix, segments);
+            MkElabModulePath(list_reverse(extended_reversed))
+    }
+}
+
+/// Accumulate ident names onto a reversed list.
+fn extend_prefix_acc(acc: List<String>, segments: List<Ident>) -> List<String> {
+    match segments {
+        Nil() => acc,
+        Cons(id, rest) => extend_prefix_acc(Cons(ident_name(id), acc), rest)
+    }
+}
+
+/// Combine two module paths.
+pub fn combine_paths(base: ElabModulePath, ext: ElabModulePath) -> ElabModulePath {
+    match ext {
+        MkElabModulePath(segments) => combine_paths_helper(base, segments)
+    }
+}
+
+/// Helper to combine paths.
+fn combine_paths_helper(base: ElabModulePath, segments: List<String>) -> ElabModulePath {
+    match base {
+        MkElabModulePath(base_segs) =>
+            let reversed_base = list_reverse(base_segs);
+            let extended_reversed = combine_paths_acc(reversed_base, segments);
+            MkElabModulePath(list_reverse(extended_reversed))
+    }
+}
+
+/// Accumulate string segments onto a reversed list.
+fn combine_paths_acc(acc: List<String>, segments: List<String>) -> List<String> {
+    match segments {
+        Nil() => acc,
+        Cons(seg, rest) => combine_paths_acc(Cons(seg, acc), rest)
+    }
+}
+
+/// The span of a `use` path, where the bootstrap anchors a name not found
+/// (ADR 4.10.26l D5).
+pub fn path_span(path: Path) -> Span {
+    match path {
+        MkPath(_, span) => span
+    }
+}
+
+/// The span of a path's last segment, the imported name, where the bootstrap
+/// anchors a duplicate import (ADR 4.10.26l D5); `fallback` for an empty path.
+pub fn path_last_segment_span(path: Path, fallback: Span) -> Span {
+    match path {
+        MkPath(segments, _) => last_ident_span(segments, fallback)
+    }
+}
+
+fn last_ident_span(segments: List<Ident>, fallback: Span) -> Span {
+    match segments {
+        Nil() => fallback,
+        Cons(id, rest) => last_ident_span(rest, id.span)
+    }
+}
+
+// ===========================================================================
+// MODULE PATH RESOLUTION
+// ===========================================================================
+
+// NOTE: child > sibling > absolute resolution is also implemented in:
+//   - driver/modules/build/resolve.tg           (resolve_flatten_module_path)
+//   - driver/modules/build/reexport_resolve.tg  (resolve_reexport_source_path)
+// The elab implementation uses different types (ElabModulePath / ModuleMap).
+// The driver implementations live in separate import contexts.
+// Keep behaviour in sync manually.
+
+/// Resolve a module path using child > sibling > absolute priority.
+/// Mirrors the bootstrap's resolve_use_module_path strategy.
+/// Emits warnings via shared helpers when fallback is used (ADR 10.5.26m §2.2).
+///
+/// A path that names a module as written is taken as written. The driver's
+/// `resolve_use_paths` has already made every `use` path absolute by this
+/// same priority, and since a module is elaborated as itself (ADR 4.10.26l
+/// D2) a second relative pass from the real current module could re-read an
+/// absolute path as a child or a sibling. Moved from `mod.tg` for its size.
+///
+/// Every candidate must be one the importing module `from` may name (ADR
+/// 6.10.26p D3, `reach.tg`); a module out of reach is tried as if absent.
+///
+/// A path that starts at the entry module's own name (`main::a`) is tried
+/// without it next, before the relative arms and without their warning: the
+/// bootstrap registers the entry under that name too (ADR 7.10.26g D4).
+pub fn resolve_use_module_path(env: Env, from: List<String>, raw_path: ElabModulePath) -> ElabModulePath {
+    if use_module_admissible(env, from, raw_path) {
+        raw_path
+    } else {
+        match entry_alias_module_path(env, from, raw_path) {
+            Some(alias) => alias,
+            None() => resolve_use_module_path_relative(env, from, raw_path)
+        }
+    }
+}
+
+/// `raw_path` without the entry module's name, when it starts with that name
+/// and the rest is a module `from` may import from.
+fn entry_alias_module_path(env: Env, from: List<String>, raw_path: ElabModulePath) -> Option<ElabModulePath> {
+    match entry_alias_segments(env.module_registry.module_files, elab_path_segments(raw_path)) {
+        None() => None,
+        Some(segments) =>
+            let alias = elab_module_path_new(segments);
+            if use_module_admissible(env, from, alias) { Some(alias) } else { None }
+    }
+}
+
+/// The child and sibling arms of `resolve_use_module_path`.
+fn resolve_use_module_path_relative(env: Env, from: List<String>, raw_path: ElabModulePath) -> ElabModulePath {
+    let current = env.current_module;
+    let child = combine_paths(current, raw_path);
+    if use_module_admissible(env, from, child) {
+        warn_elab_relative_fallback("child", raw_path, child, current)
+    } else {
+        resolve_use_module_path_sibling(env, from, raw_path)
+    }
+}
+
+/// The sibling arm of `resolve_use_module_path`; the path as written was
+/// already tried, so a miss here is the failure.
+fn resolve_use_module_path_sibling(env: Env, from: List<String>, raw_path: ElabModulePath) -> ElabModulePath {
+    let current = env.current_module;
+    let sibling = combine_paths(parent_module_path(current), raw_path);
+    if use_module_admissible(env, from, sibling) {
+        warn_elab_relative_fallback("sibling", raw_path, sibling, current)
+    } else {
+        warn_elab_relative_failure(raw_path, current)
+    }
+}
+
+fn parent_module_path(path: ElabModulePath) -> ElabModulePath {
+    match path {
+        MkElabModulePath(segs) => MkElabModulePath(list_init_string(segs))
+    }
+}
+
+/// Convert a path to a string for error messages.
+pub fn path_to_string(path: Path) -> String {
+    match path {
+        MkPath(segments, _) => idents_to_string(segments, "")
+    }
+}
+
+/// Convert idents to a joined string.
+fn idents_to_string(segments: List<Ident>, acc: String) -> String {
+    match segments {
+        Nil() => acc,
+        Cons(id, rest) =>
+            let name = ident_name(id);
+            let new_acc = if acc == "" { name } else { acc ++ "::" ++ name };
+            idents_to_string(rest, new_acc)
+    }
+}

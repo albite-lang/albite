@@ -1,0 +1,91 @@
+// `omega` decides bounded linear `Nat` goals (ADR 6.10.26f AC 2, D8).
+//
+// Each theorem is `by { omega }`: the tactic unpacks every `Le` hypothesis to
+// its witness and equation, solves for the goal's witness, allows one
+// cancellation round (`le_antisymm`, `cancel_summand`), and closes the rest
+// by `ring`. `albite doctor check proof kernel-census` reports every
+// theorem below admitted.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_tactic_omega.tg`, checked by
+// `make check-mustfail-fixtures`.
+//
+// The suite declares its own `Le` and `Lt`, as test_family_args.tg does: the
+// shared declarations belong to the order-lemma library (6.10.26g).
+
+// `omega` cites the library's semiring laws and its two cancellation lemmas.
+mod nat_arith;
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+pub type Lt(n: Nat, m: Nat): Prop = Le<n + 1, m>
+
+pub theorem omega_le_refl(n: Nat) -> Le<n, n> by { omega }
+
+pub theorem omega_le_trans(a: Nat, b: Nat, c: Nat, h1: Le<a, b>, h2: Le<b, c>) -> Le<a, c> by {
+    omega
+}
+
+// D3's cancellation round with `B = 0`: `n + k1 + k2 == n` gives `k1 = k2 = 0`.
+pub theorem omega_le_antisymm(n: Nat, m: Nat, h1: Le<n, m>, h2: Le<m, n>) -> Eq<Nat, n, m> by {
+    omega
+}
+
+// D3's cancellation round, re-oriented: `1` cancels, then `b ↦ a + k`.
+pub theorem omega_cancel_summand(a: Nat, b: Nat, h: Le<a + 1, b + 1>) -> Le<a, b> by { omega }
+
+pub theorem omega_from_eq(a: Nat, b: Nat, h: Eq<Nat, a + 2, b>) -> Le<a, b> by { omega }
+
+// Example 3's `0 < k < p` premises (flagship_proof_examples.md), over `Lt`.
+pub theorem ex3_le_of_lt(k: Nat, p: Nat, h: Lt<k, p>) -> Le<k, p> by { omega }
+
+pub theorem ex3_chain(k: Nat, p: Nat, h1: Lt<0, k>, h2: Lt<k, p>) -> Lt<1, p> by { omega }
+
+// A `let` binding is opaque, so each hypothesis below is `Le<x, x>` or
+// `Lt<x, x + 1>`, whose witness holds whatever `x` is.
+fn test_omega_le_refl_is_cited() -> Unit {
+    let x: Nat = 3;
+    let _r: Le<x, x> = omega_le_refl(x);
+    ()
+}
+
+fn test_omega_le_trans_is_cited() -> Unit {
+    let x: Nat = 1;
+    let h: Le<x, x> = (0, refl);
+    let _r: Le<x, x> = omega_le_trans(x, x, x, h, h);
+    ()
+}
+
+fn test_omega_le_antisymm_is_cited() -> Unit {
+    let x: Nat = 2;
+    let h: Le<x, x> = (0, refl);
+    let _r: Eq<Nat, x, x> = omega_le_antisymm(x, x, h, h);
+    ()
+}
+
+fn test_omega_cancel_summand_is_cited() -> Unit {
+    let x: Nat = 4;
+    let h: Le<x + 1, x + 1> = (0, refl);
+    let _r: Le<x, x> = omega_cancel_summand(x, x, h);
+    ()
+}
+
+fn test_omega_from_eq_is_cited() -> Unit {
+    let x: Nat = 5;
+    let _r: Le<x, x + 2> = omega_from_eq(x, x + 2, refl);
+    ()
+}
+
+fn test_ex3_le_of_lt_is_cited() -> Unit {
+    let x: Nat = 6;
+    let h: Lt<x, x + 1> = (0, refl);
+    let _r: Le<x, x + 1> = ex3_le_of_lt(x, x + 1, h);
+    ()
+}
+
+// `Lt<0, k>` has no witness at an opaque `k`, so this one is cited at numerals.
+fn test_ex3_chain_is_cited() -> Unit {
+    let h1: Lt<0, 1> = (0, refl);
+    let h2: Lt<1, 2> = (0, refl);
+    let _r: Lt<1, 2> = ex3_chain(1, 2, h1, h2);
+    ()
+}

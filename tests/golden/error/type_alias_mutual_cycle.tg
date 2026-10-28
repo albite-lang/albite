@@ -1,0 +1,4 @@
+// Two aliases naming each other: both compilers refuse `B`, the alias whose
+// body names itself once `A` is expanded (ADR 6.10.26k D6, P0.5)
+type A = B
+type B = A

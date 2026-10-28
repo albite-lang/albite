@@ -1,0 +1,1 @@
+{"schema":1,"kind":"diagnostic","level":"error","code":"E0117","message":"unterminated string literal","primary_span":{"file":"tests/golden/compile_error/json_parse_error.tg","byte_start":115,"byte_end":128,"line_start":3,"col_start":5,"line_end":3,"col_end":18,"label":"unterminated string literal","text":"    \"never closed"},"notes":[],"help":[],"diagnostic_hints":[]}

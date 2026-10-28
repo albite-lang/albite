@@ -1,0 +1,47 @@
+// Benchmark: short concatenations through the byte buffer (ADR 4.10.26n P0.3)
+//
+// `string_concat_short.tg`'s loop with each `++` replaced by `native_concat`,
+// the port of `tg_string_concat` over 3.10.26n's six `tg_bytes_*` intrinsics,
+// with the CHECKED conversion. Allocation and call overhead dominate here.
+// Usage: ./string_concat_short_native [rounds]  (default: 2000000)
+
+extern "C" fn tg_argc() -> Nat
+extern "C" fn tg_argv(index: Nat) -> Nat
+extern "C" fn tg_string_to_nat(s: Nat) -> Nat
+
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_blit_string(h: Nat, at: Nat, s: String) -> Nat
+extern "C" fn tg_bytes_into_string(h: Nat) -> String
+
+fn get_rounds() -> Nat {
+  if tg_argc() > 1 { tg_string_to_nat(tg_argv(1)) } else { 2000000 }
+}
+
+fn piece(i: Nat) -> String {
+  if i % 2 == 0 { "fox" } else { "dog!" }
+}
+
+/// The port: size, two blits, one checked conversion. No `++`.
+fn native_concat(left: String, right: String) -> String {
+  let n = string_len(left);
+  let h = tg_bytes_new(n + string_len(right));
+  let h = tg_bytes_blit_string(h, 0, left);
+  let h = tg_bytes_blit_string(h, n, right);
+  tg_bytes_into_string(h)
+}
+
+/// Sum the lengths of `rounds` short joins. Tail-recursive.
+// Partial (ADR 11.8.26b): a counted loop, which the termination gate refuses.
+#[partial]
+fn join_rounds(i: Nat, rounds: Nat, total: Nat) -> Nat {
+  if i == rounds {
+    total
+  } else {
+    let joined = native_concat(piece(i), piece(i + 1));
+    join_rounds(i + 1, rounds, total + string_len(joined))
+  }
+}
+
+fn main() -> Nat {
+  join_rounds(0, get_rounds(), 0)
+}

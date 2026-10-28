@@ -1,0 +1,6 @@
+// ADR 2.10.26j AC 2: `check` never attaches a test companion. main_test.tg
+// beside this file does not parse and redefines `helper`, yet the check is
+// clean and counts this file's two definitions only.
+fn helper() -> Nat { 41 }
+
+fn main() -> Nat { helper() + 1 }

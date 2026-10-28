@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="albite test" tests="0" failures="0" errors="0" skipped="0" time="0.000">
+  <testsuite name="tests/golden/test/junit_no_tests.tg" tests="0" failures="0" errors="0" skipped="0" time="0.000">
+  </testsuite>
+</testsuites>

@@ -1,0 +1,25 @@
+// Negative control for test_family_args.tg (ADR 6.10.26d D5, AC 2). Each
+// theorem below must be refused at its body, and `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires the file to fail with its exact error
+// count, so a twin that starts being accepted lowers the count and the gate
+// goes red.
+//
+// Body refusals only: a family refusal at collection stops the whole file,
+// so `Le<Nat, m>`, `List<0>` and the rest are pinned in
+// `bootstrap/src/elaborate/tests/items/sorts/families.rs`.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+pub type Lt(n: Nat, m: Nat): Prop = Le<n + 1, m>
+
+// `(n + 1) + 0 == n` is false: nothing is less than itself.
+pub theorem lt_self(n: Nat) -> Lt<n, n> { (0, refl) }
+
+// `0 + k == n` needs `k := n` and a proof, not `refl` at `0`.
+pub theorem zero_le_by_refl(n: Nat) -> Le<0, n> { (0, refl) }
+
+fn test_the_twin_runs() -> Unit {
+    ()
+}

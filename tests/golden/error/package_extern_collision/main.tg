@@ -1,0 +1,7 @@
+// E0123 (ADR 4.10.26j D6): its extern arm. Both packages declare the C
+// symbol `tg_x`, at different signatures; an extern's C symbol is its
+// identity, so module scoping cannot separate the two.
+use lib_a::a;
+use lib_b::b;
+
+fn main() -> Nat { a() + b() }

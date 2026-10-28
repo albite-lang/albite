@@ -1,0 +1,8 @@
+// ADR 30.9.26h AC 1: the entry is SHORTER than the error's line in
+// `inner.tg`, so resolving that error against this file's source puts it
+// on this file's last line at a byte-offset column.
+pub mod inner;
+
+fn main() -> Nat {
+    0
+}

@@ -1,0 +1,114 @@
+// src/compiler/driver/modules/parsed.tg
+// ParsedModule type representing a parsed module tree node.
+
+use driver::ffi::{List, Nil};
+use driver::util::{Option, Some, None};
+use parser::ast::common::{Visibility, VisPublic};
+use parser::ast::nodes::{SourceFile};
+use parser::error::{ParseErrors};
+
+// ===========================================================================
+// PARSED MODULE
+// ===========================================================================
+
+/// A parsed module with its submodules. `mount_name` is a package's name
+/// when its `lib.tg` is mounted at the root (ADR 6.10.26j D4): the module is
+/// named by it, not by its file. `None` for every other module.
+pub type ParsedModule = {
+    path: String,
+    visibility: Visibility,
+    source_file: SourceFile,
+    parse_errors: ParseErrors,
+    lex_errors: LexErrors,
+    submodules: List<ParsedModule>,
+    mount_name: Option<String>
+}
+
+/// Bundled parse results (errors from parsing).
+pub type ParsedModuleErrors = {
+    parse_errors: ParseErrors,
+    lex_errors: LexErrors
+}
+
+/// Create a new parsed module.
+pub fn parsed_module_new(
+    path: String,
+    visibility: Visibility,
+    source_file: SourceFile,
+    errors: ParsedModuleErrors,
+    submodules: List<ParsedModule>
+) -> ParsedModule {
+    {
+        path: path,
+        visibility: visibility,
+        source_file: source_file,
+        parse_errors: errors.parse_errors,
+        lex_errors: errors.lex_errors,
+        submodules: submodules,
+        mount_name: None
+    }
+}
+
+/// `m` mounted as package `name`: public, and named by `name` rather than by
+/// its file, as the bootstrap's `mount_packages` mounts a library.
+pub fn parsed_module_mounted(m: ParsedModule, name: String) -> ParsedModule {
+    {
+        path: m.path,
+        visibility: VisPublic,
+        source_file: m.source_file,
+        parse_errors: m.parse_errors,
+        lex_errors: m.lex_errors,
+        submodules: m.submodules,
+        mount_name: Some(name)
+    }
+}
+
+/// `m` with its submodules replaced: the root, once packages are mounted.
+pub fn parsed_module_with_submodules(m: ParsedModule, submodules: List<ParsedModule>) -> ParsedModule {
+    {
+        path: m.path,
+        visibility: m.visibility,
+        source_file: m.source_file,
+        parse_errors: m.parse_errors,
+        lex_errors: m.lex_errors,
+        submodules: submodules,
+        mount_name: m.mount_name
+    }
+}
+
+/// Get the path of a parsed module.
+pub fn parsed_module_path(m: ParsedModule) -> String {
+    m.path
+}
+
+/// Get the visibility of a parsed module.
+pub fn parsed_module_visibility(m: ParsedModule) -> Visibility {
+    m.visibility
+}
+
+/// Get the source file of a parsed module.
+pub fn parsed_module_source_file(m: ParsedModule) -> SourceFile {
+    m.source_file
+}
+
+/// Get the parse errors of a parsed module.
+/// This module's OWN parse errors — **one node, not the tree**.
+///
+/// Each `ParsedModule` records only its own; submodules carry theirs. Reading
+/// this on the root and stopping is what made every parse error in an imported
+/// file invisible, so `check` printed `✓ all OK` over source it had failed to
+/// parse (ADR 12.8.26b §7.3). For a whole-tree verdict use
+/// `driver::pipeline::errors::render_module_tree_errors`.
+pub fn parsed_module_parse_errors(m: ParsedModule) -> ParseErrors {
+    m.parse_errors
+}
+
+/// Get the lex errors of a parsed module.
+pub fn parsed_module_lex_errors(m: ParsedModule) -> LexErrors {
+    m.lex_errors
+}
+
+/// Get the submodules of a parsed module.
+pub fn parsed_module_submodules(m: ParsedModule) -> List<ParsedModule> {
+    m.submodules
+}

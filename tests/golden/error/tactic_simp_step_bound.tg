@@ -1,0 +1,5 @@
+// E0086 (ADR 4.10.26e D3): two applied instances of `add_comm` undo each
+// other, so `simp` reaches its step bound with a rule still applying.
+axiom add_comm(n: Nat, m: Nat): Eq<Nat, n + m, m + n>
+
+theorem loops(a: Nat, b: Nat, c: Nat) -> Eq<Nat, a + b, c> by { simp [add_comm(a, b), add_comm(b, a)] }

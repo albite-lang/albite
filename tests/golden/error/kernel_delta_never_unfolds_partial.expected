@@ -1,0 +1,38 @@
+[E0063] Error: `partial_two` is a proof, so it may not depend on the partial constant `two`
+   ╭─[tests/golden/error/kernel_delta_never_unfolds_partial.tg:9:1]
+   │
+ 9 │ theorem partial_two(): two() == 2 { refl }
+   │ ─────────────────────┬────────────────────  
+   │                      ╰────────────────────── 
+   │ 
+   │ Help: a proof may not depend on a partial definition — prove the recursion terminates, or state the theorem about a total one
+   │ 
+   │ Note: `two` is marked `#[partial]`
+───╯
+[E0063] Error: `through_wrapper` is a proof, so it may not depend on the partial constant `two`
+    ╭─[tests/golden/error/kernel_delta_never_unfolds_partial.tg:11:1]
+    │
+ 11 │ theorem through_wrapper(): wrapped_two() == 2 { refl }
+    │ ───────────────────────────┬──────────────────────────  
+    │                            ╰──────────────────────────── 
+    │ 
+    │ Help: a proof may not depend on a partial definition — prove the recursion terminates, or state the theorem about a total one
+    │ 
+    │ Note: reaches `two` (marked `#[partial]`) through wrapped_two
+────╯
+[E0071] Error: `refl` requires both sides to be equal, but found `global:two` and `(succ (succ zero))`
+   ╭─[tests/golden/error/kernel_delta_never_unfolds_partial.tg:9:37]
+   │
+ 9 │ theorem partial_two(): two() == 2 { refl }
+   │                                     ──┬─  
+   │                                       ╰─── 
+───╯
+[E0071] Error: `refl` requires both sides to be equal, but found `global:wrapped_two` and `(succ (succ zero))`
+    ╭─[tests/golden/error/kernel_delta_never_unfolds_partial.tg:11:49]
+    │
+ 11 │ theorem through_wrapper(): wrapped_two() == 2 { refl }
+    │                                                 ──┬─  
+    │                                                   ╰─── 
+────╯
+
+error: aborting due to 4 errors

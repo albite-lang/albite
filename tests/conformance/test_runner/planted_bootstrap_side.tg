@@ -1,0 +1,16 @@
+// The runner-parity gate's planted divergence, BOOTSTRAP half (ADR 28.9.26g D6).
+//
+// The gate hands this file to the bootstrap and its twin,
+// planted_selfhost_side.tg, to `tungsten1`. The two declare the same tests in
+// the same order; only the twin's `test_planted` fails. So a working gate
+// reports `VerdictsDiffer` with `test_planted: ok vs FAILED` and the register
+// entry for this pair reads Expected.
+//
+// Expected here: both tests ok, exit 0. It is the must-diverge twin of the
+// whole gate, so a run where this pair AGREES means the spawn handed both
+// runners the same file, or a dialect stopped parsing verdicts.
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+fn assert_eq_nat(a: Nat, b: Nat) -> Unit { tg_assert_eq_nat(a, b) }
+
+pub fn test_planted_agrees() -> Unit { assert_eq_nat(4, 4) }
+pub fn test_planted() -> Unit { assert_eq_nat(1, 1) }

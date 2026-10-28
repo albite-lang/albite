@@ -1,0 +1,9 @@
+[E0081] Error: the kernel refused the proof of `bad_pair`: unexplained-mismatch — Type mismatch: expected (Eq Nat (global:big + (succ zero)) global:big × Nat), got (Eq Nat (global:big + (succ zero)) (global:big + (succ zero)) × Nat)
+   ╭─[tests/golden/error/a_proof_inside_data_is_checked.tg:7:1]
+   │
+ 7 │ fn bad_pair() -> (Eq<Nat, big() + 1, big()>, Nat) { (refl, 0) }
+   │ ───────────────────────────────┬───────────────────────────────  
+   │                                ╰───────────────────────────────── 
+───╯
+
+error: aborting due to 1 error

@@ -1,0 +1,67 @@
+// A definition can quantify over a predicate (ADR 6.10.26h AC 3).
+//
+// `<P: Nat -> Prop>` makes `P` a predicate parameter: applied, `P<n>` is a
+// proposition about `n`. A citation passes the predicate with the turbofish,
+// at a statement family (`::<IsZero>`) or at a predicate parameter in scope
+// (`::<P>`); it is never inferred. Only theorems, lemmas and axioms are
+// re-checked by the kernel, so every citation is stated as a theorem, and
+// `albite doctor check proof kernel-census` reads each one admitted.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The refusals stop signature collection for the whole file, so they live in
+// `bootstrap/src/elaborate/tests/items/sorts/predicate_binders.rs`.
+//
+// No hypothesis here is a dependent function (`h: (n: Nat) -> P<n>`): that
+// type has no surface spelling yet, so `strong_induction`'s statement is
+// pinned in Core by the kernel's `#[test]` instead (ADR 6.10.26h § 6).
+//
+// `Le` is declared here, above its citation, by 6.10.26d's declare-before-cite
+// rule: this suite tests the binder, not the library.
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+pub type IsZero(n: Nat): Prop = n == 0
+pub type AtLeastOne(n: Nat): Prop = Le<1, n>
+
+// ── Generic in a predicate ──────────────────────────────────────────────────
+
+// Leibniz's rule: equal numbers have the same properties.
+pub theorem pred_transport<P: Nat -> Prop>(a: Nat, b: Nat, e: Eq<Nat, a, b>, h: P<a>) -> P<b> {
+    subst(e, |x: Nat| P<x>, h)
+}
+
+// ── Cited at a family ───────────────────────────────────────────────────────
+
+pub theorem zero_transport() -> IsZero<0> { pred_transport::<IsZero>(0, 0, refl, refl) }
+
+// `AtLeastOne` is `Le` partly applied, so its instance is an `exists`.
+pub theorem at_least_one_transport(a: Nat, b: Nat, e: Eq<Nat, a, b>, h: AtLeastOne<a>)
+    -> AtLeastOne<b> {
+    pred_transport::<AtLeastOne>(a, b, e, h)
+}
+
+// ── Cited at a predicate parameter in scope ─────────────────────────────────
+
+pub theorem pred_transport_via<P: Nat -> Prop>(a: Nat, b: Nat, e: Eq<Nat, a, b>, h: P<a>)
+    -> P<b> {
+    pred_transport::<P>(a, b, e, h)
+}
+
+// ── A statement only: counted by the kernel census, never checked ───────────
+
+axiom pred_transport_axiom<P: Nat -> Prop>(a: Nat, b: Nat, e: Eq<Nat, a, b>, h: P<a>) -> P<b>
+
+// ── Each citation is the statement as written ───────────────────────────────
+
+fn test_a_family_citation_is_its_instance() -> Unit {
+    let _p: Eq<Nat, 0, 0> = zero_transport();
+    ()
+}
+
+fn test_a_partly_applied_family_citation_is_an_exists() -> Unit {
+    let _p: exists k: Nat. Eq<Nat, 1 + k, 2> = at_least_one_transport(2, 2, refl, (1, refl));
+    ()
+}
+
+fn test_a_predicate_parameter_is_never_inferred() -> Unit {
+    expect_error({ let _p: Eq<Nat, 0, 0> = pred_transport(0, 0, refl, refl); 0 }, "E0015")
+}

@@ -1,0 +1,40 @@
+// == false lemmas, stated as `theorem` items, are refused (ADR 30.9.26e AC 3)
+//
+// `expect_error` cannot hold a whole theorem, so the refusals live here:
+//   - `0 + n == n`, `n + m == m + n` and `0 * n == 0` by `refl` are each E0071:
+//     `+` and `*` recurse on the RIGHT operand only (D2), so none reduces;
+//   - a true lemma cited in the wrong order is E0010 through D5: the instance
+//     `Eq<Nat, 1 + n, n + 1>` meets the goal `Eq<Nat, n + 1, 1 + n>` only if
+//     the endpoints convert, and `1 + n` does not reduce;
+//   - an `add_comm` whose step is its IH is E0010 against the successor case.
+// Evidence beside test_nat_lemmas.tg's accepted proofs.
+
+theorem add_zero_left(n: Nat) -> Eq<Nat, 0 + n, n> {
+    natind(|i: Nat| Eq<Nat, 0 + i, i>, refl, fn(j: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+theorem add_succ_left(m: Nat, n: Nat) -> Eq<Nat, (m + 1) + n, (m + n) + 1> {
+    natind(|i: Nat| Eq<Nat, (m + 1) + i, (m + i) + 1>, refl,
+           fn(j: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+theorem add_comm(n: Nat, m: Nat) -> Eq<Nat, n + m, m + n> {
+    natind(|i: Nat| Eq<Nat, n + i, i + n>,
+           sym(add_zero_left(n)),
+           fn(j: Nat, ih) => trans(cong(|x: Nat| x + 1, ih), sym(add_succ_left(j, n))),
+           m)
+}
+
+theorem add_zero_left_by_refl(n: Nat) -> Eq<Nat, 0 + n, n> { refl }
+
+theorem add_comm_by_refl(n: Nat, m: Nat) -> Eq<Nat, n + m, m + n> { refl }
+
+theorem mul_zero_left_by_refl(n: Nat) -> Eq<Nat, 0 * n, 0> { refl }
+
+theorem add_comm_cited_in_the_wrong_order(n: Nat) -> Eq<Nat, n + 1, 1 + n> { add_comm(1, n) }
+
+theorem add_comm_step_is_its_ih(n: Nat, m: Nat) -> Eq<Nat, n + m, m + n> {
+    natind(|i: Nat| Eq<Nat, n + i, i + n>, sym(add_zero_left(n)), fn(j: Nat, ih) => ih, m)
+}
+
+fn main() -> Nat { 0 }

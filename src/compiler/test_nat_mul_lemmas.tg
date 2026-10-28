@@ -1,0 +1,110 @@
+// The multiplication lemmas, cited from outside the library (ADR 1.10.26d AC 2).
+//
+// B17 slice 2: `mul_succ_left`, `mul_comm`, `mul_add`, `add_mul` and
+// `mul_assoc` live in the flat sibling `nat_arith.tg`, which this file imports
+// with `mod nat_arith;` — no `mod.tg` is involved (1.10.26d D4). Each lemma is
+// cited in a typed `let` at arguments other than its parameters, and one new
+// fact (`nat_mul_one_left`) is proved from imported lemmas alone.
+//
+// `*` computes on its RIGHT operand only (1.10.26d D1), so `(n + 1) * m` and
+// `n * m` against `m * n` are not `refl`: the `expect_error`s below pin that.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_nat_mul_lemmas.tg`, checked by
+// `make check-mustfail-fixtures`; the false lemmas that `expect_error` cannot
+// hold are the golden `tests/golden/error/nat_mul_lemma_false_statements`.
+//
+// Cited by qualified path, `nat_arith::mul_comm(…)`: code-health's
+// tg-relative-import check knows only main.tg's roots, so a `use nat_arith::…`
+// line would read as relative although `mod nat_arith;` makes it a root here.
+
+mod nat_arith;
+
+// ── Citations at arguments other than the parameters ────────────────────────
+
+fn nat_mul_comm_at_a_literal(n: Nat) -> Unit {
+    let _p: Eq<Nat, 2 * n, n * 2> = nat_arith::mul_comm(2, n);
+    ()
+}
+
+fn nat_mul_comm_swapped(n: Nat, m: Nat) -> Unit {
+    let _p: Eq<Nat, m * n, n * m> = nat_arith::mul_comm(m, n);
+    ()
+}
+
+fn nat_mul_assoc_at_a_literal(n: Nat, m: Nat) -> Unit {
+    let _p: Eq<Nat, (n * 2) * m, n * (2 * m)> = nat_arith::mul_assoc(n, 2, m);
+    ()
+}
+
+fn nat_mul_add_at_one(n: Nat, m: Nat) -> Unit {
+    let _p: Eq<Nat, n * (m + 1), n * m + n * 1> = nat_arith::mul_add(n, m, 1);
+    ()
+}
+
+fn nat_add_mul_at_one(n: Nat, m: Nat) -> Unit {
+    let _p: Eq<Nat, (n + 1) * m, n * m + 1 * m> = nat_arith::add_mul(n, 1, m);
+    ()
+}
+
+fn nat_mul_succ_left_at_zero(n: Nat) -> Unit {
+    let _p: Eq<Nat, (0 + 1) * n, 0 * n + n> = nat_arith::mul_succ_left(0, n);
+    ()
+}
+
+fn nat_mul_comm_closed() -> Unit {
+    let _p: Eq<Nat, 3 * 4, 4 * 3> = nat_arith::mul_comm(3, 4);
+    ()
+}
+
+// A new fact from imported lemmas: `1 * n` does not reduce (D1).
+fn nat_mul_one_left(n: Nat) -> Eq<Nat, 1 * n, n> {
+    trans(nat_arith::mul_comm(1, n), nat_arith::mul_one_right(n))
+}
+
+fn test_mul_comm_is_cited_at_a_literal() -> Unit {
+    nat_mul_comm_at_a_literal(4)
+}
+
+fn test_mul_comm_is_cited_swapped() -> Unit {
+    nat_mul_comm_swapped(4, 5)
+}
+
+fn test_mul_assoc_is_cited_at_a_literal() -> Unit {
+    nat_mul_assoc_at_a_literal(4, 5)
+}
+
+fn test_mul_add_is_cited_at_one() -> Unit {
+    nat_mul_add_at_one(4, 5)
+}
+
+fn test_add_mul_is_cited_at_one() -> Unit {
+    nat_add_mul_at_one(4, 5)
+}
+
+fn test_mul_succ_left_is_cited_at_zero() -> Unit {
+    nat_mul_succ_left_at_zero(4)
+}
+
+fn test_mul_comm_is_cited_closed() -> Unit {
+    nat_mul_comm_closed()
+}
+
+fn test_one_times_n_is_proved_from_imported_lemmas() -> Unit {
+    let _p: Eq<Nat, 1 * 4, 4> = nat_mul_one_left(4);
+    ()
+}
+
+// ── Wrong citations and non-definitional facts are refused ──────────────────
+
+fn test_mul_comm_at_the_wrong_instance_is_refused() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, n * 2, 2 * n> = nat_arith::mul_comm(n, 3); 0 }, "E0010")
+}
+
+fn test_succ_times_m_is_not_refl() -> Unit {
+    expect_error(|n: Nat, m: Nat| { let _p: Eq<Nat, (n + 1) * m, n * m + m> = refl; 0 }, "E0071")
+}
+
+fn test_n_times_m_is_not_m_times_n_by_refl() -> Unit {
+    expect_error(|n: Nat, m: Nat| { let _p: Eq<Nat, n * m, m * n> = refl; 0 }, "E0071")
+}

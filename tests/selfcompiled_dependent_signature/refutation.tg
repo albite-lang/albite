@@ -1,0 +1,14 @@
+// A refutation in term mode (ADR 7.10.26m D7): `absurd(h)` on `true == false`,
+// and on `n + 1 == 0` carried there by `cong` over a `Bool`-valued
+// discriminator. No family and no tactic block, so the self-host reaches
+// `absurd` itself.
+//
+// The bootstrap accepts this file; `tungsten1` refuses it, which is the
+// battery row's recorded refusal (Q7: a refusal, never an acceptance) until
+// the self-host mirrors the surface.
+
+pub theorem true_ne_false(h: Eq<Bool, true, false>) -> Void { absurd(h) }
+
+pub theorem succ_ne_zero(n: Nat, h: Eq<Nat, n + 1, 0>) -> Void {
+    absurd(cong(|x: Nat| natrec(Bool, true, fn(k: Nat, acc: Bool) => false, x), h))
+}

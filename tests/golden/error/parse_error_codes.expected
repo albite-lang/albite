@@ -1,0 +1,23 @@
+[E0116] Error: `const` is a reserved keyword
+   ╭─[tests/golden/error/parse_error_codes.tg:7:4]
+   │
+ 7 │ fn const() -> Nat { 42 }
+   │    ──┬──  
+   │      ╰──── ReservedKeyword("const")
+───╯
+[E0113] Error: invalid pattern
+   ╭─[tests/golden/error/parse_error_codes.tg:3:21]
+   │
+ 3 │ fn g() -> Nat { let = 2; 0 }
+   │                     ┬  
+   │                     ╰── InvalidPattern
+───╯
+[E0112] Error: expected identifier
+   ╭─[tests/golden/error/parse_error_codes.tg:5:5]
+   │
+ 5 │ use ;
+   │     ┬  
+   │     ╰── Expected("identifier")
+───╯
+
+error: aborting due to 3 errors

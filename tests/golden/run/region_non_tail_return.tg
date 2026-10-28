@@ -1,0 +1,27 @@
+// Golden test (ADR 13.10.26n AC 3): a non-tail `return` inside a `region`
+// whose value is a `Nat` unwinds through the region to the function boundary.
+type List<T> = Nil | Cons(T, List<T>)
+
+#[partial]
+fn build(n: Nat) -> List<Nat> {
+    if n == 0 { Nil } else { Cons(n, build(n - 1)) }
+}
+
+fn total(xs: List<Nat>) -> Nat {
+    match xs {
+        Nil => 0,
+        Cons(x, rest) => x + total(rest)
+    }
+}
+
+fn early(n: Nat) -> Nat {
+    let r = region {
+        let s: Nat = if n > 10 { return 99 } else { total(build(n)) };
+        s + 1
+    };
+    r * 2
+}
+
+fn main() -> Nat {
+    early(4) * 1000 + early(20)
+}

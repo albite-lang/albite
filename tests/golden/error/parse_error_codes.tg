@@ -1,0 +1,7 @@
+// Golden test (ADR 29.9.26f): each syntax error's human header carries its
+// code — InvalidPattern (E0113), Expected (E0112), ReservedKeyword (E0116).
+fn g() -> Nat { let = 2; 0 }
+
+use ;
+
+fn const() -> Nat { 42 }

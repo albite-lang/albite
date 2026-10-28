@@ -1,0 +1,48 @@
+// Negative control for test_tactic_simp.tg (ADR 4.10.26e D5, AC 4).
+//
+// Each theorem below is one wrong `simp` proof, and each must be refused
+// for its own reason. `check-mustfail-fixtures` (make/quality/tg-tests.mk)
+// requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_tactic_simp.tg --require-tests
+//     -> aborting due to 5 errors
+//
+// The count alone cannot say which error fired, so each case's code is also
+// pinned by a Rust test in bootstrap/src/elaborate/tactics/simp/tests/
+// (the 2.9.26c lesson). The cases and their codes:
+//
+//   1. simp_mustfail_permutative     bare `add_comm` swaps forever       E0082
+//   2. simp_mustfail_loop            two instances undo each other       E0086
+//   3. simp_mustfail_no_rule_occurs  nothing to rewrite                  E0082
+//   4. simp_mustfail_non_equation    `simp [j]`, j : Nat                 E0072
+//   5. simp_mustfail_false_lemma     simplified goal stays open          E0083
+//
+// Case 5 is stated δ-free, over primitive `Nat` `+` on locals only, so its
+// closing `refl` refuses on the spot rather than deferring, and the goal is
+// left open. `simp` with no list is a parse error, pinned by a parser test.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+// Cited by qualified path, as test_tactic_simp.tg does.
+mod nat_arith;
+
+pub theorem simp_mustfail_permutative(a: Nat, b: Nat) -> Eq<Nat, a + b, b + a> by {
+    simp [nat_arith::add_comm]
+}
+
+pub theorem simp_mustfail_loop(a: Nat, b: Nat, c: Nat) -> Eq<Nat, a + b, c> by {
+    simp [nat_arith::add_comm(a, b), nat_arith::add_comm(b, a)]
+}
+
+pub theorem simp_mustfail_no_rule_occurs(a: Nat, b: Nat) -> Eq<Nat, a + b, a + b> by {
+    simp [nat_arith::add_zero_left]
+}
+
+pub theorem simp_mustfail_non_equation(j: Nat) -> Eq<Nat, j, j> by {
+    simp [j]
+}
+
+pub theorem simp_mustfail_false_lemma(a: Nat, b: Nat, h: Eq<Nat, a, b + 1>) -> Eq<Nat, a + 0, b> by {
+    simp [h]
+}

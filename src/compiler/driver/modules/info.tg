@@ -1,0 +1,209 @@
+// src/compiler/driver/modules/info.tg
+// ModuleItemNames and ModuleInfo types for the driver.
+//
+// Tracks which types, values, and constructors belong to which modules.
+// Note: This is separate from elab::env::ModuleContents which has richer type info.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Option, Some, None};
+use parser::ast::common::{Visibility};
+use driver::modules::path::{ModulePath, module_path_eq};
+use driver::packages::table::{PackageTable, package_table_empty};
+
+// ===========================================================================
+// MODULE ITEM NAMES
+// ===========================================================================
+
+/// Item names registered for a module (types, values, constructors).
+/// This is a simpler structure than elab::env::ModuleContents - just names.
+pub type ModuleItemNames = {
+    types: List<String>,
+    values: List<String>,
+    constructors: List<String>
+}
+
+/// Create empty module item names.
+pub fn module_item_names_empty() -> ModuleItemNames {
+    { types: Nil, values: Nil, constructors: Nil }
+}
+
+/// Add a type to module item names.
+pub fn module_item_names_add_type(mc: ModuleItemNames, name: String) -> ModuleItemNames {
+    { types: Cons(name, mc.types), values: mc.values, constructors: mc.constructors }
+}
+
+/// Add a value to module item names.
+pub fn module_item_names_add_value(mc: ModuleItemNames, name: String) -> ModuleItemNames {
+    { types: mc.types, values: Cons(name, mc.values), constructors: mc.constructors }
+}
+
+/// Add a constructor to module item names.
+pub fn module_item_names_add_ctor(mc: ModuleItemNames, name: String) -> ModuleItemNames {
+    { types: mc.types, values: mc.values, constructors: Cons(name, mc.constructors) }
+}
+
+// ===========================================================================
+// MODULE INFO
+// ===========================================================================
+
+/// Module visibility entry: (module_path, visibility, parent_module).
+pub type VisibilityEntry = (ModulePath, Visibility, Option<ModulePath>)
+
+/// Module file entry: (module_path, file_path).
+pub type ModuleFileEntry = (ModulePath, String)
+
+/// Item module entry: (item_name, module_path).
+///
+/// **Keyed on the BARE name, and the last writer wins.** Two items with the
+/// same name in different modules are one key here — the collision class ADR
+/// 7.8.26b turns on, and the reason an E0016 for a duplicate name is reported
+/// at a call site in the *other* module.
+///
+/// **The path recorded is where the name is REACHABLE, not where it is
+/// defined.** A glob re-export writes the re-exporting parent: `driver/ffi/mod.tg`
+/// does `pub use driver::ffi::test::*;`, so `test_begin` is recorded under
+/// `driver::ffi`, not `driver::ffi::test` where it is written. Code comparing
+/// against a defining path must therefore accept an ancestor — see
+/// `path_covers` in `driver/pipeline/test/mode/decide.tg`, which exists because
+/// assuming otherwise cost a round trip.
+pub type ItemModuleEntry = (String, ModulePath)
+
+/// Module registry entry: (module_path, contents).
+pub type ModuleRegistryEntry = (ModulePath, ModuleItemNames)
+
+/// Information about modules for the elaborator.
+pub type ModuleInfo = {
+    /// Module registry: maps module paths to their contents
+    modules: List<ModuleRegistryEntry>,
+    /// Item to module mapping: item name → module path
+    item_modules: List<ItemModuleEntry>,
+    /// Module visibility: maps module paths to (visibility, parent_module)
+    module_visibility: List<VisibilityEntry>,
+    /// Module to file path mapping: module path → source file path
+    module_files: List<ModuleFileEntry>,
+    /// Modules only an undeclared sibling contributes (ADR 1.10.26f D1); their
+    /// names import, but their value stubs never resolve as values. Set only
+    /// by `merge_module_info`; every other builder leaves it `Nil`.
+    names_only: List<ModulePath>,
+    /// Which package owns each module, and what each may name (ADR 6.10.26p
+    /// D2). Empty without a manifest; set by `module_info_with_packages`.
+    packages: PackageTable
+}
+
+/// Create empty module info.
+pub fn module_info_empty() -> ModuleInfo {
+    {
+        modules: Nil,
+        item_modules: Nil,
+        module_visibility: Nil,
+        module_files: Nil,
+        names_only: Nil,
+        packages: package_table_empty()
+    }
+}
+
+/// `info` with the package table the mount built (ADR 6.10.26p D2).
+pub fn module_info_with_packages(info: ModuleInfo, packages: PackageTable) -> ModuleInfo {
+    {
+        modules: info.modules,
+        item_modules: info.item_modules,
+        module_visibility: info.module_visibility,
+        module_files: info.module_files,
+        names_only: info.names_only,
+        packages: packages
+    }
+}
+
+/// Bundled module registration parameters.
+pub type ModuleRegInfo = {
+    path: ModulePath,
+    contents: ModuleItemNames,
+    visibility: Visibility,
+    parent: Option<ModulePath>
+}
+
+/// Register a module in the info.
+pub fn module_info_register_module(
+    info: ModuleInfo,
+    reg: ModuleRegInfo,
+    file_path: String
+) -> ModuleInfo {
+    {
+        modules: Cons((reg.path, reg.contents), info.modules),
+        item_modules: info.item_modules,
+        module_visibility: Cons((reg.path, reg.visibility, reg.parent), info.module_visibility),
+        module_files: Cons((reg.path, file_path), info.module_files),
+        names_only: info.names_only,
+        packages: info.packages
+    }
+}
+
+/// Register an item in the info.
+pub fn module_info_register_item(
+    info: ModuleInfo,
+    item_name: String,
+    module_path: ModulePath
+) -> ModuleInfo {
+    {
+        modules: info.modules,
+        item_modules: Cons((item_name, module_path), info.item_modules),
+        module_visibility: info.module_visibility,
+        module_files: info.module_files,
+        names_only: info.names_only,
+        packages: info.packages
+    }
+}
+
+/// Get module contents for a path.
+pub fn module_info_get_module(info: ModuleInfo, path: ModulePath) -> Option<ModuleItemNames> {
+    module_info_get_module_loop(info.modules, path)
+}
+
+fn module_info_get_module_loop(
+    modules: List<ModuleRegistryEntry>,
+    path: ModulePath
+) -> Option<ModuleItemNames> {
+    match modules {
+        Nil() => None,
+        Cons(entry, rest) =>
+            let (p, contents) = entry;
+            if module_path_eq(p, path) {
+                Some(contents)
+            } else {
+                module_info_get_module_loop(rest, path)
+            }
+    }
+}
+
+/// Update module contents in info.
+pub fn module_info_update_contents(
+    info: ModuleInfo,
+    path: ModulePath,
+    contents: ModuleItemNames
+) -> ModuleInfo {
+    {
+        modules: update_module_contents_loop(info.modules, path, contents),
+        item_modules: info.item_modules,
+        module_visibility: info.module_visibility,
+        module_files: info.module_files,
+        names_only: info.names_only,
+        packages: info.packages
+    }
+}
+
+fn update_module_contents_loop(
+    modules: List<ModuleRegistryEntry>,
+    path: ModulePath,
+    new_contents: ModuleItemNames
+) -> List<ModuleRegistryEntry> {
+    match modules {
+        Nil() => Nil,
+        Cons(entry, rest) =>
+            let (p, contents) = entry;
+            if module_path_eq(p, path) {
+                Cons((p, new_contents), rest)
+            } else {
+                Cons((p, contents), update_module_contents_loop(rest, path, new_contents))
+            }
+    }
+}

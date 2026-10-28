@@ -1,0 +1,59 @@
+// src/compiler/test_test_exit_codes.tg
+// The self-hosted `test` verb's exit contract (ADR 29.9.26i AC 1).
+//
+// `test_exit_code` over all three `TestRunResult` constructors, and
+// `harness_exit_verdict` over every shape the harness's exit status arrives
+// in: 0, 1, another code, the no-status sentinel a signal leaves, and a spawn
+// that never happened. Both are pure, so every assertion here EXECUTES on the
+// evaluator — `--assertion-census` shows it — with no process spawned.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_nat};
+use driver::ffi::{ExecExited, ExecSpawnFailed};
+use driver::ffi::types::{ffi_negative_one};
+use driver::pipeline::test::exit::{
+    TestRunResult, TestsPassed, TestsFailed, TestRunnerFailed,
+    test_exit_code, harness_exit_verdict
+};
+
+/// 29.9.26i AC1: each constructor's exit code, whatever count it carries.
+pub fn test_exit_code_per_constructor() -> Unit {
+    let passed: TestRunResult = TestsPassed(12);
+    let failed: TestRunResult = TestsFailed(3);
+    let broken: TestRunResult = TestRunnerFailed;
+    assert_eq_nat(test_exit_code(passed), 0);
+    assert_eq_nat(test_exit_code(failed), 1);
+    assert_eq_nat(test_exit_code(broken), 2);
+    assert_eq_nat(test_exit_code(TestsPassed(0)), 0);
+    assert_eq_nat(test_exit_code(TestsFailed(0)), 1)
+}
+
+/// 29.9.26i AC1: the harness's own 0 and 1 are verdicts.
+pub fn test_harness_exit_zero_and_one_are_verdicts() -> Unit {
+    assert_eq_nat(test_exit_code(harness_exit_verdict(ExecExited(0), 4)), 0);
+    assert_eq_nat(test_exit_code(harness_exit_verdict(ExecExited(1), 4)), 1)
+}
+
+/// 29.9.26i AC1: every other status is a runner failure — exit 2, the signal
+/// sentinel, and a spawn failure alike.
+pub fn test_harness_other_exits_are_runner_failures() -> Unit {
+    assert_eq_nat(test_exit_code(harness_exit_verdict(ExecExited(2), 4)), 2);
+    assert_eq_nat(test_exit_code(harness_exit_verdict(ExecExited(134), 4)), 2);
+    assert_eq_nat(test_exit_code(harness_exit_verdict(ExecExited(ffi_negative_one()), 4)), 2);
+    assert_eq_nat(test_exit_code(harness_exit_verdict(ExecSpawnFailed("No such file"), 4)), 2)
+}
+
+/// The count rides through to the verdict, so a reader of the result sees how
+/// many tests the harness ran.
+pub fn test_harness_verdict_carries_the_count() -> Unit {
+    let counted = match harness_exit_verdict(ExecExited(0), 7) {
+        TestsPassed(n) => n,
+        TestsFailed(_) => 100,
+        TestRunnerFailed() => 200
+    };
+    assert_eq_nat(counted, 7)
+}

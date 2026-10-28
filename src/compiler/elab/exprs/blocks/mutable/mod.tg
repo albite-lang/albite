@@ -1,0 +1,280 @@
+// src/compiler/elab/exprs/blocks/mutable/mod.tg
+// `let mut` and assignment as rebinding, `B4.2` (ADR 13.10.26r D3): the
+// self-host's `lower_joins`, the bootstrap's `elaborate/mutable/lower.rs` in
+// the same steps and with the same introduced names.
+//
+// An assignment is a shadowing `let`; an `if`, `match`, `if let` or block in a
+// join position whose arms assign a `mut` binding declared outside it is a
+// join: each arm pairs its value with the current values of the bindings the
+// construct assigns, read through names holding a `#` (never the source
+// name), and the result is unpacked after it. No Core term is added.
+
+use lexer::span::Span;
+use parser::ast::{
+    Expr, ExprBlock, ExprIf, ExprIfLet, ExprMatch, ExprPath, ExprTuple, ExprUnit, expr_span,
+    Stmt, StmtLet, StmtLetElse, StmtExpr, StmtItem, StmtLetMut, StmtAssign,
+    Pattern, PatVar, PatTuple, MatchArm, MaybeExpr, NoExpr, SomeExpr, NoTypeExpr, MaybeTypeExpr, stmt_span,
+    Ident, ident_new, path_simple
+};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Result, Ok, Err, nat_to_string, list_reverse};
+use elab::exprs::forms::result::{ElabExprError, elab_expr_error_internal};
+use elab::exprs::blocks::mutable::env::{MutScope, OuterFacts, OuterUnknown, outer_facts,
+    outer_refusal, not_mut_error, exit_not_joined_error};
+use elab::exprs::blocks::mutable::arms::{
+    Frame, Target, LoweredArm, JoinEntry, join_entry, Resolved, RLocal, ROuter, ArmSource,
+    MaybeExit, NoExit, SomeExit,
+    is_construct, arm_sources, pattern_names, join_targets,
+    target_names, record_assignment, resolve_in_frames, innermost_arm_index, frame_new, frame_bind,
+    list_len
+};
+use elab::exprs::blocks::mutable::pair::{pass_through_arm, binder_pattern, Want, NoValue,
+    WantValue, TailValue, wants_value, is_tail_value, tail_arms, Constructed, Plain, Joined,
+    constructed_value, statement_of, first_target, pair_all, var_expr, zip_names};
+use elab::exprs::blocks::mutable::rebuild::{rebuild, arm_blocks};
+use elab::exprs::blocks::mutable::exits::{first_exit};
+
+pub mod arms;
+pub mod env;
+pub mod exits;
+pub mod pair;
+pub mod prepare;
+pub mod rebuild;
+
+/// A block after lowering, with the joins it holds.
+pub type Lowered = { stmts: List<Stmt>, tail: MaybeExpr, joins: List<JoinEntry> }
+
+/// The lowering's state: the scope outside, the names it has made, the
+/// frames it is inside (innermost first), and the joins it has built.
+type LState = { scope: MutScope, prefix: Nat, counter: Nat, frames: List<Frame>, joins: List<JoinEntry> }
+
+type LStep = Result<(List<Stmt>, LState), ElabExprError>
+
+/// Lower a block (D3); `prefix` makes the introduced names unique to it.
+pub fn lower_joins(stmts: List<Stmt>, tail: MaybeExpr, scope: MutScope, prefix: Nat) -> Result<Lowered, ElabExprError> {
+    let st: LState = { scope: scope, prefix: prefix, counter: 0, frames: Nil(), joins: Nil() };
+    let root: ArmSource = { stmts: stmts, tail: tail, bound: Nil(), span: { start: prefix, end: prefix, file: "" } };
+    let (arm, st2) = lower_block(st, root, false)?;
+    let lowered: Lowered = { stmts: arm.stmts, tail: arm.tail, joins: st2.joins };
+    Ok(lowered)
+}
+
+fn fresh(st: LState, base: String) -> (String, LState) {
+    let n = st.counter + 1;
+    let next: LState = { scope: st.scope, prefix: st.prefix, counter: n, frames: st.frames, joins: st.joins };
+    (base ++ "#" ++ nat_to_string(st.prefix) ++ "." ++ nat_to_string(n), next)
+}
+
+fn with_frames(st: LState, frames: List<Frame>) -> LState {
+    { scope: st.scope, prefix: st.prefix, counter: st.counter, frames: frames, joins: st.joins }
+}
+
+fn with_join(st: LState, entry: JoinEntry) -> LState {
+    { scope: st.scope, prefix: st.prefix, counter: st.counter, frames: st.frames, joins: Cons(entry, st.joins) }
+}
+
+fn bind_names(st: LState, names: List<String>, mutable: Bool) -> LState {
+    match st.frames {
+        Nil() => st,
+        Cons(frame, outer) => with_frames(st, Cons(frame_bind(frame, names, mutable), outer))
+    }
+}
+
+fn let_var(name: String, value: Expr, span: Span) -> Stmt {
+    StmtLet(PatVar(ident_new(name, span)), NoTypeExpr, value, span)
+}
+
+#[partial]
+fn lower_block(st: LState, source: ArmSource, is_arm: Bool) -> Result<(LoweredArm, LState), ElabExprError> {
+    let st2 = with_frames(st, Cons(frame_new(source.bound, is_arm), st.frames));
+    let (out, st3) = lower_stmts(st2, source.stmts, Nil())?;
+    let (out2, tail2, st4) = lower_tail(st3, source.tail, out)?;
+    match st4.frames {
+        Nil() => Err(elab_expr_error_internal("a lowering frame went missing", source.span)),
+        Cons(frame, outer) =>
+            let arm: LoweredArm = { stmts: list_reverse(out2), tail: tail2, span: source.span,
+                assigned: frame.assigned, latest: frame.latest };
+            Ok((arm, with_frames(st4, outer)))
+    }
+}
+
+#[partial]
+fn lower_tail(st: LState, tail: MaybeExpr, out: List<Stmt>) -> Result<(List<Stmt>, MaybeExpr, LState), ElabExprError> {
+    match tail {
+        NoExpr() => Ok((out, NoExpr, st)),
+        SomeExpr(e) =>
+            // At the lowered block's own tail nothing follows, so a join
+            // there only re-declares what its arms assign (`TailValue`).
+            let want = if list_len(st.frames) == 1 { TailValue } else { WantValue(NoTypeExpr) };
+            let (value, out2, st2) = lower_value(st, e, want, out)?;
+            Ok((out2, SomeExpr(value), st2))
+    }
+}
+
+#[partial]
+fn lower_stmts(st: LState, stmts: List<Stmt>, out: List<Stmt>) -> LStep {
+    match stmts {
+        Nil() => Ok((out, st)),
+        Cons(stmt, rest) =>
+            let (out2, st2) = lower_stmt(st, stmt, out)?;
+            lower_stmts(st2, rest, out2)
+    }
+}
+
+#[partial]
+fn lower_stmt(st: LState, stmt: Stmt, out: List<Stmt>) -> LStep {
+    match stmt {
+        StmtLet(pat, ty, value, span) =>
+            let (v, out2, st2) = lower_value(st, value, WantValue(ty), out)?;
+            Ok((Cons(StmtLet(pat, ty, v, span), out2), bind_names(st2, pattern_names(pat), false))),
+        StmtLetMut(name, ty, value, span) =>
+            let (v, out2, st2) = lower_value(st, value, WantValue(ty), out)?;
+            Ok((Cons(StmtLetMut(name, ty, v, span), out2), bind_names(st2, Cons(name, Nil()), true))),
+        StmtAssign(name, value, span) =>
+            let (v, out2, st2) = lower_value(st, value, WantValue(NoTypeExpr), out)?;
+            assign(st2, name, v, span, out2),
+        StmtExpr(e, span) =>
+            if is_construct(e) {
+                let (built, out2, st2) = lower_construct(st, e, NoValue, out)?;
+                Ok((statement_of(built, span, out2), st2))
+            } else {
+                Ok((Cons(stmt, out), st))
+            },
+        StmtLetElse(pat, _, _, _, _) => Ok((Cons(stmt, out), bind_names(st, pattern_names(pat), false))),
+        StmtItem(_) => Ok((Cons(stmt, out), st))
+    }
+}
+
+#[partial]
+fn lower_value(st: LState, e: Expr, want: Want, out: List<Stmt>) -> Result<(Expr, List<Stmt>, LState), ElabExprError> {
+    if is_construct(e) {
+        let (built, out2, st2) = lower_construct(st, e, want, out)?;
+        Ok((constructed_value(built, expr_span(e)), out2, st2))
+    } else {
+        Ok((e, out, st))
+    }
+}
+
+#[partial]
+fn lower_arms(st: LState, sources: List<ArmSource>, acc: List<LoweredArm>) -> Result<(List<LoweredArm>, LState), ElabExprError> {
+    match sources {
+        Nil() => Ok((list_reverse(acc), st)),
+        Cons(source, rest) =>
+            let (arm, st2) = lower_block(st, source, true)?;
+            lower_arms(st2, rest, Cons(arm, acc))
+    }
+}
+
+#[partial]
+fn lower_construct(st: LState, e: Expr, want: Want, out: List<Stmt>) -> Result<(Constructed, List<Stmt>, LState), ElabExprError> {
+    let (arms, st2) = lower_arms(st, arm_sources(e), Nil())?;
+    match join_targets(arms) {
+        Nil() => Ok((Plain(rebuild(e, arm_blocks(arms), NoExpr)), out, st2)),
+        _ => join_unless_exit(st2, e, arms, want, out)
+    }
+}
+
+/// An arm that leaves the construct cannot end by pairing (D3).
+#[partial]
+fn join_unless_exit(st: LState, e: Expr, arms: List<LoweredArm>, want: Want, out: List<Stmt>) -> Result<(Constructed, List<Stmt>, LState), ElabExprError> {
+    match first_exit(arm_sources(e)) {
+        SomeExit(exit_span, word) => Err(exit_not_joined_error(first_target(arms), word, exit_span)),
+        NoExit() => join(st, e, arms, want, out)
+    }
+}
+
+#[partial]
+fn snapshot_all(st: LState, names: List<String>, span: Span, out: List<Stmt>, acc: List<String>) -> (List<String>, List<Stmt>, LState) {
+    match names {
+        Nil() => (list_reverse(acc), out, st),
+        Cons(name, rest) =>
+            let (s, st2) = fresh(st, name);
+            snapshot_all(st2, rest, span, Cons(let_var(s, var_expr(name, span), span), out), Cons(s, acc))
+    }
+}
+
+#[partial]
+fn join(st: LState, e: Expr, arms: List<LoweredArm>, want: Want, out: List<Stmt>) -> Result<(Constructed, List<Stmt>, LState), ElabExprError> {
+    let span = expr_span(e);
+    let names = target_names(join_targets(arms));
+    if is_tail_value(want) { Ok((Plain(rebuild(e, tail_arms(arms, names), NoExpr)), out, st)) } else { join_paired(st, e, arms, want, out) }
+}
+
+#[partial]
+fn join_paired(st: LState, e: Expr, arms: List<LoweredArm>, want: Want, out: List<Stmt>) -> Result<(Constructed, List<Stmt>, LState), ElabExprError> {
+    let span = expr_span(e);
+    let names = target_names(join_targets(arms));
+    let (snapshots, out2, st2) = snapshot_all(st, names, span, out, Nil());
+    let bodies = pair_all(arms, names, snapshots, want);
+    let construct = rebuild(e, bodies, SomeExpr(pass_through_arm(snapshots, wants_value(want), span)));
+    unpack(st2, construct, names, wants_value(want), out2)
+}
+
+#[partial]
+fn fresh_all(st: LState, names: List<String>, acc: List<String>) -> (List<String>, LState) {
+    match names {
+        Nil() => (list_reverse(acc), st),
+        Cons(name, rest) =>
+            let (f, st2) = fresh(st, name);
+            fresh_all(with_join(st2, join_entry(f, name)), rest, Cons(f, acc))
+    }
+}
+
+#[partial]
+fn unpack(st: LState, construct: Expr, names: List<String>, want_value: Bool, out: List<Stmt>) -> Result<(Constructed, List<Stmt>, LState), ElabExprError> {
+    let span = expr_span(construct);
+    let (value, st2) = if want_value { fresh(st, "") } else { ("", st) };
+    let st3 = if want_value { with_join(st2, join_entry(value, "")) } else { st2 };
+    let (unpacked, st4) = fresh_all(st3, names, Nil());
+    let binders = if want_value { Cons(value, unpacked) } else { unpacked };
+    let pattern = binder_pattern(binders, span);
+    let out2 = Cons(StmtLet(pattern, NoTypeExpr, construct, span), out);
+    let (out3, st5) = assign_all(st4, zip_names(names, unpacked), span, out2)?;
+    let result = if want_value { SomeExpr(var_expr(value, span)) } else { NoExpr };
+    Ok((Joined(result), out3, st5))
+}
+
+#[partial]
+fn assign_all(st: LState, pairs: List<(String, String)>, span: Span, out: List<Stmt>) -> LStep {
+    match pairs {
+        Nil() => Ok((out, st)),
+        Cons(pair, rest) =>
+            let (name, value) = pair;
+            let (out2, st2) = assign(st, name, var_expr(value, span), span, out)?;
+            assign_all(st2, rest, span, out2)
+    }
+}
+
+/// `name = value;`: a rebinding, recorded in the innermost arm when the
+/// binding was declared outside it.
+#[partial]
+fn assign(st: LState, name: String, value: Expr, span: Span, out: List<Stmt>) -> LStep {
+    match resolve_in_frames(st.frames, name) {
+        RLocal(frame, key, mutable) =>
+            if mutable { assign_local(st, StmtAssign(name, value, span), name, out, { key: key, name: name }) } else { Err(not_mut_error(name, span)) },
+        ROuter() => assign_outer(st, name, value, span, out)
+    }
+}
+
+fn assign_local(st: LState, assigned: Stmt, name: String, out: List<Stmt>, at: Target) -> LStep {
+    let out2 = Cons(assigned, out);
+    let span = stmt_span(assigned);
+    if innermost_arm_index(st.frames) > at.key / 65536 {
+        let (f, st2) = fresh(st, name);
+        let target: Target = { key: at.key, name: name };
+        let frames = record_assignment(st2.frames, target, f);
+        Ok((Cons(let_var(f, var_expr(name, span), span), out2), with_frames(st2, frames)))
+    } else {
+        Ok((out2, st))
+    }
+}
+
+/// An assignment to a binding the scope outside the block holds: refused,
+/// unless the scope does not know it (the elaborator then says E0001).
+fn assign_outer(st: LState, name: String, value: Expr, span: Span, out: List<Stmt>) -> LStep {
+    let facts = outer_facts(st.scope, name);
+    match facts {
+        OuterUnknown() => Ok((Cons(StmtAssign(name, value, span), out), st)),
+        _ => Err(outer_refusal(facts, name, span))
+    }
+}

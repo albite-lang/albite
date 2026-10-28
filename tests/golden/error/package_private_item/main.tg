@@ -1,0 +1,2 @@
+// E0016: a library's private item is not visible from the application (D6).
+fn main() -> Nat { lib_a::hidden() }

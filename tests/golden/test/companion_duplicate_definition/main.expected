@@ -1,0 +1,18 @@
+[E0004] Error: the name `helper` is defined multiple times
+   ╭─[tests/golden/test/companion_duplicate_definition/main_test.tg:3:4]
+   │
+ 3 │ fn helper() -> Nat { 2 }
+   │    ───┬──  
+   │       ╰──── 
+   │ 
+   │ Help: a test companion shares its module's scope, so it cannot redefine a name the module defines; rename one of them
+───╯
+note: `helper` is first defined here
+   ╭─[tests/golden/test/companion_duplicate_definition/main.tg:4:4]
+   │
+ 4 │ fn helper() -> Nat { 1 }
+   │    ───┬──  
+   │       ╰──── `helper` is first defined here
+───╯
+
+error: aborting due to 1 error

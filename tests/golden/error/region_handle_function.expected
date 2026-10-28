@@ -1,0 +1,16 @@
+[E0095] Error: a region body reaches `bytes_len`, a resource handle, in `main`
+    ╭─[tests/golden/error/region_handle_function.tg:10:14]
+    │
+ 10 │     region { bytes_len(bytes_new(4)) }
+    │              ────┬────  
+    │                  ╰────── 
+────╯
+[E0095] Error: a region body reaches `bytes_new`, a resource handle, in `main`
+    ╭─[tests/golden/error/region_handle_function.tg:10:24]
+    │
+ 10 │     region { bytes_len(bytes_new(4)) }
+    │                        ────┬────  
+    │                            ╰────── 
+────╯
+
+error: aborting due to 2 errors

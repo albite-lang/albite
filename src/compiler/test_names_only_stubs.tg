@@ -1,0 +1,249 @@
+// Unit tests for names-only stubs (ADR 1.10.26f AC 1–2): the merge marks the
+// modules only an undeclared sibling contributes, their value stubs carry
+// `INVALID_HANDLE()`, and the two value lookups that can reach another
+// module's contents skip such a stub while the import check still finds it.
+// Every subject is a pure function over hand-built `ModuleInfo` and `Env`
+// values; nothing here lists a directory or parses a file.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_bool, assert_eq_string, assert_eq_nat};
+use driver::util::{Option, None, list_len};
+use parser::ast::common::{Visibility, VisPublic, Ident, ident_new, Path, MkPath};
+use parser::ast::nodes::{source_file_new};
+use parser::error::{parse_errors_empty};
+use lexer::error::{errors_empty};
+use lexer::span::{Span, span_new};
+use driver::modules::path::{ModulePath, module_path_single, module_path_eq};
+use driver::modules::info::{
+    ModuleInfo, ModuleRegInfo, module_info_empty, module_info_register_module,
+    module_info_register_item, module_item_names_empty, module_item_names_add_value
+};
+use driver::modules::tree::parsed::{ParsedModule, parsed_module_new};
+use driver::modules::build::{build_module_info};
+use driver::modules::workspace::merge::{merge_module_info};
+use elab::ffi::{INVALID_HANDLE};
+use elab::env::{env_new, populate_module_info, Env};
+use elab::env::ops::{env_add_import, env_enter_module, env_leave_module, env_register_value};
+use elab::env::module::{
+    ElabModulePath, import_new, module_map_lookup, SomeModuleContents, NoModuleContents
+};
+use elab::env::module::path::{elab_module_path_new};
+use elab::env::defs::{
+    ValueDefInfo, value_def_info_new, value_def_list_lookup, SomeValueDef, NoValueDef,
+    MaybeResolvedValue, NoResolvedValue, SomeResolvedValue, ResolvedValue, ResolvedGlobal,
+    ValuePathOk, ValuePathErr
+};
+use elab::env::resolve::{env_resolve_value};
+use elab::env::resolve_path::{env_resolve_value_path};
+use elab::items::imports::lookup::{lookup_in_module};
+
+// --- Builders and probes ---------------------------------------------------
+
+/// What a probe reports when it finds no value; a found handle never collides.
+fn ABSENT() -> Nat { 777 }
+
+/// What a probe reports when it finds something other than a global value.
+fn NOT_GLOBAL() -> Nat { 888 }
+
+fn no_span() -> Span { span_new(0, 0, "") }
+
+/// `info` plus a module at `path` from `file` exporting one value, `value`.
+fn with_module(info: ModuleInfo, path: ModulePath, value: String, file: String) -> ModuleInfo {
+    let no_parent: Option<ModulePath> = None;
+    let reg: ModuleRegInfo = {
+        path: path,
+        contents: module_item_names_add_value(module_item_names_empty(), value),
+        visibility: VisPublic,
+        parent: no_parent
+    };
+    module_info_register_item(module_info_register_module(info, reg, file), value, path)
+}
+
+/// `info` with `names_only` replaced: a fallback the sibling fold already marked.
+fn marked(info: ModuleInfo, names_only: List<ModulePath>) -> ModuleInfo {
+    {
+        modules: info.modules,
+        item_modules: info.item_modules,
+        module_visibility: info.module_visibility,
+        module_files: info.module_files,
+        names_only: names_only,
+        packages: info.packages
+    }
+}
+
+fn times_listed(paths: List<ModulePath>, path: ModulePath) -> Nat {
+    match paths {
+        Nil() => 0,
+        Cons(p, rest) => (if module_path_eq(p, path) { 1 } else { 0 }) + times_listed(rest, path)
+    }
+}
+
+fn lexer_path() -> ModulePath { module_path_single("lexer") }
+fn doubling_path() -> ModulePath { module_path_single("doubling") }
+fn boxes_path() -> ModulePath { module_path_single("boxes") }
+
+fn doubling_elab_path() -> ElabModulePath { elab_module_path_new(Cons("doubling", Nil)) }
+
+/// Main owns `lexer` (lexer.tg); an undeclared sibling contributes `doubling`.
+fn workspace_info() -> ModuleInfo {
+    let main = with_module(module_info_empty(), lexer_path(), "lex", "lexer.tg");
+    let sibling = with_module(module_info_empty(), doubling_path(), "double", "doubling.tg");
+    merge_module_info(main, sibling)
+}
+
+/// An env populated from `workspace_info`, at the root module.
+fn workspace_env() -> Env {
+    populate_module_info(env_new(), workspace_info())
+}
+
+/// `env` with `use doubling::{double};` registered in the current module.
+fn importing_double(env: Env) -> Env {
+    env_add_import(env, import_new(doubling_elab_path(), "double", "double", VisPublic, no_span()))
+}
+
+/// The type handle of `name`'s front-most value stub in module `path`.
+fn stub_ty(env: Env, path: ElabModulePath, name: String) -> Nat {
+    match module_map_lookup(env.modules, path) {
+        NoModuleContents() => ABSENT(),
+        SomeModuleContents(contents) => front_value_ty(contents.values, name)
+    }
+}
+
+fn front_value_ty(values: List<ValueDefInfo>, name: String) -> Nat {
+    match value_def_list_lookup(values, name) {
+        SomeValueDef(def) => def.ty,
+        NoValueDef() => ABSENT()
+    }
+}
+
+/// The handle a value resolution produced, or ABSENT / NOT_GLOBAL.
+fn resolved_ty(resolved: MaybeResolvedValue) -> Nat {
+    match resolved {
+        NoResolvedValue() => ABSENT(),
+        SomeResolvedValue(value) => global_ty(value)
+    }
+}
+
+fn global_ty(value: ResolvedValue) -> Nat {
+    match value {
+        ResolvedGlobal(_, ty) => ty,
+        _ => NOT_GLOBAL()
+    }
+}
+
+fn doubling_double_path() -> Path {
+    let segments: List<Ident> = Cons(ident_new("doubling", no_span()), Cons(ident_new("double", no_span()), Nil));
+    MkPath(segments, no_span())
+}
+
+/// An empty, error-free parsed root module.
+fn empty_parsed_module() -> ParsedModule {
+    let no_subs: List<ParsedModule> = Nil;
+    parsed_module_new("main.tg", VisPublic, source_file_new(Nil, no_span()),
+                      { parse_errors: parse_errors_empty(), lex_errors: errors_empty() }, no_subs)
+}
+
+// --- AC 1: only a sibling's own modules are marked (D1) --------------------
+
+pub fn test_main_only_info_marks_nothing() -> Unit {
+    assert_eq_nat(list_len(module_info_empty().names_only), 0);
+    assert_eq_nat(list_len(build_module_info(empty_parsed_module()).names_only), 0);
+    let main = with_module(module_info_empty(), lexer_path(), "lex", "lexer.tg");
+    assert_eq_nat(list_len(main.names_only), 0)
+}
+
+pub fn test_merge_marks_sibling_only_module() -> Unit {
+    let merged = workspace_info();
+    assert_eq_nat(times_listed(merged.names_only, doubling_path()), 1);
+    assert_eq_nat(times_listed(merged.names_only, lexer_path()), 0);
+    assert_eq_nat(list_len(merged.names_only), 1)
+}
+
+/// The fallback already lists `lexer` (as the sibling fold would): main owns
+/// that path, so it stays unmarked and keeps main's contents.
+pub fn test_merge_never_marks_a_main_path() -> Unit {
+    let main = with_module(module_info_empty(), lexer_path(), "main_val", "lexer.tg");
+    let sibling = marked(with_module(module_info_empty(), lexer_path(), "sib_val", "sub/lexer.tg"),
+                         Cons(lexer_path(), Nil));
+    let merged = merge_module_info(main, sibling);
+    assert_eq_nat(times_listed(merged.names_only, lexer_path()), 0);
+    let env = populate_module_info(env_new(), merged);
+    let lexer = elab_module_path_new(Cons("lexer", Nil));
+    assert_eq_nat(stub_ty(env, lexer, "main_val"), 0);
+    assert_eq_nat(stub_ty(env, lexer, "sib_val"), ABSENT())
+}
+
+/// A sibling module whose file main already owns is dropped whole (30.9.26i
+/// D3), and is not marked even when the fallback's own list names it.
+pub fn test_merge_never_marks_a_dropped_module() -> Unit {
+    let main = with_module(module_info_empty(), lexer_path(), "lex", "lexer.tg");
+    let sibling = marked(with_module(module_info_empty(), doubling_path(), "double", "./lexer.tg"),
+                         Cons(doubling_path(), Nil));
+    let merged = merge_module_info(main, sibling);
+    assert_eq_nat(times_listed(merged.names_only, doubling_path()), 0);
+    assert_eq_nat(list_len(merged.names_only), 0)
+}
+
+/// Two siblings both declaring `doubling` plus one `boxes`, folded as
+/// `register_sibling_modules` folds them, then merged under main.
+pub fn test_fold_marks_each_kept_sibling_once() -> Unit {
+    let first = with_module(module_info_empty(), doubling_path(), "double", "doubling.tg");
+    let second = with_module(with_module(module_info_empty(), doubling_path(), "twice", "b/doubling.tg"),
+                             boxes_path(), "unbox", "boxes.tg");
+    let folded = merge_module_info(merge_module_info(module_info_empty(), first), second);
+    assert_eq_nat(times_listed(folded.names_only, doubling_path()), 1);
+    assert_eq_nat(times_listed(folded.names_only, boxes_path()), 1);
+    let main = with_module(module_info_empty(), lexer_path(), "lex", "lexer.tg");
+    let merged = merge_module_info(main, folded);
+    assert_eq_nat(times_listed(merged.names_only, doubling_path()), 1);
+    assert_eq_nat(times_listed(merged.names_only, boxes_path()), 1);
+    assert_eq_nat(list_len(merged.names_only), 2)
+}
+
+// --- AC 2: a names-only value imports, but does not resolve (D2) -----------
+
+pub fn test_names_only_stub_carries_invalid_handle() -> Unit {
+    assert_eq_nat(stub_ty(workspace_env(), doubling_elab_path(), "double"), INVALID_HANDLE())
+}
+
+pub fn test_declared_stub_keeps_handle_zero() -> Unit {
+    let lexer = elab_module_path_new(Cons("lexer", Nil));
+    assert_eq_nat(stub_ty(workspace_env(), lexer, "lex"), 0)
+}
+
+pub fn test_names_only_value_satisfies_import_lookup() -> Unit {
+    assert_eq_bool(lookup_in_module(workspace_env(), doubling_elab_path(), "double"), true)
+}
+
+pub fn test_names_only_value_does_not_resolve_unqualified() -> Unit {
+    let env = importing_double(workspace_env());
+    assert_eq_nat(resolved_ty(env_resolve_value(env, "double")), ABSENT())
+}
+
+pub fn test_names_only_value_does_not_resolve_qualified() -> Unit {
+    let message = match env_resolve_value_path(workspace_env(), doubling_double_path()) {
+        ValuePathOk(_) => "<resolved>",
+        ValuePathErr(err) => err.message
+    };
+    assert_eq_string(message, "unknown value: double")
+}
+
+/// D2's premise for leaving the current-module lookup unguarded: at the root,
+/// with no import, a sibling's name is not visible at all.
+pub fn test_names_only_value_is_not_a_root_value() -> Unit {
+    assert_eq_nat(resolved_ty(env_resolve_value(workspace_env(), "double")), ABSENT())
+}
+
+/// A real def written in front of the names-only stub is what resolves: the
+/// guard tests only the front-most entry, as `value_def_list_lookup` returns it.
+pub fn test_real_def_beats_names_only_stub() -> Unit {
+    let inside = env_enter_module(workspace_env(), "doubling");
+    let with_real = env_leave_module(
+        env_register_value(inside, value_def_info_new("double", 42, VisPublic, no_span())));
+    assert_eq_nat(resolved_ty(env_resolve_value(importing_double(with_real), "double")), 42)
+}

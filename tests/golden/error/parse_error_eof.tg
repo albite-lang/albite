@@ -1,0 +1,3 @@
+// Golden test (ADR 29.9.26f): a block truncated at end of file reports
+// UnexpectedEof (E0111), "found end of file", not an empty token.
+fn f() -> Nat {

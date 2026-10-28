@@ -1,0 +1,5 @@
+// ADR 30.9.26h: an error after a multibyte character on its line, so the
+// JSON record's character column differs from the human byte column.
+fn main() -> Nat {
+    let s: String = "é"; true
+}

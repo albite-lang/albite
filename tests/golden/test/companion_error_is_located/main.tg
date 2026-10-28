@@ -1,0 +1,3 @@
+// ADR 2.10.26j AC 6: a type error inside a test companion is reported in the
+// companion's own file and line, in the JSON record as in human output.
+fn helper() -> Nat { 1 }

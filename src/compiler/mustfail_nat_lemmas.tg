@@ -1,0 +1,108 @@
+// Negative control for test_nat_lemmas.tg (ADR 30.9.26e AC 4).
+//
+// The positive suite pins the Tier-1 lemmas two ways: typed `let` citations
+// that check only because each lemma is named, instantiated and converted, and
+// `expect_error`s for the wrong citations. An expectation that silently
+// stopped being compared would leave that suite green while asserting nothing.
+// So this file is the same suite with EVERY expectation wrong — each accepted
+// citation is restated at an instance it does not prove, each E0010 becomes
+// E0071 and each E0071 becomes E0010 — and `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires it to fail with exactly
+//
+//   albite test src/compiler/mustfail_nat_lemmas.tg --require-tests
+//     -> aborting due to 10 errors
+//
+// The count is the point: a case that stops being checked lowers it, and the
+// gate goes red. A conversion that accepted everything would drop it too.
+//
+// The library is imported from the flat sibling `nat_arith.tg` (ADR 1.10.26d
+// D4): it is correct, so it raises nothing, and the count above is unchanged
+// by the import.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+// Cited by qualified path, as test_nat_lemmas.tg does.
+mod nat_arith;
+
+// ── AC 2 inverted: each citation at an instance it does not prove ───────────
+
+fn nat_lemmas_at_a_literal(n: Nat) -> Unit {
+    let _p: Eq<Nat, 2 + n, n + 3> = nat_arith::add_comm(2, n);
+    ()
+}
+
+fn nat_lemmas_swapped(n: Nat, m: Nat) -> Unit {
+    let _p: Eq<Nat, n + m, n + m> = nat_arith::add_comm(m, n);
+    ()
+}
+
+fn nat_lemmas_at_a_compound_argument(n: Nat, m: Nat) -> Unit {
+    let _p: Eq<Nat, (n + 1) + m, n + (2 + m)> = nat_arith::add_assoc(n, 1, m);
+    ()
+}
+
+fn nat_lemmas_mul_succ_at_zero(n: Nat) -> Unit {
+    let _p: Eq<Nat, n * 2, n * 0 + n> = nat_arith::mul_succ_right(n, 0);
+    ()
+}
+
+fn nat_lemmas_let_annotation(n: Nat) -> Unit {
+    let _q: Eq<Nat, n + 1, 0 + n> = sym(nat_arith::add_zero_left(n));
+    ()
+}
+
+fn nat_lemmas_takes_a_proof(n: Nat, p: Eq<Nat, n + 1, 0 + n>) -> Unit {
+    ()
+}
+
+fn nat_lemmas_function_argument(n: Nat) -> Unit {
+    nat_lemmas_takes_a_proof(n, sym(nat_arith::add_zero_left(n)))
+}
+
+fn nat_lemmas_bare_citation_body(n: Nat) -> Eq<Nat, n * 2, n> {
+    nat_arith::mul_one_right(n)
+}
+
+fn test_add_comm_is_cited_at_a_literal() -> Unit {
+    nat_lemmas_at_a_literal(4)
+}
+
+fn test_add_comm_is_cited_swapped() -> Unit {
+    nat_lemmas_swapped(4, 5)
+}
+
+fn test_add_assoc_is_cited_at_a_compound_argument() -> Unit {
+    nat_lemmas_at_a_compound_argument(4, 5)
+}
+
+fn test_mul_succ_right_is_cited_at_zero() -> Unit {
+    nat_lemmas_mul_succ_at_zero(4)
+}
+
+fn test_a_citation_meets_a_let_annotation_by_conversion() -> Unit {
+    nat_lemmas_let_annotation(4)
+}
+
+fn test_a_citation_meets_a_parameter_by_conversion() -> Unit {
+    nat_lemmas_function_argument(4)
+}
+
+fn test_a_bare_citation_meets_its_declared_return() -> Unit {
+    let _p: Eq<Nat, 4 * 2, 4> = nat_lemmas_bare_citation_body(4);
+    ()
+}
+
+// ── AC 2's refusals, each expecting the other code ──────────────────────────
+
+fn test_a_citation_at_the_wrong_instance_is_refused() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, n + 1, 1 + n> = nat_arith::add_comm(1, n); 0 }, "E0071")
+}
+
+fn test_zero_times_n_is_not_refl() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, 0 * n, 0> = refl; 0 }, "E0010")
+}
+
+fn test_zero_plus_n_is_not_refl() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, 0 + n, n> = refl; 0 }, "E0010")
+}

@@ -1,0 +1,58 @@
+// Stratification pinned at the surface (ADR 28.9.26c § 2.3).
+//
+// Tungsten's core has no sort, universe or level: types and terms are two
+// layers, `forall` ranges over types with one implicit kind, and `Prop` and
+// `Type` are sorts, never types (ADR 4.10.26i D3). Each `expect_error` below is a
+// universe-paradox shape that must stay unrepresentable; the last test is the
+// positive control — impredicative instantiation is admitted on purpose, so a
+// predicativity change must turn it red as a visible decision.
+//
+// Drift rule: if a case reports a DIFFERENT code, pin the observed code and
+// record the change in the ADR's § 6. If a rejected shape is ACCEPTED, halt:
+// that is a finding, not an expectation to edit.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_stratification.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+// Two constructors on purpose: a single-constructor type whose field is `Nat`
+// unwraps to `Nat`, and `expect_type` then renders `Nat` under this name.
+type Pick = PA | PB
+
+fn id<T>(x: T) -> T { x }
+
+fn use_poly(f: forall a. a -> a) -> Nat { f(3) }
+
+fn self_app(x: forall a. a -> a) -> forall a. a -> a { x(x) }
+
+/// There is no type of types: `Type` is a sort, refused in a type position.
+/// Flipped on purpose from E0002 to E0066 (ADR 4.10.26i D3).
+pub fn test_type_names_nothing() -> Unit {
+    expect_error({ let x: Type = 0; x }, "E0066")
+}
+
+/// A term variable never enters type position.
+pub fn test_value_cannot_be_a_type() -> Unit {
+    expect_error({ let t: Nat = 0; let y: t = 0; y }, "E0002")
+}
+
+/// A type name never enters term position.
+pub fn test_type_cannot_be_a_value() -> Unit {
+    expect_error(Pick, "E0001")
+}
+
+/// `Prop` is a sort, so no term has type `Prop` (ADR 4.10.26i D7; replaces
+/// `test_prop_is_not_a_sort`, which pinned `Prop` as a ground type).
+pub fn test_no_term_has_type_prop() -> Unit {
+    expect_error(|p: Prop| p, "E0066")
+}
+
+/// `forall a. a` has no inhabitant a literal can supply.
+pub fn test_empty_forall_is_not_inhabited_by_a_literal() -> Unit {
+    expect_error({ let e: forall a. a = 0; e }, "E0010")
+}
+
+/// Positive control: System F instantiation at a `forall`-type is admitted.
+pub fn test_impredicative_instantiation_is_admitted() -> Unit {
+    expect_type(use_poly(id), "Nat")
+}

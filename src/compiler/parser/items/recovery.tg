@@ -1,0 +1,87 @@
+// src/compiler/parser/items/recovery.tg
+// Error recovery for item parsing.
+
+use lexer::token::{TokenKind, TokFn, TokType, TokPub, TokExtern, TokMod, TokUse,
+    TokTheorem, TokLemma, TokAxiom, TokEof};
+use parser::cursor::{Cursor, cursor_peek, cursor_peek_kind, cursor_check, cursor_advance,
+    cursor_is_eof};
+use parser::option::{Option, None, Some};
+use parser::error::ParseError;
+
+// ===========================================================================
+// ERROR RECOVERY
+// ===========================================================================
+
+/// Synchronize to the next item boundary for error recovery.
+/// Advances the cursor until it finds a token that could start a new item.
+pub fn synchronize(cur: Cursor) -> Cursor {
+    synchronize_loop(cur)
+}
+
+/// Resynchronize after `err` was raised while parsing the item at `cur`
+/// (ADR 3.10.26j D2). The parser is `Result`-based, so `cur` is still the
+/// failed item's FIRST token — an item start, where `synchronize` alone does
+/// not move and the next `parse_item` fails again on the item's name. So:
+/// always step past that first token, skip every token that starts before the
+/// error's span (the bootstrap's cursor is wherever the error was raised),
+/// then `synchronize` from there.
+///
+/// An end-of-input error's span is a token index, not a byte offset (D2's
+/// caveat), so the skip may do nothing; the first step keeps that harmless.
+pub fn resync_after_error(cur: Cursor, err: ParseError) -> Cursor {
+    let past_first = if cursor_is_eof(cur) { cur } else { cursor_advance(cur) };
+    synchronize(skip_tokens_starting_before(past_first, err.span.start))
+}
+
+// Partial (ADR 11.8.26b): the recursive call rebuilds its argument rather
+// than passing a strict subterm — a measure recursion, which Non-Goals defers to
+// v2.1. Executable compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn skip_tokens_starting_before(cur: Cursor, offset: Nat) -> Cursor {
+    match cursor_peek(cur) {
+        None() => cur,
+        Some(tok) => if tok.span.start < offset {
+            skip_tokens_starting_before(cursor_advance(cur), offset)
+        } else {
+            cur
+        }
+    }
+}
+
+/// Internal loop for synchronization.
+// Partial (ADR 11.8.26b): the recursive call rebuilds its argument rather
+// than passing a strict subterm — a measure recursion, which Non-Goals defers to
+// v2.1. Executable compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn synchronize_loop(cur: Cursor) -> Cursor {
+    if cursor_is_eof(cur) || cursor_check(cur, TokEof()) {
+        cur
+    } else if is_item_start(cur) {
+        cur
+    } else {
+        synchronize_loop(cursor_advance(cur))
+    }
+}
+
+/// Check if current token could start an item.
+pub fn is_item_start(cur: Cursor) -> Bool {
+    match cursor_peek_kind(cur) {
+        None() => false,
+        Some(kind) => is_item_start_kind(kind)
+    }
+}
+
+fn is_item_start_kind(kind: TokenKind) -> Bool {
+    match kind {
+        TokPub() => true,
+        TokFn() => true,
+        TokType() => true,
+        TokExtern() => true,
+        TokMod() => true,
+        TokUse() => true,
+        TokTheorem() => true,
+        TokLemma() => true,
+        TokAxiom() => true,
+        _ => false
+    }
+}

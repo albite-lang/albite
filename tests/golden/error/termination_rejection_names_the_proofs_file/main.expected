@@ -1,0 +1,13 @@
+[E0063] Error: `ax` is a proof, so it may not depend on the partial constant `h`
+   ╭─[tests/golden/error/termination_rejection_names_the_proofs_file/b.tg:3:1]
+   │
+ 3 │ pub axiom ax(): Eq<Nat, h(0), h(0)>
+   │ ─────────────────┬─────────────────  
+   │                  ╰─────────────────── 
+   │ 
+   │ Help: a proof may not depend on a partial definition — prove the recursion terminates, or state the theorem about a total one
+   │ 
+   │ Note: `h` is marked `#[partial]`
+───╯
+
+error: aborting due to 1 error

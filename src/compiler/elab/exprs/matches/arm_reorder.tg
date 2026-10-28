@@ -1,0 +1,296 @@
+// Arm reordering for match elaboration.
+//
+// Reorders match arms by constructor index so they align with
+// the sum type structure. Also handles arm padding for partial matches.
+
+use parser::ast::{
+    Pattern, PatVar, PatWildcard, PatConstructor, MatchArm,
+    Ident, ident_name, Path, MkPath
+};
+use driver::ffi::{List, Nil, Cons};
+use lexer::span::Span;
+use driver::util::list_is_empty;
+use elab::env::{Env, env_count_constructors};
+use elab::env::defs::{
+    MaybeResolvedValue, NoResolvedValue, SomeResolvedValue,
+    ResolvedValue, ResolvedConstructor
+};
+use elab::exprs::matches::patterns::is_catch_all_pattern;
+use elab::exprs::matches::patterns::resolve::resolve_pattern_constructor;
+use elab::exprs::matches::desugar::{
+    desugar_nested_arms, DesugarResult, DesugarOk, DesugarErr
+};
+use elab::exprs::matches::desugar::inner_arms::{
+    NestedPush, NoPush, Push, group_binder_name
+};
+use elab::exprs::matches::{ScrutInfo};
+use elab::cir::CIRVar;
+
+// ===========================================================================
+// ARM REORDERING BY CONSTRUCTOR INDEX
+// ===========================================================================
+
+/// Get the constructor index for a match arm's pattern.
+/// Returns `unresolved_arm_index()` for non-constructor patterns (catch-all,
+/// wildcard, etc.) so they sort to the end.
+pub fn get_arm_constructor_index(env: Env, arm: MatchArm) -> Nat {
+    if is_catch_all_pattern(arm.pattern) {
+        unresolved_arm_index()
+    } else {
+        match arm.pattern {
+            PatConstructor(path, _, _) => get_resolved_constructor_index(env, path),
+            _ => unresolved_arm_index()
+        }
+    }
+}
+
+/// A miss sorts to the end: an ordering, never a typing, and on the ADT route
+/// the arm it would place has already been refused (ADR 3.10.26l D3).
+fn get_resolved_constructor_index(env: Env, path: Path) -> Nat {
+    match resolve_pattern_constructor(env, path) {
+        NoResolvedValue() => unresolved_arm_index(),
+        SomeResolvedValue(resolved) =>
+            get_resolved_index(resolved)
+    }
+}
+
+fn get_resolved_index(resolved: ResolvedValue) -> Nat {
+    match resolved {
+        ResolvedConstructor(info) => info.index,
+        _ => unresolved_arm_index()
+    }
+}
+
+/// Reorder match arms by their constructor index.
+/// This ensures arms are processed in the same order as the
+/// constructors appear in the type definition, which matches
+/// the sum type structure (left-nested sums).
+pub fn reorder_arms_by_constructor(env: Env, arms: List<MatchArm>) -> List<MatchArm> {
+    insertion_sort_arms(env, arms, Nil())
+}
+
+fn insertion_sort_arms(env: Env, remaining: List<MatchArm>, sorted: List<MatchArm>) -> List<MatchArm> {
+    match remaining {
+        Nil() => sorted,
+        Cons(arm, rest) =>
+            let idx = get_arm_constructor_index(env, arm);
+            let new_sorted = insert_arm_by_index(env, arm, idx, sorted);
+            insertion_sort_arms(env, rest, new_sorted)
+    }
+}
+
+fn insert_arm_by_index(env: Env, arm: MatchArm, idx: Nat, sorted: List<MatchArm>) -> List<MatchArm> {
+    match sorted {
+        Nil() => Cons(arm, Nil()),
+        Cons(head, rest) =>
+            let head_idx = get_arm_constructor_index(env, head);
+            if idx <= head_idx {
+                Cons(arm, sorted)
+            } else {
+                Cons(head, insert_arm_by_index(env, arm, idx, rest))
+            }
+    }
+}
+
+// ===========================================================================
+// ARM PADDING
+// ===========================================================================
+
+/// The sort-to-end index: every arm with no constructor index — a catch-all,
+/// a non-constructor pattern, an unresolved constructor — sorts after every
+/// real one. No sum reaches this many variants.
+pub fn unresolved_arm_index() -> Nat {
+    999999
+}
+
+/// Check if the last arm in a sorted list is a catch-all.
+/// Returns true if the list ends with a catch-all pattern.
+fn has_catch_all_arm(arms: List<MatchArm>) -> Bool {
+    match arms {
+        Nil() => false,
+        Cons(arm, rest) =>
+            if list_is_empty(rest) {
+                is_catch_all_pattern(arm.pattern)
+            } else {
+                has_catch_all_arm(rest)
+            }
+    }
+}
+
+/// Get the last arm from a sorted list (the catch-all).
+// Partial (ADR 11.8.26b): the recursive call rebuilds its argument rather
+// than passing a strict subterm — a measure recursion, which Non-Goals defers to
+// v2.1. Executable compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn get_last_arm(arms: List<MatchArm>) -> MatchArm {
+    match arms {
+        Nil() => get_last_arm(arms),  // unreachable: caller ensures non-empty
+        Cons(arm, rest) =>
+            if list_is_empty(rest) {
+                arm
+            } else {
+                get_last_arm(rest)
+            }
+    }
+}
+
+/// Pad sorted arms so every constructor index 0..total-1 has an arm.
+/// Fills gaps with the catch-all arm. The catch-all (`unresolved_arm_index()`) in the
+/// sorted list is consumed and used to fill gaps and remaining indices.
+// Partial (ADR 11.8.26b): the recursive call rebuilds its argument rather
+// than passing a strict subterm — a measure recursion, which Non-Goals defers to
+// v2.1. Executable compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn pad_sorted_arms(
+    env: Env,
+    sorted_arms: List<MatchArm>,
+    current_index: Nat,
+    total: Nat,
+    catch_all: MatchArm
+) -> List<MatchArm> {
+    if current_index >= total {
+        Nil()
+    } else {
+        match sorted_arms {
+            Nil() =>
+                // No more explicit arms — fill remaining with catch-all
+                Cons(catch_all, pad_sorted_arms(env, Nil(), current_index + 1, total, catch_all)),
+            Cons(arm, rest) => {
+                let arm_index = get_arm_constructor_index(env, arm);
+                if arm_index >= unresolved_arm_index() {
+                    // Reached catch-all — fill this and all remaining with it
+                    Cons(catch_all, pad_sorted_arms(env, sorted_arms, current_index + 1, total, catch_all))
+                } else if arm_index == current_index {
+                    // Arm matches this index — use it
+                    Cons(arm, pad_sorted_arms(env, rest, current_index + 1, total, catch_all))
+                } else {
+                    // Gap: arm_index > current_index — insert catch-all for this index
+                    Cons(catch_all, pad_sorted_arms(env, sorted_arms, current_index + 1, total, catch_all))
+                }
+            }
+        }
+    }
+}
+
+/// Pad sorted arms when a catch-all ends them: every gap before a named arm,
+/// and one slot after the last one, gets the catch-all (ADR 13.10.26k D2, D3).
+/// The lowering peels the sum one constructor at a time, so arm k must be
+/// constructor k's — an unpadded gap slides every later arm a slot left.
+pub fn maybe_pad_arms(env: Env, sorted_arms: List<MatchArm>) -> List<MatchArm> {
+    if has_catch_all_arm(sorted_arms) {
+        pad_to_declared_count(env, sorted_arms, declared_constructor_count(env, sorted_arms))
+    } else {
+        sorted_arms
+    }
+}
+
+/// A count of `0` means no arm named a constructor: nothing to pad against.
+fn pad_to_declared_count(env: Env, sorted_arms: List<MatchArm>, total: Nat) -> List<MatchArm> {
+    if total == 0 {
+        sorted_arms
+    } else {
+        let limit = pad_limit(total, last_named_index(env, sorted_arms, total));
+        pad_sorted_arms(env, sorted_arms, 0, limit, get_last_arm(sorted_arms))
+    }
+}
+
+/// How many slots the padded arms fill (ADR 13.10.26k D2): every index up to
+/// the last named one, then one more for the catch-all. The lowering gives the
+/// last arm the rest of the sum, so that one slot stands for every constructor
+/// after the last named one; a copy per constructor there cost +14% wall on
+/// `albite1 check main.tg` and bought nothing. When the last named arm is
+/// the last or second-last constructor the limit is `total`, as before.
+pub fn pad_limit(total: Nat, last_named: Nat) -> Nat {
+    if last_named + 2 >= total { total } else { last_named + 2 }
+}
+
+/// The highest constructor index an arm names. The arms are sorted, so it is
+/// the one before the first unresolved arm; `found` when no arm resolves.
+fn last_named_index(env: Env, sorted_arms: List<MatchArm>, found: Nat) -> Nat {
+    match sorted_arms {
+        Nil() => found,
+        Cons(arm, rest) => {
+            let index = get_arm_constructor_index(env, arm);
+            if index >= unresolved_arm_index() { found } else { last_named_index(env, rest, index) }
+        }
+    }
+}
+
+/// The matched type's constructor count, read from its declaration through
+/// the first arm that resolves to a constructor (ADR 13.10.26k D2). The sum's
+/// right spine would over-count when the last constructor's payload is itself
+/// a sum. `0` when no arm resolves.
+pub fn declared_constructor_count(env: Env, arms: List<MatchArm>) -> Nat {
+    let parent = first_arm_parent_type(env, arms);
+    if parent == "" { 0 } else { env_count_constructors(env, parent) }
+}
+
+/// The type the first constructor-naming arm belongs to: the type a match's
+/// constructors are counted and checked against (ADR 13.10.26l D1).
+pub fn first_arm_parent_type(env: Env, arms: List<MatchArm>) -> String {
+    match arms {
+        Nil() => "",
+        Cons(arm, rest) =>
+            let parent = arm_parent_type(env, arm);
+            if parent == "" { first_arm_parent_type(env, rest) } else { parent }
+    }
+}
+
+/// The type an arm's constructor belongs to, or `""` when it names none.
+pub fn arm_parent_type(env: Env, arm: MatchArm) -> String {
+    match arm.pattern {
+        PatConstructor(path, _, _) => resolved_parent_type(resolve_pattern_constructor(env, path)),
+        _ => ""
+    }
+}
+
+fn resolved_parent_type(resolved: MaybeResolvedValue) -> String {
+    match resolved {
+        NoResolvedValue() => "",
+        SomeResolvedValue(value) => constructor_parent_type(value)
+    }
+}
+
+fn constructor_parent_type(resolved: ResolvedValue) -> String {
+    match resolved {
+        ResolvedConstructor(info) => info.parent_type,
+        _ => ""
+    }
+}
+
+// ===========================================================================
+// SORT, DESUGAR, PAD
+// ===========================================================================
+
+/// Arrange an ADT match's arms for the lowering (ADR 13.10.26k D1): sort by
+/// constructor index, desugar nested patterns, then pad. Padding follows the
+/// desugar, which collapses a constructor's nested arms into one arm whose
+/// group must count once; the inner match it builds re-enters this function,
+/// ending with this match's catch-all (ADR 16.10.26d D1).
+pub fn arrange_arms(env: Env, scrut: ScrutInfo, arms: List<MatchArm>, span: Span) -> DesugarResult {
+    let sorted = reorder_arms_by_constructor(env, arms);
+    match desugar_nested_arms(sorted, span, nested_push(sorted, scrutinee_name(scrut))) {
+        DesugarErr(msg, s) => DesugarErr(msg, s),
+        DesugarOk(desugared) => DesugarOk(maybe_pad_arms(env, desugared))
+    }
+}
+
+/// What the groups' inner matches receive (D5): the catch-all the outer gaps
+/// are padded with, when the sorted arms end with one.
+pub fn nested_push(sorted_arms: List<MatchArm>, outer_name: String) -> NestedPush {
+    if has_catch_all_arm(sorted_arms) {
+        Push(get_last_arm(sorted_arms), outer_name, group_binder_name(outer_name))
+    } else {
+        NoPush
+    }
+}
+
+/// The variable a pushed `let` reads (D2). A variable catch-all always has
+/// one, since a non-variable scrutinee it reads is hoisted to `_scrut` first;
+/// `""` only under a wildcard, which reads nothing.
+fn scrutinee_name(scrut: ScrutInfo) -> String {
+    match scrut.cir {
+        CIRVar(name, _) => name,
+        _ => ""
+    }
+}

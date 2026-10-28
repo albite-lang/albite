@@ -1,0 +1,8 @@
+// A sibling's constructor applied to the wrong field type (ADR 1.10.26f §2.4,
+// D4): the self-host must refuse wherever the bootstrap refuses.
+use boxes::{MkBox};
+
+fn main() -> Nat {
+    let _boxed = MkBox("x");
+    0
+}

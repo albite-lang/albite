@@ -1,0 +1,168 @@
+// src/compiler/driver/packages/table.tg
+// Which package each module belongs to, and what each package may name
+// (ADR 6.10.26p D2), as the bootstrap's `PackageTable`
+// (`bootstrap/src/elaborate/env/packages.rs`) answers it.
+//
+// Every package is mounted once at the module root under its own name
+// (ADR 6.10.26j D4) and records the packages it declared. A package reaches
+// its own modules and its declared direct dependencies, and nothing else —
+// the application included. The application is implicit: it owns every
+// module no mount prefixes, so an empty table (no manifest) answers every
+// query as the single-package rules always did.
+//
+// A module's package is a pure function of its path, so the table is the
+// only state reach needs. It rides `ModuleInfo`, which the driver's use-path
+// pass reads and every `Env` carries as its `module_registry`.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Option, Some, None, list_len, list_get, list_append, list_is_prefix_or_eq_string};
+
+/// A package: the application (mounted at the root) or one of its path
+/// dependencies, by index into the table's mounts.
+pub type PackageId =
+    | PkgApplication
+    | PkgDependency(Nat)
+
+/// A mounted dependency: its name, the module path it is mounted at, and the
+/// packages it declared, as indices into the table's mounts.
+pub type PackageMount = { name: String, mount: List<String>, declares: List<Nat> }
+
+/// Where each dependency is mounted, and what every package declared.
+pub type PackageTable = { mounts: List<PackageMount>, application_declares: List<Nat> }
+
+/// The table without a manifest: every module is the application's.
+pub fn package_table_empty() -> PackageTable {
+    { mounts: Nil, application_declares: Nil } : PackageTable
+}
+
+/// Whether any dependency is mounted.
+pub fn package_table_is_empty(table: PackageTable) -> Bool {
+    match table.mounts {
+        Nil() => true,
+        Cons(_, _) => false
+    }
+}
+
+/// Mount the next package at the root under `name`, with its declarations.
+pub fn package_table_add(table: PackageTable, name: String, declares: List<Nat>) -> PackageTable {
+    let mount: PackageMount = { name: name, mount: Cons(name, Nil), declares: declares };
+    { mounts: list_append(table.mounts, Cons(mount, Nil)), application_declares: table.application_declares } : PackageTable
+}
+
+/// Record the application's declared dependencies.
+pub fn package_table_with_application_declares(table: PackageTable, declares: List<Nat>) -> PackageTable {
+    { mounts: table.mounts, application_declares: declares } : PackageTable
+}
+
+/// Whether two package ids name one package.
+pub fn package_id_eq(left: PackageId, right: PackageId) -> Bool {
+    match left {
+        PkgApplication() => match right { PkgApplication() => true, PkgDependency(_) => false },
+        PkgDependency(i) => match right { PkgApplication() => false, PkgDependency(j) => i == j }
+    }
+}
+
+/// The package owning `path`: the dependency whose mount is its longest
+/// prefix, else the application.
+pub fn package_of_path(table: PackageTable, path: List<String>) -> PackageId {
+    longest_mount(table.mounts, path, 0, PkgApplication, 0)
+}
+
+fn longest_mount(mounts: List<PackageMount>, path: List<String>, index: Nat,
+                 best: PackageId, best_len: Nat) -> PackageId {
+    match mounts {
+        Nil() => best,
+        Cons(entry, rest) => {
+            let len = list_len(entry.mount);
+            if len > best_len && list_is_prefix_or_eq_string(entry.mount, path) {
+                longest_mount(rest, path, index + 1, PkgDependency(index), len)
+            } else {
+                longest_mount(rest, path, index + 1, best, best_len)
+            }
+        }
+    }
+}
+
+/// The module path a package's own absolute paths are rooted at.
+pub fn package_root_path(table: PackageTable, id: PackageId) -> List<String> {
+    match id {
+        PkgApplication() => Nil,
+        PkgDependency(i) => match list_get(table.mounts, i) {
+            Some(entry) => entry.mount,
+            None() => Nil
+        }
+    }
+}
+
+/// A dependency's name; "" for the application.
+pub fn package_display_name(table: PackageTable, id: PackageId) -> String {
+    match id {
+        PkgApplication() => "",
+        PkgDependency(i) => match list_get(table.mounts, i) {
+            Some(entry) => entry.name,
+            None() => ""
+        }
+    }
+}
+
+/// The packages `from` declared, as mount indices.
+fn declared_by(table: PackageTable, from: PackageId) -> List<Nat> {
+    match from {
+        PkgApplication() => table.application_declares,
+        PkgDependency(i) => match list_get(table.mounts, i) {
+            Some(entry) => entry.declares,
+            None() => Nil
+        }
+    }
+}
+
+/// Whether code in `from` may name anything in `to`: the same package, or a
+/// package `from` declared. Nothing reaches the application but itself.
+pub fn package_may_reach(table: PackageTable, from: PackageId, to: PackageId) -> Bool {
+    if package_id_eq(from, to) {
+        true
+    } else {
+        match to {
+            PkgApplication() => false,
+            PkgDependency(i) => nat_listed(declared_by(table, from), i)
+        }
+    }
+}
+
+/// Whether code in module `from` may name module `to`.
+pub fn package_path_may_reach(table: PackageTable, from: List<String>, to: List<String>) -> Bool {
+    package_may_reach(table, package_of_path(table, from), package_of_path(table, to))
+}
+
+/// Where an absolute path written in `from` starts: the root when its first
+/// segment is a dependency `from` declared — every package is mounted there
+/// under its own name — else `from`'s own root.
+pub fn package_absolute_root(table: PackageTable, from: PackageId, first_segment: String) -> List<String> {
+    if names_declared(table, declared_by(table, from), first_segment) {
+        Nil
+    } else {
+        package_root_path(table, from)
+    }
+}
+
+/// The absolute candidate for `raw` written in module `current`.
+pub fn package_absolute_candidate(table: PackageTable, current: List<String>, raw: List<String>) -> List<String> {
+    let first = match raw { Nil() => "", Cons(segment, _) => segment };
+    list_append(package_absolute_root(table, package_of_path(table, current), first), raw)
+}
+
+fn names_declared(table: PackageTable, declared: List<Nat>, name: String) -> Bool {
+    match declared {
+        Nil() => false,
+        Cons(i, rest) =>
+            if package_display_name(table, PkgDependency(i)) == name { true }
+            else { names_declared(table, rest, name) }
+    }
+}
+
+fn nat_listed(list: List<Nat>, wanted: Nat) -> Bool {
+    match list {
+        Nil() => false,
+        Cons(x, rest) => if x == wanted { true } else { nat_listed(rest, wanted) }
+    }
+}

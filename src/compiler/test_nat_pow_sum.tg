@@ -1,0 +1,143 @@
+// The power and sum libraries are citable and compute (ADR 9.10.26j AC 3, D6).
+//
+// Each lemma of nat_pow.tg and nat_sum.tg cited in a typed `let`, at
+// variables and at numerals; closed values checked by `refl`; `sum_congr`
+// cited at a lambda (7.10.26o H5's overturn condition, tested); and the
+// `ring` goals over `pow` that D5 times.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_nat_pow_sum.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+// `ring` cites nat_arith.tg's laws and nat_pow.tg's recurrences.
+mod nat_arith;
+mod nat_pow;
+mod nat_sum;
+
+// ── Powers ──────────────────────────────────────────────────────────────────
+
+fn test_pow_zero_is_cited() -> Unit {
+    let x: Nat = 3;
+    let _r: Eq<Nat, nat_pow::pow(x, 0), 1> = nat_pow::pow_zero(x);
+    let _n: Eq<Nat, nat_pow::pow(3, 0), 1> = nat_pow::pow_zero(3);
+    ()
+}
+
+fn test_pow_succ_is_cited() -> Unit {
+    let x: Nat = 2;
+    let y: Nat = 4;
+    let _r: Eq<Nat, nat_pow::pow(x, y + 1), nat_pow::pow(x, y) * x> = nat_pow::pow_succ(x, y);
+    let _n: Eq<Nat, nat_pow::pow(2, 5), 16 * 2> = nat_pow::pow_succ(2, 4);
+    ()
+}
+
+fn test_pow_one_is_cited() -> Unit {
+    let x: Nat = 9;
+    let _r: Eq<Nat, nat_pow::pow(x, 1), x> = nat_pow::pow_one(x);
+    let _n: Eq<Nat, nat_pow::pow(9, 1), 9> = nat_pow::pow_one(9);
+    ()
+}
+
+// ── Truncated subtraction ───────────────────────────────────────────────────
+
+fn test_nat_sub_zero_right_is_cited() -> Unit {
+    let x: Nat = 5;
+    let _r: Eq<Nat, nat_pow::nat_sub(x, 0), x> = nat_pow::nat_sub_zero_right(x);
+    let _n: Eq<Nat, nat_pow::nat_sub(5, 0), 5> = nat_pow::nat_sub_zero_right(5);
+    ()
+}
+
+fn test_nat_sub_succ_succ_is_cited() -> Unit {
+    let x: Nat = 7;
+    let y: Nat = 3;
+    let _r: Eq<Nat, nat_pow::nat_sub(x + 1, y + 1), nat_pow::nat_sub(x, y)> = nat_pow::nat_sub_succ_succ(x, y);
+    let _n: Eq<Nat, nat_pow::nat_sub(8, 4), 4> = nat_pow::nat_sub_succ_succ(7, 3);
+    ()
+}
+
+fn test_nat_sub_self_is_cited() -> Unit {
+    let x: Nat = 6;
+    let _r: Eq<Nat, nat_pow::nat_sub(x, x), 0> = nat_pow::nat_sub_self(x);
+    let _n: Eq<Nat, nat_pow::nat_sub(6, 6), 0> = nat_pow::nat_sub_self(6);
+    ()
+}
+
+// ── Sums ────────────────────────────────────────────────────────────────────
+
+fn test_sum_zero_is_cited() -> Unit {
+    let f: Nat -> Nat = |k: Nat| k * k;
+    let _r: Eq<Nat, nat_sum::sum_below(f, 0), 0> = nat_sum::sum_zero(f);
+    ()
+}
+
+fn test_sum_succ_is_cited() -> Unit {
+    let f: Nat -> Nat = |k: Nat| k * k;
+    let x: Nat = 3;
+    let _r: Eq<Nat, nat_sum::sum_below(f, x + 1), nat_sum::sum_below(f, x) + f(x)> = nat_sum::sum_succ(f, x);
+    let _n: Eq<Nat, nat_sum::sum_below(|k: Nat| k, 4), 3 + 3> = nat_sum::sum_succ(|k: Nat| k, 3);
+    ()
+}
+
+fn test_sum_add_is_cited() -> Unit {
+    let f: Nat -> Nat = |k: Nat| k;
+    let g: Nat -> Nat = |k: Nat| 1;
+    let x: Nat = 4;
+    let _r: Eq<Nat, nat_sum::sum_below(|k: Nat| f(k) + g(k), x),
+               nat_sum::sum_below(f, x) + nat_sum::sum_below(g, x)> = nat_sum::sum_add(f, g, x);
+    let _n: Eq<Nat, nat_sum::sum_below(|k: Nat| k + 1, 3), 3 + 3> = nat_sum::sum_add(|k: Nat| k, |k: Nat| 1, 3);
+    ()
+}
+
+fn test_sum_mul_left_is_cited() -> Unit {
+    let f: Nat -> Nat = |k: Nat| k;
+    let c: Nat = 2;
+    let x: Nat = 4;
+    let _r: Eq<Nat, nat_sum::sum_below(|k: Nat| c * f(k), x), c * nat_sum::sum_below(f, x)> =
+        nat_sum::sum_mul_left(c, f, x);
+    let _n: Eq<Nat, nat_sum::sum_below(|k: Nat| 2 * k, 4), 12> = nat_sum::sum_mul_left(2, |k: Nat| k, 4);
+    ()
+}
+
+fn test_sum_shift_is_cited() -> Unit {
+    let f: Nat -> Nat = |k: Nat| k * k;
+    let x: Nat = 3;
+    let _r: Eq<Nat, nat_sum::sum_below(f, x + 1), f(0) + nat_sum::sum_below(|k: Nat| f(k + 1), x)> =
+        nat_sum::sum_shift(f, x);
+    let _n: Eq<Nat, nat_sum::sum_below(|k: Nat| k, 4), 0 + 6> = nat_sum::sum_shift(|k: Nat| k, 3);
+    ()
+}
+
+// `sum_congr` at two lambdas that agree only by computation, `k + 0` and `k`.
+fn test_sum_congr_is_cited_at_a_lambda() -> Unit {
+    let x: Nat = 5;
+    let _r: Eq<Nat, nat_sum::sum_below(|k: Nat| k + 0, x), nat_sum::sum_below(|k: Nat| k, x)> =
+        nat_sum::sum_congr(|k: Nat| k + 0, |k: Nat| k, x, fn(k: Nat, hk: nat_sum::nat_order::Lt<k, x>) => refl);
+    ()
+}
+
+// ── Closed values ───────────────────────────────────────────────────────────
+
+fn test_closed_values() -> Unit {
+    let _pow: Eq<Nat, nat_pow::pow(2, 10), 1024> = refl;
+    let _sum: Eq<Nat, nat_sum::sum_below(|x: Nat| x, 5), 10> = refl;
+    let _sub: Eq<Nat, nat_pow::nat_sub(7, 3), 4> = refl;
+    let _floor: Eq<Nat, nat_pow::nat_sub(3, 7), 0> = refl;
+    ()
+}
+
+// ── `ring` over `pow` (D4, D5) ──────────────────────────────────────────────
+
+theorem ring_pow_binomial_square(a: Nat, b: Nat)
+    -> Eq<Nat, nat_pow::pow(a + b, 2), a * a + 2 * a * b + b * b> by { ring }
+
+theorem ring_pow_cube(x: Nat) -> Eq<Nat, nat_pow::pow(x, 3), x * x * x> by { ring }
+
+// An open exponent is one atom.
+theorem ring_pow_open_exponent(x: Nat, n: Nat)
+    -> Eq<Nat, nat_pow::pow(x, n) * (x + 1), x * nat_pow::pow(x, n) + nat_pow::pow(x, n)> by { ring }
+
+fn test_ring_pow_goals_are_cited() -> Unit {
+    let _square: Eq<Nat, nat_pow::pow(3 + 4, 2), 3 * 3 + 2 * 3 * 4 + 4 * 4> = ring_pow_binomial_square(3, 4);
+    let _cube: Eq<Nat, nat_pow::pow(5, 3), 125> = ring_pow_cube(5);
+    ()
+}

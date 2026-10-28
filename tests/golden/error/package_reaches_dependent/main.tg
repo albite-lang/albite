@@ -1,0 +1,4 @@
+// E0005: a library cannot name a module of the application (D5).
+mod app_util;
+use lib_a::f;
+fn main() -> Nat { f() }

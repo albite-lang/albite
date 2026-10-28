@@ -1,0 +1,13 @@
+[E0010] Error: expected `Nat`, found `Pair`
+   ╭─[tests/golden/error/catch_all_is_not_a_payload.tg:9:18]
+   │
+ 6 │ fn payload_of(p: Pair) -> Nat {
+   │                           ─┬─  
+   │                            ╰─── expected due to return type
+   │ 
+ 9 │         other => other
+   │                  ──┬──  
+   │                    ╰──── expected `Nat`, found `Pair`
+───╯
+
+error: aborting due to 1 error

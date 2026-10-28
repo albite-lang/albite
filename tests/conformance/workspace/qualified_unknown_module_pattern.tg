@@ -1,0 +1,9 @@
+// A module-qualified pattern through a module that does not exist (ADR
+// 3.10.26l §2.4): the bootstrap says E0005, cannot find module.
+type OptMod = NadaMod | AlgoMod(Nat)
+
+fn pick(o: OptMod) -> Nat {
+    match o { nowhere_at_all::AlgoMod(k) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(AlgoMod(1)) }

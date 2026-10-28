@@ -1,0 +1,49 @@
+// ADR 7.10.26t: the accepted twin. A builder threaded through a fold, pushed
+// once in each arm of an `if`, observed before it is consumed, and shadowed
+// by its successor: one consuming use on every path.
+
+pub type StringBuilder = MkStringBuilder(Nat)
+
+extern "C" fn tg_string_builder_new() -> Nat
+extern "C" fn tg_string_builder_push_str(sb: Nat, s: String) -> Nat
+extern "C" fn tg_string_builder_len(sb: Nat) -> Nat
+extern "C" fn tg_string_builder_to_string(sb: Nat) -> String
+
+pub fn string_builder_new() -> StringBuilder {
+    MkStringBuilder(tg_string_builder_new())
+}
+
+pub fn push_str(sb: StringBuilder, s: String) -> StringBuilder {
+    match sb { MkStringBuilder(h) => MkStringBuilder(tg_string_builder_push_str(h, s)) }
+}
+
+// Reads the builder and leaves it live.
+pub fn string_builder_len(sb: StringBuilder) -> Nat {
+    match sb { MkStringBuilder(h) => tg_string_builder_len(h) }
+}
+
+// Consumes the builder: any later use of it aborts.
+pub fn to_string(sb: StringBuilder) -> String {
+    match sb { MkStringBuilder(h) => tg_string_builder_to_string(h) }
+}
+
+type Words = NoWords | Word(String, Words)
+
+fn push_all(sb: StringBuilder, ws: Words) -> StringBuilder {
+    match ws {
+        NoWords => sb,
+        Word(w, rest) => push_all(push_str(sb, w), rest),
+    }
+}
+
+fn push_escaped(sb: StringBuilder, amp: Bool) -> StringBuilder {
+    if amp { push_str(sb, "&amp;") } else { push_str(sb, "&") }
+}
+
+fn main() -> String {
+    let sb = push_all(string_builder_new(), Word("a ", Word("b", NoWords)));
+    let sb = push_escaped(sb, true);
+    let n = string_builder_len(sb);
+    let sb = if n > 3 { push_str(sb, "!") } else { sb };
+    to_string(sb)
+}

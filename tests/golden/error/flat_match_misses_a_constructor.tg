@@ -1,0 +1,13 @@
+// Golden test (ADR 13.10.26l): a flat match naming two of `Color`'s three
+// constructors, with no catch-all, is refused at the `match` by both
+// compilers. The conditional error golden 6.10.26k anticipated: before this
+// ADR the self-host accepted it and returned `true` on `Blue()`. E0020.
+type Color = Red | Green | Blue
+
+fn is_warm(c: Color) -> Bool {
+    match c { Red() => true, Green() => true }
+}
+
+fn main() -> Bool {
+    is_warm(Blue())
+}

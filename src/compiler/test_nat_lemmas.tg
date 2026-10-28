@@ -1,0 +1,109 @@
+// The Tier-1 arithmetic lemmas, named and cited (ADR 30.9.26e AC 1–2).
+//
+// B17 slice 1: addition's basic laws and the first multiplication facts over
+// the PRIMITIVE `+` and `*` (D1), which compute on their right operand, so
+// `n + 0`, `n + (m + 1)`, `n * 0` and `n * (m + 1)` all reduce.
+//
+// The lemmas themselves live in the flat sibling `nat_arith.tg`, imported
+// with `mod nat_arith;` (ADR 1.10.26d D4): a flat file needs no `mod.tg`, so
+// 30.9.26e's D6 fallback — the library kept in this suite — is retired. Only
+// `add_zero_right_sugared`, the `==`-sugar case, stays here.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_nat_lemmas.tg`, checked by
+// `make check-mustfail-fixtures`; the false lemmas that `expect_error` cannot
+// hold are the golden `tests/golden/error/nat_lemma_false_statements`.
+
+// ── The library, imported from the flat sibling (1.10.26d D4) ──────────────
+
+// Cited by qualified path, `nat_arith::add_comm(…)`: code-health's
+// tg-relative-import check knows only main.tg's roots, so a `use nat_arith::…`
+// line would read as relative although `mod nat_arith;` makes it a root here.
+mod nat_arith;
+
+// The `==` sugar with a leading identifier (30.9.26d D10), once.
+pub theorem add_zero_right_sugared(n: Nat): n + 0 == n { nat_arith::add_zero_right(n) }
+
+// ── AC 2: citations at arguments other than the parameters ──────────────────
+
+fn nat_lemmas_at_a_literal(n: Nat) -> Unit {
+    let _p: Eq<Nat, 2 + n, n + 2> = nat_arith::add_comm(2, n);
+    ()
+}
+
+fn nat_lemmas_swapped(n: Nat, m: Nat) -> Unit {
+    let _p: Eq<Nat, m + n, n + m> = nat_arith::add_comm(m, n);
+    ()
+}
+
+fn nat_lemmas_at_a_compound_argument(n: Nat, m: Nat) -> Unit {
+    let _p: Eq<Nat, (n + 1) + m, n + (1 + m)> = nat_arith::add_assoc(n, 1, m);
+    ()
+}
+
+fn nat_lemmas_mul_succ_at_zero(n: Nat) -> Unit {
+    let _p: Eq<Nat, n * 1, n * 0 + n> = nat_arith::mul_succ_right(n, 0);
+    ()
+}
+
+// ── AC 2: D5's three sites ──────────────────────────────────────────────────
+
+fn nat_lemmas_let_annotation(n: Nat) -> Unit {
+    let _q: Eq<Nat, n + 0, 0 + n> = sym(nat_arith::add_zero_left(n));
+    ()
+}
+
+fn nat_lemmas_takes_a_proof(n: Nat, p: Eq<Nat, n + 0, 0 + n>) -> Unit {
+    ()
+}
+
+fn nat_lemmas_function_argument(n: Nat) -> Unit {
+    nat_lemmas_takes_a_proof(n, sym(nat_arith::add_zero_left(n)))
+}
+
+fn nat_lemmas_bare_citation_body(n: Nat) -> Eq<Nat, n * 1, n> {
+    nat_arith::mul_one_right(n)
+}
+
+fn test_add_comm_is_cited_at_a_literal() -> Unit {
+    nat_lemmas_at_a_literal(4)
+}
+
+fn test_add_comm_is_cited_swapped() -> Unit {
+    nat_lemmas_swapped(4, 5)
+}
+
+fn test_add_assoc_is_cited_at_a_compound_argument() -> Unit {
+    nat_lemmas_at_a_compound_argument(4, 5)
+}
+
+fn test_mul_succ_right_is_cited_at_zero() -> Unit {
+    nat_lemmas_mul_succ_at_zero(4)
+}
+
+fn test_a_citation_meets_a_let_annotation_by_conversion() -> Unit {
+    nat_lemmas_let_annotation(4)
+}
+
+fn test_a_citation_meets_a_parameter_by_conversion() -> Unit {
+    nat_lemmas_function_argument(4)
+}
+
+fn test_a_bare_citation_meets_its_declared_return() -> Unit {
+    let _p: Eq<Nat, 4 * 1, 4> = nat_lemmas_bare_citation_body(4);
+    ()
+}
+
+// ── AC 2: wrong citations and non-definitional facts are refused ────────────
+
+fn test_a_citation_at_the_wrong_instance_is_refused() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, n + 1, 1 + n> = nat_arith::add_comm(1, n); 0 }, "E0010")
+}
+
+fn test_zero_times_n_is_not_refl() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, 0 * n, 0> = refl; 0 }, "E0071")
+}
+
+fn test_zero_plus_n_is_not_refl() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, 0 + n, n> = refl; 0 }, "E0071")
+}

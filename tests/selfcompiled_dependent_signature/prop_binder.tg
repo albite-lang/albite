@@ -1,0 +1,7 @@
+// ADR 2.10.26f D2 (30.9.26d D7), flipped by ADR 4.10.26i D4: `Prop` is a
+// sort, not a type, so a `Prop`-typed parameter is refused on both compilers
+// with the one sentence they share.
+
+fn pd(p: Prop) -> Eq<Prop, p, p> { refl }
+
+fn main() -> Nat { 0 }

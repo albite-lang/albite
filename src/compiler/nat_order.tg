@@ -1,0 +1,172 @@
+// The Tier 2 order library (ADR 6.10.26g): the families `Le` and `Lt`
+// (universe_hierarchy.md Q3) and the order lemmas over them.
+//
+// A FLAT sibling of nat_arith.tg, imported with `mod nat_order;` from any
+// file in this directory (6.10.26g D1). It is NOT folded into nat_arith.tg:
+// that file is a row of `make selfcompiled-dependent-signature-check` that
+// both compilers must accept, and `albite1` refuses a family at parse. This
+// file's own row reads bootstrap accept, `albite1` reject.
+//
+// Every lemma is `by { omega }` (6.10.26f): the tactic unpacks each `Le`/`Lt`
+// hypothesis to its witness and equation, solves for the goal's witness and
+// closes the rest by `ring`, citing nat_arith.tg's laws. Each proof is
+// re-checked by the kernel (`albite doctor check proof kernel-census`).
+//
+// SOURCE ORDER IS A RULE (arithmetic_library.md, 2026-10-01): a signature
+// cites only what is declared above it, so `Le` precedes `Lt`.
+//
+// `le_total` (ADR 7.10.26l D5) states a disjunction, `A + B`, built by `left`
+// / `right` and split by `cases … { inl(h) => …, inr(h) => … }`; its proof is
+// induction on `n` alone, through the helper `le_step_cases`.
+//
+// The refutations (ADR 7.10.26m D5) rest on the kernel's one trusted
+// distinct-constructor fact, `true_ne_false`, cited through `absurd(h)`.
+// `succ_ne_zero` carries `n + 1 == 0` to `false == true` by `cong` over a
+// `Bool`-valued discriminator, and `lt_irrefl` / `not_succ_le_self` reduce
+// to it through `succ_add_ne_self`, an induction stepping by injectivity.
+//
+// Suite: test_nat_order.tg, with its must-fail twin mustfail_nat_order.tg.
+
+// `omega` cites the library's semiring laws and its cancellation lemmas.
+mod nat_arith;
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+pub type Lt(n: Nat, m: Nat): Prop = Le<n + 1, m>
+
+pub theorem le_refl(n: Nat) -> Le<n, n> by { omega }
+
+pub theorem le_add_right(n: Nat, m: Nat) -> Le<n, n + m> by { omega }
+
+pub theorem le_succ_self(n: Nat) -> Le<n, n + 1> by { omega }
+
+pub theorem zero_le(n: Nat) -> Le<0, n> by { omega }
+
+pub theorem le_trans(n: Nat, m: Nat, k: Nat, h1: Le<n, m>, h2: Le<m, k>) -> Le<n, k> by {
+    omega
+}
+
+pub theorem succ_le_succ(n: Nat, m: Nat, h: Le<n, m>) -> Le<n + 1, m + 1> by { omega }
+
+// `le_total`'s step from `Le<j, m>` (witness `k`, equation `e`): `k = 0` is
+// `m == j`, so `Le<m, j + 1>`; `k = k' + 1` is `Le<j + 1, m>`. An induction
+// whose hypothesis goes unused, over an arrow goal, since `induction` refuses
+// a target a local's type mentions (ADR 7.10.26l D5).
+pub theorem le_step_cases(j: Nat, m: Nat, k: Nat) -> Eq<Nat, j + k, m> -> Le<j + 1, m> + Le<m, j + 1> by {
+    induction k;
+    intro e;
+    right;
+    omega;
+    intro i;
+    intro ih;
+    intro e;
+    left;
+    omega
+}
+
+pub theorem le_total(n: Nat, m: Nat) -> Le<n, m> + Le<m, n> by {
+    induction n;
+    left;
+    exact zero_le(m);
+    intro j;
+    intro ih;
+    cases ih {
+        inl(h) => cases h { (k, e) => exact le_step_cases(j, m, k)(e) },
+        inr(h) => { right; omega }
+    }
+}
+
+pub theorem le_antisymm(n: Nat, m: Nat, h1: Le<n, m>, h2: Le<m, n>) -> Eq<Nat, n, m> by {
+    omega
+}
+
+pub theorem lt_succ_self(n: Nat) -> Lt<n, n + 1> by { omega }
+
+pub theorem le_of_lt(n: Nat, m: Nat, h: Lt<n, m>) -> Le<n, m> by { omega }
+
+pub theorem lt_of_lt_of_le(n: Nat, m: Nat, k: Nat, h1: Lt<n, m>, h2: Le<m, k>) -> Lt<n, k> by {
+    omega
+}
+
+pub theorem lt_of_le_of_lt(n: Nat, m: Nat, k: Nat, h1: Le<n, m>, h2: Lt<m, k>) -> Lt<n, k> by {
+    omega
+}
+
+pub theorem lt_trans(n: Nat, m: Nat, k: Nat, h1: Lt<n, m>, h2: Lt<m, k>) -> Lt<n, k> by {
+    omega
+}
+
+pub theorem true_ne_false(h: Eq<Bool, true, false>) -> Void { absurd(h) }
+
+pub theorem succ_ne_zero(n: Nat, h: Eq<Nat, n + 1, 0>) -> Void {
+    absurd(cong(|x: Nat| natrec(Bool, true, fn(k: Nat, acc: Bool) => false, x), h))
+}
+
+// The successor sits outside, `(n + k) + 1`: `+` recurses on its right
+// operand, so the discriminator reduces on it whatever `k` is, while
+// `(n + 1) + k` is stuck on an open `k` (ADR 7.10.26m D5). The step peels
+// one successor off each side by `cong` over a `natrec` predecessor.
+pub theorem succ_add_ne_self(n: Nat, k: Nat) -> Eq<Nat, (n + k) + 1, n> -> Void by {
+    induction n;
+    intro e;
+    exact succ_ne_zero(0 + k, e);
+    intro j;
+    intro ih;
+    intro e;
+    exact ih(trans(sym(nat_arith::add_succ_left(j, k)),
+                   cong(|x: Nat| natrec(Nat, 0, fn(i: Nat, acc: Nat) => i, x), e)))
+}
+
+pub theorem lt_irrefl(n: Nat, h: Lt<n, n>) -> Void by {
+    cases h { (k, e) => exact succ_add_ne_self(n, k)(trans(sym(nat_arith::add_succ_left(n, k)), e)) }
+}
+
+// `Lt<n, n>` is stored as its expansion `Le<n + 1, n>` (6.10.26d).
+pub theorem not_succ_le_self(n: Nat, h: Le<n + 1, n>) -> Void { lt_irrefl(n, h) }
+
+// Strong induction (ADR 7.10.26n D5), proved by induction on `n` of "`P`
+// holds below `n`". The base case refutes `Lt<m, 0>` through `succ_ne_zero`;
+// the step splits `Lt<m, j + 1>` on its witness: `k = 0` is `m == j`, and
+// `P<j>` from `step` is transported to `P<m>` by `subst`; `k = k' + 1` is
+// `Lt<m, j>`, where the hypothesis applies. The hypotheses are written with
+// the surface dependent function type `(m: Nat) -> …`.
+pub theorem not_lt_zero(m: Nat, h: Lt<m, 0>) -> Void by {
+    cases h { (k, e) => exact succ_ne_zero(m + k, trans(sym(nat_arith::add_succ_left(m, k)), e)) }
+}
+
+pub theorem lt_succ_zero_eq(m: Nat, j: Nat) -> Eq<Nat, (m + 1) + 0, j + 1> -> Eq<Nat, j, m> by {
+    intro e;
+    omega
+}
+
+pub theorem lt_succ_succ_lt(m: Nat, j: Nat, k: Nat) -> Eq<Nat, (m + 1) + (k + 1), j + 1> -> Lt<m, j> by {
+    intro e;
+    omega
+}
+
+pub theorem below_succ<P: Nat -> Prop>(step: (j: Nat) -> ((m: Nat) -> Lt<m, j> -> P<m>) -> P<j>,
+    j: Nat, ih: (m: Nat) -> Lt<m, j> -> P<m>, m: Nat, k: Nat) -> Eq<Nat, (m + 1) + k, j + 1> -> P<m> by {
+    induction k;
+    intro e;
+    exact subst(lt_succ_zero_eq(m, j)(e), |x: Nat| P<x>, step(j, ih));
+    intro i;
+    intro hi;
+    intro e;
+    exact ih(m, lt_succ_succ_lt(m, j, i)(e))
+}
+
+pub theorem strong_ind_below<P: Nat -> Prop>(step: (j: Nat) -> ((m: Nat) -> Lt<m, j> -> P<m>) -> P<j>, n: Nat)
+    -> (m: Nat) -> Lt<m, n> -> P<m> by {
+    induction n;
+    intro m;
+    intro h;
+    exact absurd(not_lt_zero(m, h));
+    intro j;
+    intro ih;
+    intro m;
+    intro h;
+    cases h { (k, e) => exact below_succ::<P>(step, j, ih, m, k)(e) }
+}
+
+pub theorem nat_strong_ind<P: Nat -> Prop>(step: (n: Nat) -> ((m: Nat) -> Lt<m, n> -> P<m>) -> P<n>, n: Nat) -> P<n> {
+    step(n, strong_ind_below::<P>(step, n))
+}

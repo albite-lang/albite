@@ -1,0 +1,95 @@
+// Each syntax site raises the bootstrap's kind (ADR 7.10.26f AC 1).
+//
+// Three self-host sites used to raise SyntaxUnexpectedToken (E0800) where the
+// bootstrap raises another kind on the same input: a token that cannot start a
+// pattern (InvalidPattern, E0803), end of file where a token was expected
+// (UnexpectedEof, E0801), and a missing name at the start of a use path
+// (Expected, E0802).
+//
+// A ParseError that travels through a `?` leaves the enclosing assertion Stuck
+// on the evaluator (`test_parse_recovery.tg`), so each site is driven directly,
+// over the lexer's own token list, and returns its Err without one. The
+// end-to-end evidence is the two goldens on `albite1` (AC 2).
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_string};
+use driver::util::{Result, Ok, Err};
+use lexer::token::{TokEof, TokRBrace, TokSemi, TokRParen};
+use lexer::scanner::{tokenize_no_trivia, lex_result_tokens};
+use parser::cursor::{Cursor, cursor_new, cursor_advance, cursor_expect, expected_found_syntax_kind};
+use parser::error::{ParseError};
+use parser::syntax_kind::{SyntaxInvalidPattern, syntax_kind_code};
+use parser::patterns::atoms::{parse_pattern_atom};
+use parser::items::use_decl::use_paths::{parse_use_path};
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+/// A cursor over `src` as the lexer tokenizes it, closing `TokEof` included.
+fn lexed(src: String) -> Cursor {
+    cursor_new(lex_result_tokens(tokenize_no_trivia(src, "t.tg")), "t.tg")
+}
+
+/// The code of a result's error, or "ok" when the parse succeeded.
+fn error_code_of<T>(parse_result: Result<T, ParseError>) -> String {
+    match parse_result {
+        Ok(_) => "ok",
+        Err(e) => syntax_kind_code(e.kind)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The kind and its code
+// ---------------------------------------------------------------------------
+
+// ADR 7.10.26f AC 1: the new kind claims its reserved number.
+fn test_invalid_pattern_code() -> Unit {
+    assert_eq_string(syntax_kind_code(SyntaxInvalidPattern), "E0803")
+}
+
+// ---------------------------------------------------------------------------
+// The three sites
+// ---------------------------------------------------------------------------
+
+// ADR 7.10.26f AC 1: `let = 2` — `=` cannot start a pattern.
+fn test_equals_cannot_start_a_pattern() -> Unit {
+    assert_eq_string(error_code_of(parse_pattern_atom(lexed("= 2"))), "E0803")
+}
+
+// ADR 7.10.26f AC 1: a block left open at end of file meets the lexer's
+// closing TokEof where `}` was expected.
+fn test_open_block_at_end_of_file() -> Unit {
+    let at_eof = cursor_advance(lexed("1"));
+    assert_eq_string(error_code_of(cursor_expect(at_eof, TokRBrace())), "E0801")
+}
+
+// ADR 7.10.26f AC 1: the helper the block-end site shares with `cursor_expect`.
+fn test_found_eof_is_unexpected_eof() -> Unit {
+    assert_eq_string(syntax_kind_code(expected_found_syntax_kind(TokEof())), "E0801")
+}
+
+// ADR 7.10.26f AC 1: `use ;` — no name where the path starts.
+fn test_use_without_a_name() -> Unit {
+    assert_eq_string(error_code_of(parse_use_path(lexed(";"))), "E0802")
+}
+
+// ---------------------------------------------------------------------------
+// Must-fail twins: the general case did not move
+// ---------------------------------------------------------------------------
+
+// ADR 7.10.26f AC 1: `(1 + 2;` — a wrong token that is not end of file stays
+// SyntaxUnexpectedToken.
+fn test_wrong_token_stays_unexpected_token() -> Unit {
+    let at_semicolon = cursor_advance(cursor_advance(cursor_advance(lexed("1 + 2;"))));
+    assert_eq_string(error_code_of(cursor_expect(at_semicolon, TokRParen())), "E0800")
+}
+
+// ADR 7.10.26f AC 1: the helper on any other token.
+fn test_found_token_is_unexpected_token() -> Unit {
+    assert_eq_string(syntax_kind_code(expected_found_syntax_kind(TokSemi())), "E0800")
+}

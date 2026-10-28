@@ -1,0 +1,13 @@
+// == the kernel never unfolds a #[partial] body, nor one tainted by it (ADR 2.10.26l D6)
+// Both theorems hold only if `two` is opened. `two` is `#[partial]` and
+// `wrapped_two` reaches it, so neither is `Total` and neither is unfolded.
+#[partial]
+fn two() -> Nat { 2 }
+
+fn wrapped_two() -> Nat { two() }
+
+theorem partial_two(): two() == 2 { refl }
+
+theorem through_wrapper(): wrapped_two() == 2 { refl }
+
+fn main() -> Nat { 0 }

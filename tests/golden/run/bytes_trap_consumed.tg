@@ -1,0 +1,12 @@
+// Golden test (ADR 3.10.26n AC 5): the evaluator's use-after-conversion trap
+// line — `error: byte buffer used after conversion`, native `tg_int_trap(10)`.
+// `tg_bytes_into_string` consumes its buffer; any later use refuses.
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_len(h: Nat) -> Nat
+extern "C" fn tg_bytes_into_string(h: Nat) -> String
+
+fn main() -> Nat {
+    let h = tg_bytes_new(2);
+    let text = tg_bytes_into_string(h);
+    tg_bytes_len(h)
+}

@@ -1,0 +1,8 @@
+// ADR 2.10.26f §2.4: the bootstrap converts `Eq` against `Eq` at an
+// annotation (30.9.26e D5), so `3 + 0` and `3` agree there. Once a pinned
+// divergence; since ADR 3.10.26i D3 tungsten1 converts there too, and both
+// compilers must accept.
+
+fn add_zero_right(n: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+fn main() -> Nat { let _p: Eq<Nat, 3, 3> = add_zero_right(3); 0 }

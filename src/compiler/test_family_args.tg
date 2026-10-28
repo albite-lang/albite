@@ -1,0 +1,62 @@
+// A family takes expression arguments, and `Lt` is declared (ADR 6.10.26d
+// AC 2, D5).
+//
+// A family argument is any expression of the parameter's type — a numeral,
+// `n + 1`, a call — as an `Eq` argument is. `Lt` is declared over `Le`, so it
+// is stored as `Le`'s body at `n + 1`; the kernel sees only the `Sigma` and
+// the `Eq`. `albite doctor check proof kernel-census` reports all three
+// theorems admitted.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// A family's refusals stop collection for the whole file, so they live in
+// `bootstrap/src/elaborate/tests/items/sorts/families.rs`; the must-fail twin
+// is `mustfail_family_args.tg`, checked by `make check-mustfail-fixtures`.
+//
+// The suite declares its own `Le` and `Lt`, as test_prop_sort.tg does: the
+// shared declarations belong to the order-lemma library (6.10.26g). A family
+// is declared before it is cited — a forward citation is E0012.
+
+// Cited by qualified path; see test_nat_lemmas.tg for why not `use`.
+mod nat_arith;
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+pub type Lt(n: Nat, m: Nat): Prop = Le<n + 1, m>
+
+pub theorem zero_le(n: Nat) -> Le<0, n> { (n, nat_arith::add_zero_left(n)) }
+pub theorem le_succ_self(n: Nat) -> Le<n, n + 1> { (1, refl) }
+pub theorem lt_succ_self(n: Nat) -> Lt<n, n + 1> { (0, refl) }
+
+fn test_zero_le_is_cited_at_a_variable_and_a_numeral() -> Unit {
+    let x: Nat = 5;
+    let _at_variable: Le<0, x> = zero_le(x);
+    let _at_numeral: Le<0, 3> = zero_le(3);
+    ()
+}
+
+fn test_le_succ_self_is_cited_at_a_variable_and_a_numeral() -> Unit {
+    let x: Nat = 2;
+    let _at_variable: Le<x, x + 1> = le_succ_self(x);
+    // Stated as `4 + 1`, not `5`: type comparison does not evaluate `+`.
+    let _at_numeral: Le<4, 4 + 1> = le_succ_self(4);
+    ()
+}
+
+fn test_lt_succ_self_is_cited_at_a_variable_and_a_numeral() -> Unit {
+    let x: Nat = 7;
+    let _at_variable: Lt<x, x + 1> = lt_succ_self(x);
+    let _at_numeral: Lt<0, 0 + 1> = lt_succ_self(0);
+    ()
+}
+
+// `Lt<n, m>` is `Le<n + 1, m>`, and both are their expansion.
+fn test_lt_is_le_at_the_successor() -> Unit {
+    let x: Nat = 1;
+    let _as_le: Le<x + 1, x + 1> = lt_succ_self(x);
+    let _as_sigma: exists k: Nat. Eq<Nat, (x + 1) + k, x + 1> = lt_succ_self(x);
+    ()
+}
+
+// The arguments are substituted, not erased: `Lt<x, x>` is not `Lt<x, x + 1>`.
+fn test_a_citation_at_other_arguments_is_refused() -> Unit {
+    expect_error({ let x: Nat = 1; let r: Lt<x, x> = lt_succ_self(x); r }, "E0010")
+}

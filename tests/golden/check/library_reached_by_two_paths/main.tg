@@ -1,0 +1,9 @@
+// A library reached by two import paths is checked once (ADR 9.10.26p):
+// `left` and `right` both declare `base`, so the walk elaborates `base.tg`
+// twice and records two copies of `base_refl`. The kernel treats one file's
+// copies as one definition, checks each, and admits the diamond. The
+// definition count still counts `base` twice — that is module identity's,
+// not this ADR's (its § 3).
+
+mod left;
+mod right;

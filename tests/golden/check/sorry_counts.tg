@@ -1,0 +1,59 @@
+// ADR 18.9.26g: `check` counts the holes it finds as authored or synthesised,
+// and `doctor check sorry-sites` names each definition that carries one.
+//
+// One definition per class: an authored `sorry`, an `axiom`, `==` on a type
+// with no equality primitive (unclassified), and one definition with an
+// authored hole inside an inner match.
+//
+// `singleton_head`, `tri_payload` and `mixed_hole` were nested patterns that
+// planted holes of their own — an absurd branch for two constructors, an
+// unreachable pattern arm for three. Since ADR 13.10.26u a lone arm that names
+// an inner constructor gets a real inner match, so they stay as the record
+// that no such hole is left. A lone `Cons(x, Nil())` over two fields is E0021
+// now, hence the explicit inner match in the other two.
+
+pub type List<T> = | Nil | Cons(T, List<T>)
+
+pub type Option<T> = | None | Some(T)
+
+pub type Tri = | A(Nat) | B(Nat) | C(Nat)
+
+pub fn authored_hole() -> Nat {
+    sorry
+}
+
+axiom trusted(n: Nat): Bool
+
+pub fn singleton_head(xs: List<Nat>) -> Nat {
+    match xs {
+        Cons(x, rest) => match rest {
+            Nil() => x,
+            _ => 0
+        },
+        _ => 0
+    }
+}
+
+pub fn tri_payload(o: Option<Tri>) -> Nat {
+    match o {
+        Some(A(n)) => n,
+        _ => 0
+    }
+}
+
+pub fn same_option(a: Option<Nat>, b: Option<Nat>) -> Bool {
+    a == b
+}
+
+pub fn mixed_hole(xs: List<Nat>) -> Nat {
+    match xs {
+        Cons(x, rest) => match rest {
+            Nil() => {
+                let hole: Nat = sorry;
+                hole
+            },
+            _ => 0
+        },
+        _ => 0
+    }
+}

@@ -1,0 +1,300 @@
+// Unit tests for `albite1 test --format json|junit` (ADR 1.10.26i): the
+// flag, the human harness text it must not move, the frame parser, and the two
+// renderers. Every function under test is pure, and bottoms out in `++`, a
+// literal, the StringBuilder wrappers or an executable extern — check with
+//
+//   albite test src/compiler/test_test_records.tg --assertion-census
+//
+// A SHORT count there is a Stuck path, which reports `ok` having asserted
+// nothing. Frame text is built with `\u{1e}` rather than `\x1e`: both lexers
+// read the unicode escape.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_nat, assert_eq_bool, assert_eq_string};
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::types::{string_len};
+use driver::util::{Result, Ok, Err, string_contains, list_len};
+use driver::cli::format::{
+    TestFormat, TestFormatHuman, TestFormatJson, TestFormatJunit, test_format_from_flag
+};
+use driver::cli::test::{parse_test_options};
+use driver::pipeline::test::harness::runner::{generate_test_runner_fn};
+use driver::pipeline::test::harness::tree::{tree_calls, tree_record_calls};
+use driver::pipeline::test::harness::standalone::{
+    standalone_calls, standalone_record_calls, standalone_prelude
+};
+use driver::pipeline::test::mode::types::{standalone_extern_needs, tree_mode_symbols};
+use driver::pipeline::test::records::frames::{
+    TestFrame, FrameParse, FramesParsed, FramesMalformed, parse_frames
+};
+use driver::pipeline::test::records::json::{json_test_record, json_test_summary};
+use driver::pipeline::test::records::junit::{junit_testcase, junit_seconds, junit_document};
+use driver::pipeline::test::records::xml_escape::{xml_escape_text, xml_escape_attr};
+use driver::pipeline::test::records::stop::{
+    records_runner_stop_text, records_empty_run_text, records_diagnostics_stop_text
+};
+use driver::util::{Option, Some, None};
+
+// ===========================================================================
+// ENCODERS
+// ===========================================================================
+
+/// 0 human, 1 json, 2 junit, 9 refused: one Nat per parse outcome.
+fn format_code(parsed: Result<TestFormat, String>) -> Nat {
+    match parsed {
+        Ok(f) => match f { TestFormatHuman() => 0, TestFormatJson() => 1, TestFormatJunit() => 2 },
+        Err(_) => 9
+    }
+}
+
+fn parsed_format(args: List<String>) -> Nat {
+    format_code(parse_test_options(args, "", "").format)
+}
+
+fn rs() -> String { "\u{1e}" }
+
+/// A frame's header line, as `frame_bytes` writes it.
+fn header(name: String, failed: String, out_len: String, err_len: String) -> String {
+    rs() ++ "tgtest\t1\t" ++ name ++ "\t" ++ failed ++ "\t1\t3\t" ++ out_len ++ "\t" ++ err_len ++ "\n"
+}
+
+/// The frames parsed, or Nil with the malformed message in `why`.
+fn frames_of(parsed: FrameParse) -> List<TestFrame> {
+    match parsed { FramesParsed(fs) => fs, FramesMalformed(_) => Nil }
+}
+
+fn malformed(parsed: FrameParse) -> String {
+    match parsed { FramesParsed(_) => "", FramesMalformed(why) => why }
+}
+
+fn frame_at(frames: List<TestFrame>) -> TestFrame {
+    match frames {
+        Cons(f, _) => f,
+        Nil() => { name: "<none>", failed: false, assertions: 0, duration_ms: 0,
+                   stdout: "", stderr: "" } : TestFrame
+    }
+}
+
+fn frame(name: String, failed: Bool, stdout: String, stderr: String) -> TestFrame {
+    { name: name, failed: failed, assertions: 1, duration_ms: 12,
+      stdout: stdout, stderr: stderr } : TestFrame
+}
+
+fn text_or_empty(text: Option<String>) -> String {
+    match text { Some(t) => t, None() => "" }
+}
+
+// ===========================================================================
+// AC 1 — the flag, and the human harness text it must not move
+// ===========================================================================
+
+pub fn test_format_defaults_to_human() -> Unit {
+    assert_eq_nat(parsed_format(Cons("f.tg", Nil)), 0);
+    assert_eq_nat(parsed_format(Cons("--format", Cons("human", Cons("f.tg", Nil)))), 0)
+}
+
+pub fn test_format_accepts_json_and_junit_in_both_spellings() -> Unit {
+    assert_eq_nat(parsed_format(Cons("--format", Cons("json", Cons("f.tg", Nil)))), 1);
+    assert_eq_nat(parsed_format(Cons("--format=json", Cons("f.tg", Nil))), 1);
+    assert_eq_nat(parsed_format(Cons("--format", Cons("junit", Nil))), 2);
+    assert_eq_nat(parsed_format(Cons("f.tg", Cons("--format=junit", Nil))), 2);
+    assert_eq_string(parse_test_options(Cons("--format=json", Cons("f.tg", Nil)), "", "").file, "f.tg")
+}
+
+pub fn test_format_rejects_unknown_value() -> Unit {
+    assert_eq_nat(parsed_format(Cons("--format", Cons("xml", Cons("f.tg", Nil)))), 9);
+    let refused = match test_format_from_flag("xml") { Err(v) => v, Ok(_) => "" };
+    assert_eq_string(refused, "xml")
+}
+
+pub fn test_human_runner_fn_matches_pinned_text() -> Unit {
+    let body = "    if tg_test_check_failure() == 1 {\n" ++
+        "        _harness_println(\"  test_a ... FAILED\");\n" ++
+        "        _harness_run_test_1(failed + 1)\n" ++
+        "    } else {\n" ++
+        "        _harness_println(\"  test_a ... ok\");\n" ++
+        "        _harness_run_test_1(failed)\n    }\n}\n";
+    let pinned = "fn _harness_run_test_0(failed: Nat) -> Nat {\n" ++
+        "    _harness_test_begin(\"test_a\");\n    test_a();\n" ++ body;
+    assert_eq_string(generate_test_runner_fn(standalone_calls(), "test_a", 0), pinned);
+    let tree = generate_test_runner_fn(tree_calls(), "test_a", 0);
+    assert_eq_bool(string_contains(tree, "    driver::ffi::test::test_begin(\"test_a\");\n    test_a();\n    if "), true);
+    assert_eq_bool(string_contains(tree, "record_"), false)
+}
+
+pub fn test_human_standalone_prelude_matches_pinned_text() -> Unit {
+    let prelude = standalone_prelude(TestFormatHuman, Nil);
+    // Today's human prelude, byte count pinned: one changed byte moves it.
+    // 1314 → 1312: the header names `albite test` (ADR 20.10.26d D6).
+    assert_eq_nat(string_len(prelude), 1312);
+    assert_eq_bool(string_contains(prelude, "tg_test_record"), false);
+    assert_eq_bool(string_contains(prelude, "_harness_record_begin"), false);
+    let machine = standalone_prelude(TestFormatJson, Nil);
+    assert_eq_bool(string_contains(machine, "fn _harness_record_begin(name: String) -> Unit {\n"), true);
+    assert_eq_bool(string_contains(machine, "extern \"C\" fn tg_test_record_end() -> Unit\n"), true)
+}
+
+pub fn test_human_tables_are_unchanged() -> Unit {
+    assert_eq_nat(list_len(standalone_extern_needs(TestFormatHuman)), 7);
+    assert_eq_nat(list_len(tree_mode_symbols(TestFormatHuman)), 5)
+}
+
+pub fn test_machine_tables_add_record_symbols() -> Unit {
+    assert_eq_nat(list_len(standalone_extern_needs(TestFormatJunit)), 9);
+    assert_eq_nat(list_len(tree_mode_symbols(TestFormatJson)), 7);
+    let link = generate_test_runner_fn(tree_record_calls(), "test_a", 0);
+    assert_eq_bool(string_contains(link, "    driver::ffi::test::record_test_begin(\"test_a\");\n    test_a();\n    driver::ffi::test::record_test_end();\n    if "), true);
+    assert_eq_bool(string_contains(link, "::test_begin("), false);
+    let alone = generate_test_runner_fn(standalone_record_calls(), "test_a", 0);
+    assert_eq_bool(string_contains(alone, "_harness_record_begin(\"test_a\");\n    test_a();\n    tg_test_record_end();\n"), true)
+}
+
+// ===========================================================================
+// AC 2 — frames round-trip, whatever a body prints
+// ===========================================================================
+
+pub fn test_parse_frames_reads_two_frames() -> Unit {
+    let text = header("test_a", "0", "3", "0") ++ "hi\n" ++ header("test_b", "1", "0", "2") ++ "e\n";
+    let frames = frames_of(parse_frames(text));
+    assert_eq_nat(list_len(frames), 2);
+    let first = frame_at(frames);
+    assert_eq_string(first.name, "test_a");
+    assert_eq_bool(first.failed, false);
+    assert_eq_nat(first.assertions, 1);
+    assert_eq_nat(first.duration_ms, 3);
+    assert_eq_string(first.stdout, "hi\n");
+    let second = frame_at(match frames { Cons(_, rest) => rest, Nil() => Nil });
+    assert_eq_bool(second.failed, true);
+    assert_eq_string(second.stderr, "e\n")
+}
+
+pub fn test_parse_frames_skips_human_lines() -> Unit {
+    let text = "running 1 tests\n" ++ header("test_a", "0", "0", "0") ++
+        "  test_a ... ok\ntest result: ok. 1 passed\n";
+    let frames = frames_of(parse_frames(text));
+    assert_eq_nat(list_len(frames), 1);
+    assert_eq_string(frame_at(frames).name, "test_a");
+    assert_eq_nat(list_len(frames_of(parse_frames("no frames at all\n"))), 0)
+}
+
+pub fn test_parse_frames_payload_may_hold_separators() -> Unit {
+    let payload = rs() ++ "\t\n" ++ rs() ++ "tgtest\té";
+    let text = header("test_s", "0", "13", "0") ++ payload;
+    let frames = frames_of(parse_frames(text));
+    assert_eq_nat(list_len(frames), 1);
+    assert_eq_string(frame_at(frames).stdout, payload)
+}
+
+/// D3's fallback: the core framed a NUL and invalid UTF-8 as U+FFFD, three
+/// bytes each, and the parser carries them through by byte length.
+pub fn test_parse_frames_payload_may_hold_nul_and_invalid_utf8() -> Unit {
+    let payload = "a\u{fffd}b\u{fffd}\u{fffd}";
+    let text = header("test_n", "0", "11", "0") ++ payload ++ header("test_m", "0", "0", "0");
+    let frames = frames_of(parse_frames(text));
+    assert_eq_nat(list_len(frames), 2);
+    assert_eq_string(frame_at(frames).stdout, payload)
+}
+
+pub fn test_parse_frames_rejects_truncation() -> Unit {
+    assert_eq_bool(string_contains(malformed(parse_frames(header("test_t", "0", "9", "0") ++ "short")),
+                                   "truncated payload"), true);
+    assert_eq_bool(string_contains(malformed(parse_frames(rs() ++ "tgtest\t1\ttest_t")),
+                                   "truncated frame header"), true);
+    assert_eq_bool(string_contains(malformed(parse_frames(header("test_x", "0", "x", "0"))),
+                                   "non-numeric"), true)
+}
+
+pub fn test_parse_frames_rejects_unknown_version() -> Unit {
+    let v2 = rs() ++ "tgtest\t2\ttest_v\t0\t1\t3\t0\t0\n";
+    assert_eq_string(malformed(parse_frames(v2)), "unknown frame version 2");
+    assert_eq_bool(string_contains(malformed(parse_frames(rs() ++ "tgtest\t1\ttest_v\n")), "fields"), true)
+}
+
+// ===========================================================================
+// AC 3 — JSON records in the bootstrap's shape
+// ===========================================================================
+
+pub fn test_json_record_passed_matches_bootstrap_shape() -> Unit {
+    assert_eq_string(json_test_record(frame("test_passes", false, "", ""), "f.tg"),
+        "{\"schema\":1,\"kind\":\"test\",\"name\":\"test_passes\",\"module\":null,\"file\":\"f.tg\",\"verdict\":\"passed\",\"gating\":false,\"message\":null,\"assertions\":1,\"duration_ms\":12,\"expected_failure\":null,\"stdout\":\"\",\"stderr\":\"\"}")
+}
+
+pub fn test_json_record_failed_carries_diff() -> Unit {
+    let record = json_test_record(frame("test_fails", true, "", "  left:  2\n"), "f.tg");
+    assert_eq_bool(string_contains(record, "\"verdict\":\"failed\",\"gating\":true,\"message\":\"assertion failed\""), true);
+    assert_eq_bool(string_contains(record, "\"stderr\":\"  left:  2\\n\"}"), true)
+}
+
+pub fn test_json_summary_counts_and_result() -> Unit {
+    let frames = Cons(frame("test_a", false, "", ""), Cons(frame("test_b", true, "", ""), Nil));
+    assert_eq_string(json_test_summary(frames),
+        "{\"schema\":1,\"kind\":\"test_summary\",\"total\":2,\"passed\":1,\"failed\":1,\"skipped\":0,\"timed_out\":0,\"black_holed\":0,\"never_compared\":0,\"asserted_nothing\":0,\"did_not_finish\":0,\"expected_failures\":0,\"duration_ms\":24,\"result\":\"failed\"}");
+    assert_eq_bool(string_contains(json_test_summary(Cons(frame("test_a", false, "", ""), Nil)), "\"result\":\"ok\""), true)
+}
+
+pub fn test_json_runner_stop_is_failure_record() -> Unit {
+    let text = text_or_empty(records_runner_stop_text(TestFormatJson, Cons(frame("test_a", false, "", ""), Nil), "boom", "f.tg"));
+    assert_eq_bool(string_contains(text, "\"name\":\"test_a\""), true);
+    assert_eq_bool(string_contains(text, "\"code\":null,\"message\":\"boom\""), true);
+    assert_eq_bool(string_contains(text, "test_summary"), false);
+    assert_eq_string(text_or_empty(records_runner_stop_text(TestFormatHuman, Nil, "boom", "f.tg")), "")
+}
+
+pub fn test_json_empty_run_is_zero_summary() -> Unit {
+    assert_eq_string(text_or_empty(records_empty_run_text(TestFormatJson, "f.tg")),
+        "{\"schema\":1,\"kind\":\"test_summary\",\"total\":0,\"passed\":0,\"failed\":0,\"skipped\":0,\"timed_out\":0,\"black_holed\":0,\"never_compared\":0,\"asserted_nothing\":0,\"did_not_finish\":0,\"expected_failures\":0,\"duration_ms\":0,\"result\":\"ok\"}\n")
+}
+
+// ===========================================================================
+// AC 4 — the JUnit document, by 30.9.26k's rules
+// ===========================================================================
+
+pub fn test_xml_escape_matches_bootstrap_cases() -> Unit {
+    assert_eq_string(xml_escape_text("a<b & ]]> \"q\"\t\n\r"), "a&lt;b &amp; ]]&gt; \"q\"\t\n&#13;");
+    assert_eq_string(xml_escape_attr("\"q\"\t\n"), "&quot;q&quot;&#9;&#10;");
+    assert_eq_string(xml_escape_text("\u{1b}[31m"), "\\u{1b}[31m");
+    assert_eq_string(xml_escape_text("x\u{fffe}"), "x\\u{fffe}");
+    assert_eq_string(xml_escape_text("é"), "é")
+}
+
+pub fn test_junit_failed_testcase_carries_stderr() -> Unit {
+    assert_eq_string(junit_testcase(frame("test_f", true, "", "d<\n"), "dir/f.tg"),
+        "    <testcase name=\"test_f\" classname=\"f\" file=\"dir/f.tg\" assertions=\"1\" time=\"0.012\">\n" ++
+        "      <failure message=\"assertion failed\" type=\"failed\">d&lt;\n</failure>\n    </testcase>\n")
+}
+
+pub fn test_junit_system_err_only_without_failure() -> Unit {
+    let passing = junit_testcase(frame("test_p", false, "<b>&", "warn"), "f.tg");
+    assert_eq_bool(string_contains(passing, "<system-out>&lt;b&gt;&amp;</system-out>"), true);
+    assert_eq_bool(string_contains(passing, "<system-err>warn</system-err>"), true);
+    assert_eq_bool(string_contains(junit_testcase(frame("test_f", true, "", "warn"), "f.tg"), "system-err"), false);
+    assert_eq_bool(string_contains(junit_testcase(frame("test_q", false, "", ""), "f.tg"), "\"0.012\"/>\n"), true)
+}
+
+pub fn test_junit_attribute_order() -> Unit {
+    assert_eq_bool(string_contains(junit_testcase(frame("test_o", false, "", ""), "a.b.tg"),
+        "<testcase name=\"test_o\" classname=\"a.b\" file=\"a.b.tg\" assertions=\"1\" time=\"0.012\"/>"), true)
+}
+
+pub fn test_junit_stop_documents() -> Unit {
+    let runner = text_or_empty(records_runner_stop_text(TestFormatJunit, Nil, "boom", "f.tg"));
+    assert_eq_bool(string_contains(runner, "tests=\"1\" failures=\"0\" errors=\"1\" skipped=\"0\" time=\"0.000\""), true);
+    assert_eq_bool(string_contains(runner, "<testcase name=\"(runner)\" classname=\"f\" file=\"f.tg\" assertions=\"0\" time=\"0.000\">\n      <error message=\"boom\" type=\"runner_error\"/>"), true);
+    let elab = text_or_empty(records_diagnostics_stop_text(TestFormatJunit, "f.tg"));
+    assert_eq_bool(string_contains(elab, "name=\"(elaboration)\""), true);
+    assert_eq_bool(string_contains(elab, "type=\"diagnostics\""), true);
+    assert_eq_string(text_or_empty(records_diagnostics_stop_text(TestFormatJson, "f.tg")), "");
+    assert_eq_bool(string_contains(text_or_empty(records_empty_run_text(TestFormatJunit, "f.tg")), "<testsuite name=\"f.tg\" tests=\"0\""), true)
+}
+
+pub fn test_junit_seconds() -> Unit {
+    assert_eq_string(junit_seconds(12), "0.012");
+    assert_eq_string(junit_seconds(0), "0.000");
+    assert_eq_string(junit_seconds(1234), "1.234");
+    assert_eq_string(junit_seconds(120), "0.120");
+    assert_eq_bool(string_contains(junit_document(Nil, "f.tg", 5), "time=\"0.005\""), true)
+}

@@ -1,0 +1,11 @@
+// Golden test (ADR 9.10.26o AC 3): a handle function inside a region is E0095.
+pub type Bytes = MkBytes(Nat)
+fn bytes_new(n: Nat) -> Bytes { MkBytes(n) }
+fn bytes_len(b: Bytes) -> Nat {
+    match b {
+        MkBytes(n) => n
+    }
+}
+fn main() -> Nat {
+    region { bytes_len(bytes_new(4)) }
+}

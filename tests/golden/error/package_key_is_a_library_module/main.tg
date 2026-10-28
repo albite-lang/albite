@@ -1,0 +1,6 @@
+// E0122 (ADR 3.10.26m D4, mirrored by ADR 6.10.26p D4): `lib_a` declares a
+// dependency `lib_c` and also has a top-level module `lib_c`, so inside
+// `lib_a` the path `lib_c::g` would be ambiguous. Refused after the mount,
+// on the key in `lib_a`'s manifest.
+use lib_a::f;
+fn main() -> Nat { f() }

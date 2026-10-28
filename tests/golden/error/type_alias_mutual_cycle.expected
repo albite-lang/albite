@@ -1,0 +1,12 @@
+warning: Signature Collection global collection failed with 1 error; cross-module imports may not resolve.
+  first error: error[E0060]: recursive type alias `B` references itself (at 154..164)
+  hint: run `albite doctor check module signature-collection <file>` for details
+[E0060] Error: recursive type alias `B` references itself
+   ╭─[tests/golden/error/type_alias_mutual_cycle.tg:4:1]
+   │
+ 4 │ type B = A
+   │ ─────┬────  
+   │      ╰────── 
+───╯
+
+error: aborting due to 1 error

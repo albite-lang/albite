@@ -1,0 +1,59 @@
+// Tuple pattern binding for block statements.
+//
+// The projection CIR that used to live here is gone (ADR 3.9.26g P2). It was
+// dead — `doctor audit-dead-definitions src/compiler/main.tg` reached neither
+// `build_tuple_projection_cir` nor its only caller — and it projected EVERY
+// element as `fst(snd^i)`, the last one included, so it disagreed with the type
+// walk immediately above it in this same file. `wrap_product_projections_cir`
+// is the one CIR builder now.
+
+use lexer::span::Span;
+use parser::ast::{
+    Pattern, PatTuple, PatVar, PatWildcard,
+    Ident, ident_name
+};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{
+    TypeHandle,
+    tg_type_unit,
+    tg_type_is_product, tg_type_get_product_left, tg_type_get_product_right
+};
+use elab::env::{Env, env_bind_local};
+use elab::exprs::forms::result::pattern_to_name;
+
+/// Bind variables from a tuple pattern to the environment.
+pub fn bind_tuple_pattern_to_env(env: Env, pats: List<Pattern>, ty: TypeHandle) -> Env {
+    match pats {
+        Nil() => env,
+        Cons(p, rest) =>
+            let pat_name = pattern_to_name(p);
+            let is_prod = tg_type_is_product(ty);
+            let elem_ty = if is_prod {
+                tg_type_get_product_left(ty)
+            } else {
+                ty
+            };
+            let rest_ty = if is_prod {
+                tg_type_get_product_right(ty)
+            } else {
+                tg_type_unit()
+            };
+            let env2 = bind_single_pattern_to_env(env, p, elem_ty);
+            bind_tuple_pattern_to_env(env2, rest, rest_ty)
+    }
+}
+
+/// Bind a single pattern element to the environment.
+fn bind_single_pattern_to_env(env: Env, p: Pattern, ty: TypeHandle) -> Env {
+    match p {
+        PatVar(id) =>
+            let name = ident_name(id);
+            env_bind_local(env, name, ty),
+        PatWildcard(_) =>
+            env,
+        PatTuple(sub_pats, _) =>
+            bind_tuple_pattern_to_env(env, sub_pats, ty),
+        _ =>
+            env
+    }
+}

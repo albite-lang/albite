@@ -1,0 +1,210 @@
+// src/compiler/elab/exprs/blocks/mutable/pair.tg
+// How a joined arm ends (ADR 13.10.26r D3): it re-declares each target it
+// assigns from the snapshot, then pairs its value with each target's latest
+// fresh name. Split from `arms.tg` for size.
+
+use lexer::span::Span;
+use parser::ast::{
+    Expr, ExprBlock, ExprPath, ExprTuple, ExprUnit, Stmt, StmtExpr, StmtLetMut,
+    Pattern, PatVar, PatTuple, MaybeExpr, NoExpr, SomeExpr, NoTypeExpr, ident_new, path_simple,
+    MaybeTypeExpr, SomeTypeExpr, ExprAnnot
+};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_append};
+use elab::exprs::blocks::mutable::arms::{LoweredArm, Latest, latest_of, list_len, join_targets,
+    target_names};
+use elab::exprs::blocks::mutable::rebuild::{nth_or};
+
+/// Whether a construct's position wants its value, and the `let`'s
+/// annotation when it has one: each arm's value is checked against it, so a
+/// `Nil` arm cannot fix the join's type too early (D3, "the join is typed").
+pub type Want =
+    | NoValue
+    | WantValue(MaybeTypeExpr)
+    | TailValue    // the lowered block's own tail: nothing after it reads a target
+
+pub fn wants_value(want: Want) -> Bool {
+    match want {
+        NoValue() => false,
+        _ => true
+    }
+}
+
+pub fn is_tail_value(want: Want) -> Bool {
+    match want {
+        TailValue() => true,
+        _ => false
+    }
+}
+
+/// Each arm of a join at the lowered block's tail: the targets it assigns
+/// re-declared from their current values, and its own value kept, checked
+/// against the block's expected type where it stands.
+pub fn tail_arms(arms: List<LoweredArm>, names: List<String>) -> List<Expr> {
+    match arms {
+        Nil() => Nil(),
+        Cons(arm, rest) =>
+            let prefix = redeclare(arm.latest, names, names, arm.span);
+            Cons(ExprBlock(list_append(prefix, arm.stmts), arm.tail, arm.span), tail_arms(rest, names))
+    }
+}
+
+fn annotated(value: Expr, want: Want, span: Span) -> Expr {
+    match want {
+        WantValue(hint) => annotate_with(value, hint, span),
+        _ => value
+    }
+}
+
+fn annotate_with(value: Expr, hint: MaybeTypeExpr, span: Span) -> Expr {
+    match hint {
+        SomeTypeExpr(ty) => ExprAnnot(value, ty, span),
+        _ => value
+    }
+}
+
+pub fn var_expr(name: String, span: Span) -> Expr {
+    ExprPath(path_simple(ident_new(name, span)))
+}
+
+fn tuple_or_single(items: List<Expr>, span: Span) -> Expr {
+    if list_len(items) == 1 { nth_or(items, 0, ExprUnit(span)) } else { ExprTuple(items, span) }
+}
+
+/// A join's unpacking pattern: one name, or a tuple of them.
+pub fn binder_pattern(names: List<String>, span: Span) -> Pattern {
+    if list_len(names) == 1 { var_pattern_at(names, span) } else { PatTuple(var_patterns(names, span), span) }
+}
+
+fn var_pattern_at(names: List<String>, span: Span) -> Pattern {
+    match names {
+        Nil() => PatTuple(Nil(), span),
+        Cons(name, _) => PatVar(ident_new(name, span))
+    }
+}
+
+fn var_patterns(names: List<String>, span: Span) -> List<Pattern> {
+    match names {
+        Nil() => Nil(),
+        Cons(name, rest) => Cons(PatVar(ident_new(name, span)), var_patterns(rest, span))
+    }
+}
+
+/// End an arm by pairing its value (when wanted) with each target's latest
+/// fresh name, or its snapshot when the arm left it alone.
+pub fn pair_arm(arm: LoweredArm, names: List<String>, snapshots: List<String>, want: Want) -> Expr {
+    let span = arm.span;
+    let prefix = redeclare(arm.latest, names, snapshots, span);
+    let (stmts, value) = arm_value(list_append(prefix, arm.stmts), arm.tail, want, span);
+    let items = list_append(value, current_values(arm.latest, names, snapshots, span));
+    ExprBlock(stmts, SomeExpr(tuple_or_single(items, span)), span)
+}
+
+fn arm_value(stmts: List<Stmt>, tail: MaybeExpr, want: Want, span: Span) -> (List<Stmt>, List<Expr>) {
+    let want_value = wants_value(want);
+    match tail {
+        SomeExpr(t) =>
+            if want_value { (stmts, Cons(annotated(t, want, span), Nil())) }
+            else { (list_append(stmts, Cons(StmtExpr(t, span), Nil())), Nil()) },
+        NoExpr() => if want_value { (stmts, Cons(ExprUnit(span), Nil())) } else { (stmts, Nil()) }
+    }
+}
+
+/// `let mut name = snapshot;` for each target the arm assigns.
+fn redeclare(latest: List<Latest>, names: List<String>, snapshots: List<String>, span: Span) -> List<Stmt> {
+    match names {
+        Nil() => Nil(),
+        Cons(name, rest) =>
+            let (assigned, _) = latest_of(latest, name);
+            let tail = redeclare(latest, rest, drop_name(snapshots), span);
+            if assigned { Cons(StmtLetMut(name, NoTypeExpr, var_expr(head_name(snapshots), span), span), tail) } else { tail }
+    }
+}
+
+fn current_values(latest: List<Latest>, names: List<String>, snapshots: List<String>, span: Span) -> List<Expr> {
+    match names {
+        Nil() => Nil(),
+        Cons(name, rest) =>
+            let (assigned, fresh) = latest_of(latest, name);
+            let current = if assigned { fresh } else { head_name(snapshots) };
+            Cons(var_expr(current, span), current_values(latest, rest, drop_name(snapshots), span))
+    }
+}
+
+fn head_name(xs: List<String>) -> String {
+    match xs {
+        Nil() => "",
+        Cons(x, _) => x
+    }
+}
+
+fn drop_name(xs: List<String>) -> List<String> {
+    match xs {
+        Nil() => Nil(),
+        Cons(_, rest) => rest
+    }
+}
+
+/// The arm a missing `else` stands for: it pairs the snapshots.
+pub fn pass_through_arm(snapshots: List<String>, want_value: Bool, span: Span) -> Expr {
+    let values = snapshot_values(snapshots, span);
+    let items = if want_value { Cons(ExprUnit(span), values) } else { values };
+    ExprBlock(Nil(), SomeExpr(tuple_or_single(items, span)), span)
+}
+
+fn snapshot_values(snapshots: List<String>, span: Span) -> List<Expr> {
+    match snapshots {
+        Nil() => Nil(),
+        Cons(s, rest) => Cons(var_expr(s, span), snapshot_values(rest, span))
+    }
+}
+
+/// What a construct became: unchanged in shape, or joined (with its value's
+/// name when its position wants the value).
+pub type Constructed =
+    | Plain(Expr)
+    | Joined(MaybeExpr)
+
+/// A statement-position construct: kept when it did not join, dropped when
+/// its join already wrote its statements.
+pub fn statement_of(built: Constructed, span: Span, out: List<Stmt>) -> List<Stmt> {
+    match built {
+        Plain(e) => Cons(StmtExpr(e, span), out),
+        Joined(_) => out
+    }
+}
+
+pub fn zip_names(names: List<String>, values: List<String>) -> List<(String, String)> {
+    match names {
+        Nil() => Nil(),
+        Cons(name, rest) => Cons((name, head_name(values)), zip_names(rest, drop_name(values)))
+    }
+}
+
+pub fn constructed_value(built: Constructed, span: Span) -> Expr {
+    match built {
+        Plain(e) => e,
+        Joined(value) => joined_value(value, span)
+    }
+}
+
+fn joined_value(value: MaybeExpr, span: Span) -> Expr {
+    match value {
+        SomeExpr(v) => v,
+        NoExpr() => ExprUnit(span)
+    }
+}
+
+pub fn first_target(arms: List<LoweredArm>) -> String {
+    match target_names(join_targets(arms)) {
+        Nil() => "",
+        Cons(name, _) => name
+    }
+}
+
+pub fn pair_all(arms: List<LoweredArm>, names: List<String>, snapshots: List<String>, want: Want) -> List<Expr> {
+    match arms {
+        Nil() => Nil(),
+        Cons(arm, rest) => Cons(pair_arm(arm, names, snapshots, want), pair_all(rest, names, snapshots, want))
+    }
+}

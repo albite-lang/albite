@@ -1,0 +1,106 @@
+// `cases` splits a proof on a user data type's constructors (ADR 3.10.26f
+// D3, AC 3).
+//
+// `cases x { C₁ => tac, C₂(a, b) => tac }` replaces the goal `G` by one goal
+// per constructor, `G[x := Cᵢ(a, b)]`, each closed by its own arm. One lemma
+// per encoding shape, each the identity of a non-recursive rebuild of its
+// argument, so every arm closes by unfolding the rebuild (δ), reducing its
+// match (ι) and its lets (ζ):
+//
+//   opt_id    a binary sum                      Opt = None | Some(Nat)
+//   maybe_id  a generic sum at Nat              Maybe<Nat>
+//   lst_id    a sum under μ, two-field arm      Lst = Nil | Cons(Nat, Lst)
+//   tri_id    a flat ADT of three               Tri = Lo | Mid(Nat) | Hi
+//   shape_id  a record payload, one field       Shape = Dot(Pt) | Blank
+//
+// Every proof below also goes through the kernel's `check_proof` at the
+// admission boundary, by 3.10.26o's dependent case rule — a refusal is E0081
+// and would fail this file. Each theorem is cited by a typed `let`, at a
+// literal and at a variable.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_tactic_cases.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+pub type CasesOpt = CasesNone | CasesSome(Nat)
+pub type CasesMaybe<T> = CasesNothing | CasesJust(T)
+pub type CasesLst = CasesNil | CasesCons(Nat, CasesLst)
+pub type CasesTri = CasesLo | CasesMid(Nat) | CasesHi
+pub type CasesPt = { px: Nat, py: Nat }
+pub type CasesShape = CasesDot(CasesPt) | CasesBlank
+
+pub fn cases_id_opt(o: CasesOpt) -> CasesOpt {
+    match o { CasesNone => CasesNone, CasesSome(x) => CasesSome(x) }
+}
+
+pub fn cases_id_maybe(m: CasesMaybe<Nat>) -> CasesMaybe<Nat> {
+    match m { CasesNothing => CasesNothing, CasesJust(x) => CasesJust(x) }
+}
+
+pub fn cases_id_lst(l: CasesLst) -> CasesLst {
+    match l { CasesNil => CasesNil, CasesCons(h, t) => CasesCons(h, t) }
+}
+
+pub fn cases_id_tri(t: CasesTri) -> CasesTri {
+    match t { CasesLo => CasesLo, CasesMid(n) => CasesMid(n), CasesHi => CasesHi }
+}
+
+pub fn cases_id_shape(s: CasesShape) -> CasesShape {
+    match s { CasesDot(p) => CasesDot(p), CasesBlank => CasesBlank }
+}
+
+// ── One lemma per encoding shape ────────────────────────────────────────────
+
+pub theorem opt_id(o: CasesOpt) -> Eq<CasesOpt, cases_id_opt(o), o> by {
+    cases o { CasesNone => refl, CasesSome(x) => refl }
+}
+
+pub theorem maybe_id(m: CasesMaybe<Nat>) -> Eq<CasesMaybe<Nat>, cases_id_maybe(m), m> by {
+    cases m { CasesJust(x) => refl, CasesNothing => refl }
+}
+
+pub theorem lst_id(l: CasesLst) -> Eq<CasesLst, cases_id_lst(l), l> by {
+    cases l {
+        CasesNil => refl,
+        CasesCons(h, _) => { refl }
+    }
+}
+
+pub theorem tri_id(t: CasesTri) -> Eq<CasesTri, cases_id_tri(t), t> by {
+    cases t { CasesLo => refl, CasesMid(n) => refl, CasesHi => refl }
+}
+
+pub theorem shape_id(s: CasesShape) -> Eq<CasesShape, cases_id_shape(s), s> by {
+    cases s { CasesDot(p) => refl, CasesBlank => refl }
+}
+
+// ── Citations ───────────────────────────────────────────────────────────────
+
+fn test_sum_splits_are_cited() -> Unit {
+    let _some: Eq<CasesOpt, cases_id_opt(CasesSome(3)), CasesSome(3)> = opt_id(CasesSome(3));
+    let o: CasesOpt = CasesNone;
+    let _var: Eq<CasesOpt, cases_id_opt(o), o> = opt_id(o);
+    let _just: Eq<CasesMaybe<Nat>, cases_id_maybe(CasesJust(2)), CasesJust(2)> =
+        maybe_id(CasesJust(2));
+    let m: CasesMaybe<Nat> = CasesJust(5);
+    let _maybe_var: Eq<CasesMaybe<Nat>, cases_id_maybe(m), m> = maybe_id(m);
+    ()
+}
+
+fn test_recursive_and_flat_splits_are_cited() -> Unit {
+    let _cons: Eq<CasesLst, cases_id_lst(CasesCons(1, CasesNil)), CasesCons(1, CasesNil)> =
+        lst_id(CasesCons(1, CasesNil));
+    let l: CasesLst = CasesCons(4, CasesCons(2, CasesNil));
+    let _lst_var: Eq<CasesLst, cases_id_lst(l), l> = lst_id(l);
+    let _mid: Eq<CasesTri, cases_id_tri(CasesMid(4)), CasesMid(4)> = tri_id(CasesMid(4));
+    let t: CasesTri = CasesHi;
+    let _tri_var: Eq<CasesTri, cases_id_tri(t), t> = tri_id(t);
+    ()
+}
+
+fn test_record_payload_split_is_cited() -> Unit {
+    let _blank: Eq<CasesShape, cases_id_shape(CasesBlank), CasesBlank> = shape_id(CasesBlank);
+    let s: CasesShape = CasesDot(CasesPt { px: 1, py: 2 });
+    let _shape_var: Eq<CasesShape, cases_id_shape(s), s> = shape_id(s);
+    ()
+}

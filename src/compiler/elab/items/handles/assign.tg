@@ -1,0 +1,210 @@
+// src/compiler/elab/items/handles/assign.tg
+// The handle walk over `let mut` and assignment (ADR 13.10.26r D6), the
+// bootstrap's `handles/statements.rs` in the self-host's own state.
+//
+// Each block is lowered first (`lower_joins` over an empty scope), so the walk
+// sees rebindings and joins as `let`s. A name the lowering introduced holds a
+// `#`; it is an alias, never a use. A join's handle-ness crosses it through a
+// scope entry `#join:x` naming an id allocated before the construct is walked:
+// an arm that hands back a consumed handle for `x` adds that id to its
+// consumed set, so after the arms join by union the unpacked `x` is consumed
+// exactly when some live arm's was — and a later use is still E0720.
+
+use lexer::span::Span;
+use parser::ast::{
+    Expr, ExprPath, ExprBlock, ExprIf, ExprIfLet, ExprMatch, ExprTuple, MatchArm, MaybeExpr,
+    NoExpr, SomeExpr, Stmt, Pattern, PatVar, PatTuple, Path, ident_name, path_item_name, path_is_simple
+};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{string_contains, string_split_once};
+use elab::items::handles::state::{HandleWalk, HandleBinding, handle_with_path, handle_id, handle_nat_in, handle_bind, handle_yields};
+use elab::items::handles::declarations::{HandleDeclarations};
+use elab::exprs::blocks::mutable::{lower_joins, Lowered};
+use elab::exprs::blocks::mutable::env::{ScopeEmpty};
+use elab::exprs::blocks::mutable::prepare::{needs_lowering};
+use driver::util::{Result, Ok, Err};
+
+/// Whether a name was introduced by the lowering.
+pub fn handle_synthesised(name: String) -> Bool {
+    string_contains(name, "#")
+}
+
+/// The source binding a join's unpacked (or an arm's fresh) name stands for:
+/// the text before its `#`, "" for the construct's value.
+fn handle_source_of(name: String) -> String {
+    let (source, _) = string_split_once(name, 35);  // 35 is `#`
+    source
+}
+
+/// A block's statements and tail as the walk reads them: lowered when they
+/// assign, unchanged when they do not or when the lowering refuses (the
+/// elaborator reports that refusal).
+pub fn handle_lowered_block(stmts: List<Stmt>, tail: MaybeExpr, start: Nat) -> (List<Stmt>, MaybeExpr) {
+    if needs_lowering(stmts, tail) {
+        match lower_joins(stmts, tail, ScopeEmpty, start) {
+            Ok(lowered) => (lowered.stmts, lowered.tail),
+            Err(_) => (stmts, tail)
+        }
+    } else {
+        (stmts, tail)
+    }
+}
+
+pub fn handle_lowered_stmts(stmts: List<Stmt>, tail: MaybeExpr, start: Nat) -> List<Stmt> {
+    let (lowered, _) = handle_lowered_block(stmts, tail, start);
+    lowered
+}
+
+pub fn handle_lowered_tail(stmts: List<Stmt>, tail: MaybeExpr, start: Nat) -> MaybeExpr {
+    let (_, lowered) = handle_lowered_block(stmts, tail, start);
+    lowered
+}
+
+/// The bare variable `value` is, when the `let` binding `name` to it is an
+/// alias (either side was introduced by the lowering); "" when it is not.
+pub fn handle_alias_source(name: String, value: Expr) -> String {
+    match value {
+        ExprPath(p) =>
+            let source = ident_name(path_item_name(p));
+            if path_is_simple(p) && (handle_synthesised(name) || handle_synthesised(source)) { source } else { "" },
+        _ => ""
+    }
+}
+
+/// Bind `name` to the handle id `source` has, without using it.
+pub fn handle_bind_alias(w: HandleWalk, name: String, source: String) -> HandleWalk {
+    let binding: HandleBinding = { name: name, id: handle_id(w.scope, source) };
+    handle_with_path(w, Cons(binding, w.scope), w.consumed, w.live)
+}
+
+/// The names a join's `let` unpacks, or none when it is not a join's.
+pub fn handle_join_names(pat: Pattern) -> List<String> {
+    match pat {
+        PatVar(id) => if handle_synthesised(ident_name(id)) { Cons(ident_name(id), Nil()) } else { Nil() },
+        PatTuple(items, _) => handle_join_list(items),
+        _ => Nil()
+    }
+}
+
+fn handle_join_list(items: List<Pattern>) -> List<String> {
+    match items {
+        Nil() => Nil(),
+        Cons(item, rest) => match item {
+            PatVar(id) => if handle_synthesised(ident_name(id)) { Cons(ident_name(id), handle_join_list(rest)) } else { Nil() },
+            _ => Nil()
+        }
+    }
+}
+
+/// Before a join's construct is walked: one `#join:x` entry per joined
+/// binding, each with a fresh id.
+pub fn handle_join_open(w: HandleWalk, names: List<String>) -> HandleWalk {
+    match names {
+        Nil() => w,
+        Cons(name, rest) =>
+            let source = handle_source_of(name);
+            if source == "" { handle_join_open(w, rest) } else {
+                let binding: HandleBinding = { name: "#join:" ++ source, id: w.next_id };
+                let opened: HandleWalk = {
+                    scope: Cons(binding, w.scope), consumed: w.consumed, live: w.live,
+                    next_id: w.next_id + 1, floor: w.floor, region_floor: w.region_floor, findings: w.findings
+                };
+                handle_join_open(opened, rest)
+            }
+    }
+}
+
+/// After it: each unpacked name takes its `#join` id when its source is a
+/// handle variable, and the entry is closed, so an enclosing join's is the
+/// one a later pairing finds. `outer` is the scope before the join opened.
+/// The construct's value (source "") is a fresh, unconsumed handle when an
+/// arm pairs one (ADR 16.10.26f D1), asked on the scope the walk returned,
+/// as the bootstrap's `bind_joined` asks after the construct is walked.
+pub fn handle_join_close(w: HandleWalk, d: HandleDeclarations, construct: Expr, names: List<String>, outer: List<HandleBinding>) -> HandleWalk {
+    handle_join_close_names(w, names, outer, handle_join_value_yields(w, d, construct))
+}
+
+fn handle_join_close_names(w: HandleWalk, names: List<String>, outer: List<HandleBinding>, value_is_handle: Bool) -> HandleWalk {
+    match names {
+        Nil() => w,
+        Cons(name, rest) =>
+            let source = handle_source_of(name);
+            if source == "" { handle_join_close_names(handle_bind(w, name, value_is_handle), rest, outer, value_is_handle) } else {
+                let join = handle_id(w.scope, "#join:" ++ source);
+                let id = if handle_id(w.scope, source) != 0 { join } else { 0 };
+                let bound: HandleBinding = { name: name, id: id };
+                let closed: HandleBinding = { name: "#join:" ++ source, id: handle_id(outer, "#join:" ++ source) };
+                let next = handle_with_path(w, Cons(closed, Cons(bound, w.scope)), w.consumed, w.live);
+                handle_join_close_names(next, rest, outer, value_is_handle)
+            }
+    }
+}
+
+/// Whether a joined construct's value is a handle: B4.1's rule applied to the
+/// value each arm pairs first — the bootstrap's `join_value_yields_handle`
+/// over its `arm_values`. The arms are those `rebuild.tg` joins; a bare block
+/// is one arm.
+pub fn handle_join_value_yields(w: HandleWalk, d: HandleDeclarations, construct: Expr) -> Bool {
+    match construct {
+        ExprIf(_, then, otherwise, _) => handle_arm_value_yields(w, d, then) || handle_arm_value_yields(w, d, otherwise),
+        ExprIfLet(_, _, then, otherwise, _) => handle_arm_value_yields(w, d, then) || handle_else_value_yields(w, d, otherwise),
+        ExprMatch(_, arms, _) => handle_match_values_yield(w, d, arms),
+        _ => handle_arm_value_yields(w, d, construct)
+    }
+}
+
+fn handle_else_value_yields(w: HandleWalk, d: HandleDeclarations, otherwise: MaybeExpr) -> Bool {
+    match otherwise {
+        NoExpr() => false,
+        SomeExpr(arm) => handle_arm_value_yields(w, d, arm)
+    }
+}
+
+fn handle_match_values_yield(w: HandleWalk, d: HandleDeclarations, arms: List<MatchArm>) -> Bool {
+    match arms {
+        Nil() => false,
+        Cons(arm, rest) => handle_arm_value_yields(w, d, arm.body) || handle_match_values_yield(w, d, rest)
+    }
+}
+
+/// An arm's pairing is the tuple its block ends with; an arm of any other
+/// shape pairs nothing, as the bootstrap's `first` reads it.
+fn handle_arm_value_yields(w: HandleWalk, d: HandleDeclarations, arm: Expr) -> Bool {
+    match arm {
+        ExprBlock(_, tail, _) => handle_pairing_tail_yields(w, d, tail),
+        _ => false
+    }
+}
+
+fn handle_pairing_tail_yields(w: HandleWalk, d: HandleDeclarations, tail: MaybeExpr) -> Bool {
+    match tail {
+        NoExpr() => false,
+        SomeExpr(pairing) => handle_pairing_first_yields(w, d, pairing)
+    }
+}
+
+fn handle_pairing_first_yields(w: HandleWalk, d: HandleDeclarations, pairing: Expr) -> Bool {
+    match pairing {
+        ExprTuple(items, _) => handle_first_item_yields(w, d, items),
+        _ => false
+    }
+}
+
+fn handle_first_item_yields(w: HandleWalk, d: HandleDeclarations, items: List<Expr>) -> Bool {
+    match items {
+        Nil() => false,
+        Cons(value, _) => handle_yields(w, d, value)
+    }
+}
+
+/// A path to an introduced name: an arm's pairing, which adds its join's id to
+/// the arm's consumed set when the handle it hands back is consumed.
+pub fn handle_pairing(w: HandleWalk, name: String) -> HandleWalk {
+    let id = handle_id(w.scope, name);
+    let join = handle_id(w.scope, "#join:" ++ handle_source_of(name));
+    if id != 0 && join != 0 && handle_nat_in(id, w.consumed) {
+        handle_with_path(w, w.scope, Cons(join, w.consumed), w.live)
+    } else {
+        w
+    }
+}

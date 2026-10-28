@@ -1,0 +1,4 @@
+// A qualified use of an undeclared sibling's value, with no `use` (ADR
+// 1.10.26f §2.4): the path resolves to `doubling`, whose `double` is a
+// name-only stub, so the use is value-not-found (the qualified site, D2).
+fn main() -> Nat { doubling::double(2) }

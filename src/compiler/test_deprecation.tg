@@ -1,0 +1,59 @@
+// Unit tests for driver/cli/deprecation.tg (ADR 20.10.26d D2, AC3): the
+// self-hosted compiler warns when run as `tungsten`, and stays quiet under
+// `--error-format json` and under any other name.
+//
+// Pure over injected values — `argv[0]` and the argument list are arguments
+// here, so nothing reads the real process arguments.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_bool, assert_eq_string};
+use driver::ffi::{List, Nil, Cons};
+use driver::cli::deprecation::{
+    deprecation_notice, deprecation_notice_text, program_stem_is_tungsten,
+    args_request_json_errors
+};
+use parser::option::{Option, Some, None, is_some, is_none};
+use driver::util::{option_unwrap_or, string_contains};
+
+fn args_of(first: String, second: String) -> List<String> {
+    Cons(first, Cons(second, Nil))
+}
+
+// 20.10.26d AC3 — the old name warns, and the notice names albite.
+pub fn test_notice_under_the_old_name_names_albite() -> Unit {
+    let line = option_unwrap_or(deprecation_notice("/usr/local/bin/tungsten", false), "");
+    assert_eq_string(line, deprecation_notice_text());
+    assert_eq_bool(string_contains(line, "`albite`"), true)
+}
+
+// 20.10.26d AC3 — JSON errors silence it.
+pub fn test_no_notice_under_json_errors() -> Unit {
+    assert_eq_bool(is_none(deprecation_notice("/usr/local/bin/tungsten", true)), true)
+}
+
+pub fn test_no_notice_under_the_new_name() -> Unit {
+    assert_eq_bool(is_none(deprecation_notice("/usr/local/bin/albite", false)), true);
+    assert_eq_bool(is_none(deprecation_notice("./albite1", false)), true)
+}
+
+pub fn test_program_stem_matches_only_tungsten_itself() -> Unit {
+    assert_eq_bool(program_stem_is_tungsten("tungsten"), true);
+    assert_eq_bool(program_stem_is_tungsten("./tungsten"), true);
+    assert_eq_bool(program_stem_is_tungsten("C:/bin/tungsten.exe"), true);
+    assert_eq_bool(program_stem_is_tungsten("tungsten1"), false);
+    assert_eq_bool(program_stem_is_tungsten("/opt/tungsten/bin/albite"), false);
+    assert_eq_bool(program_stem_is_tungsten("/usr/bin/not-tungsten"), false)
+}
+
+pub fn test_json_errors_are_read_from_both_spellings() -> Unit {
+    assert_eq_bool(args_request_json_errors(Cons("check", args_of("--error-format", "json"))), true);
+    assert_eq_bool(args_request_json_errors(args_of("check", "--error-format=json")), true);
+    assert_eq_bool(args_request_json_errors(args_of("--error-format", "human")), false);
+    assert_eq_bool(args_request_json_errors(args_of("json", "--error-format")), false);
+    let no_args: List<String> = Nil;
+    assert_eq_bool(args_request_json_errors(no_args), false)
+}

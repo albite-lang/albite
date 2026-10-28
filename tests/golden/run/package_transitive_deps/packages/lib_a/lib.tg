@@ -1,0 +1,13 @@
+// `lib_c` by `use` — a value, a type and a constructor — and a re-export.
+use lib_c::base;
+use lib_c::Length;
+use lib_c::Meters;
+pub use lib_c::double;
+
+pub fn a() -> Nat { base() + measure(Meters(1)) }
+
+fn measure(l: Length) -> Nat {
+    match l {
+        Meters(n) => n,
+    }
+}

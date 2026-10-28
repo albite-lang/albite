@@ -1,0 +1,5 @@
+// ADR 2.10.26f §2.4: a citation substitutes ITS argument, not another.
+
+fn add_zero_right(n: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+fn main() -> Nat { let _p: Eq<Nat, 4 + 0, 4> = add_zero_right(3); 0 }

@@ -1,0 +1,5 @@
+// ADR 30.9.26h: no errors, so `--error-format json` writes empty stdout and
+// exits 0.
+fn main() -> Nat {
+    0
+}

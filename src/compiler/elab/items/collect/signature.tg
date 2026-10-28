@@ -1,0 +1,120 @@
+// Value Collection: a signature's function type (ADR 2.10.26f D2).
+//
+// Split from values.tg, which keeps the collect_* dispatch. A signature binds
+// its parameters LEFT TO RIGHT: each parameter's type is elaborated in an env
+// holding the earlier ones, then the return type or proposition, so either may
+// name an earlier parameter. The type folds right to left through tg_type_pi,
+// which builds a dependent Pi only when the parameter is mentioned, so every
+// other signature keeps its arrow byte for byte (D5).
+//
+// The env is a value: env_bind_local returns a new one and nothing here
+// returns an env, so no binding outlives the call, error path or not.
+
+use lexer::span::Span;
+use parser::ast::{
+    Param, TypeParam, TypeExpr, TyUnit,
+    MaybeTypeExpr, NoTypeExpr, SomeTypeExpr,
+    PatVar,
+    ident_name
+};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{
+    TypeHandle,
+    tg_type_forall, tg_type_pi,
+    tg_string_to_cstr
+};
+use elab::env::{Env, env_bind_local};
+use elab::types::{
+    ElabTypeResult, ElabTypeOk, ElabTypeErr, elab_type
+};
+use elab::cir::{CodegenType, CTUnit, CTArrow};
+use elab::items::result::ElabContext;
+
+/// Build a function type from parameters and return type (Unit if absent).
+/// Public for pass 2, which rebuilds rather than looks up (O(1) vs O(n)).
+pub fn build_fn_type(
+    ctx: ElabContext,
+    params: List<Param>,
+    return_type: MaybeTypeExpr,
+    span: Span
+) -> ElabTypeResult {
+    let ret = match return_type {
+        NoTypeExpr() => TyUnit(span),
+        SomeTypeExpr(ty) => ty
+    };
+    build_signature_type(ctx.env, params, ret)
+}
+
+/// Elaborate `params` left to right, binding each, then `ret` last; fold the
+/// result right to left with tg_type_pi (D2). `ret` is a function's return
+/// type or a theorem's or axiom's proposition.
+///
+/// Recursion is direct and on `rest`, so it is structural. The rest is
+/// elaborated even when this parameter's type failed (binding nothing), and
+/// that parameter's error is the one reported.
+#[decreasing(params)]
+pub fn build_signature_type(env: Env, params: List<Param>, ret: TypeExpr) -> ElabTypeResult {
+    match params {
+        Nil() => elab_type(env, ret),
+        Cons(param, rest) =>
+            let param_result = elab_type(env, param.ty);
+            let rest_result = build_signature_type(bind_signature_param(env, param, param_result), rest, ret);
+            close_signature_param(param, param_result, rest_result)
+    }
+}
+
+/// Bind a `PatVar` parameter by its own name. A wildcard or a destructuring
+/// parameter cannot be mentioned, and a type that failed to elaborate is not
+/// bound, so both bind nothing.
+fn bind_signature_param(env: Env, param: Param, param_result: ElabTypeResult) -> Env {
+    match param_result {
+        ElabTypeErr(_) => env,
+        ElabTypeOk(param_type, _) => bind_param_name(env, param, param_type)
+    }
+}
+
+fn bind_param_name(env: Env, param: Param, param_type: TypeHandle) -> Env {
+    match param.pattern {
+        PatVar(ident) => env_bind_local(env, ident_name(ident), param_type),
+        _ => env
+    }
+}
+
+fn close_signature_param(param: Param, param_result: ElabTypeResult, rest_result: ElabTypeResult) -> ElabTypeResult {
+    match param_result {
+        ElabTypeErr(e) => ElabTypeErr(e),
+        ElabTypeOk(param_type, param_ct) => close_over_rest(param, param_type, param_ct, rest_result)
+    }
+}
+
+fn close_over_rest(param: Param, param_type: TypeHandle, param_ct: CodegenType, rest_result: ElabTypeResult) -> ElabTypeResult {
+    match rest_result {
+        ElabTypeErr(e) => ElabTypeErr(e),
+        ElabTypeOk(rest_type, _) =>
+            // 30.9.26d D7's `Prop`-binder refusal is gone: `Prop` is refused
+            // as a sort before any signature is built (ADR 4.10.26i D3).
+            let ty = tg_type_pi(tg_string_to_cstr(signature_binder(param)), param_type, rest_type);
+            ElabTypeOk(ty, CTArrow(param_ct, CTUnit()))
+    }
+}
+
+/// The Pi's binder: the parameter's name, or `_` for a pattern nothing can
+/// mention (tg_type_pi then builds a plain arrow, since `_` never occurs).
+fn signature_binder(param: Param) -> String {
+    match param.pattern {
+        PatVar(ident) => ident_name(ident),
+        _ => "_"
+    }
+}
+
+/// Wrap a type in foralls for type parameters.
+/// Made public to allow reuse in elaborate.tg.
+pub fn wrap_foralls(ty: TypeHandle, params: List<TypeParam>) -> TypeHandle {
+    match params {
+        Nil() => ty,
+        Cons(param, rest) =>
+            let inner = wrap_foralls(ty, rest);
+            let name_ptr = tg_string_to_cstr(ident_name(param.name));
+            tg_type_forall(name_ptr, inner)
+    }
+}

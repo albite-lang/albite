@@ -1,0 +1,10 @@
+// ADR 30.9.26g twin: `trans`'s shared endpoints are `0 + k` and `k`, equal
+// only by induction. Both compilers must refuse it.
+fn trans_left_zero(k: Nat) -> Nat {
+    let a: Eq<Nat, 0 + k, 0 + k> = refl;
+    let b: Eq<Nat, k, k> = refl;
+    let _p: Eq<Nat, 0 + k, k> = trans(a, b);
+    0
+}
+
+fn main() -> Nat { 0 }

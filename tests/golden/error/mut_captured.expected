@@ -1,0 +1,9 @@
+[E0105] Error: a closure cannot mention `x`, a `let mut` binding declared outside it
+   ╭─[tests/golden/error/mut_captured.tg:5:22]
+   │
+ 5 │     let g = |y: Nat| x + y;
+   │                      ┬  
+   │                      ╰── 
+───╯
+
+error: aborting due to 1 error

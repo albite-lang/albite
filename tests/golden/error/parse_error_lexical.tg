@@ -1,0 +1,3 @@
+// Golden test (ADR 29.9.26f): an unterminated string is a Lexical error
+// (E0117) with the lexer's own message, not "unexpected token".
+fn g() -> Nat { "abc }

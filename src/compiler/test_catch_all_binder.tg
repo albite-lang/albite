@@ -1,0 +1,93 @@
+// A match's catch-all name holds the whole matched value (ADR 9.10.26e AC 4).
+//
+// `other` in `match q { B(x) => q, other => other }` is `q`, so `strip_none`
+// returns its argument unchanged and the depth of `A(A(B(1)))` stays 2. The
+// bootstrap once bound `other` to the payload of each constructor it covered,
+// so `strip_none` stripped one layer, and `depth(...) == 1` was a theorem the
+// kernel admitted: self-consistent Core that misread the source.
+//
+// Cost 5: the depth is read at RUNTIME, and `--assertion-census` proves each
+// comparison ran. `catch_all_keeps_depth` is kernel-checked at the admission
+// boundary on every build that reaches this file.
+//
+// This file is its own entry and must NEVER be imported from
+// `src/compiler/main.tg`. The extern is declared here rather than imported
+// from `driver::ffi::test`: a `mod driver;` would elaborate the whole
+// self-hosted compiler to reach a two-line wrapper.
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+
+fn assert_eq_nat(left: Nat, right: Nat) -> Unit {
+    tg_assert_eq_nat(left, right)
+}
+
+type Layer = Wrap(Layer) | Base(Nat)
+
+/// The identity, by the source's reading: both arms return the argument.
+fn strip_none(q: Layer) -> Layer {
+    match q {
+        Base(x) => q,
+        other => other
+    }
+}
+
+fn depth(q: Layer) -> Nat {
+    match q {
+        Wrap(r) => 1 + depth(r),
+        Base(n) => 0
+    }
+}
+
+pub theorem catch_all_keeps_depth() -> Eq<Nat, depth(strip_none(Wrap(Wrap(Base(1))))), 2> {
+    refl
+}
+
+type Shape = Dot(Nat) | Flag(Bool) | Label(String)
+
+/// Which constructor a whole `Shape` is.
+fn shape_tag(s: Shape) -> Nat {
+    match s {
+        Dot(n) => 0,
+        Flag(b) => 1,
+        Label(t) => 2
+    }
+}
+
+/// A middle-slot constructor arm, then a catch-all that passes on the whole value.
+fn tag_unless_flag(s: Shape) -> Nat {
+    match s {
+        Flag(b) => 10,
+        other => shape_tag(other)
+    }
+}
+
+type Kind = KindA | KindB | KindC
+type Maybe = Nothing | Just(Kind)
+
+fn maybe_tag(m: Maybe) -> Nat {
+    match m {
+        Nothing => 70,
+        Just(k) => 7
+    }
+}
+
+/// A nested match: `other` is `m` inside `Just` too, not the inner payload.
+fn nested_tag(m: Maybe) -> Nat {
+    match m {
+        Just(KindA()) => 1,
+        Just(KindB()) => 2,
+        other => maybe_tag(other)
+    }
+}
+
+pub fn test_catch_all_keeps_the_depth() -> Unit {
+    assert_eq_nat(depth(strip_none(Wrap(Wrap(Base(1))))), 2)
+}
+
+pub fn test_catch_all_passes_the_whole_value() -> Unit {
+    assert_eq_nat(tag_unless_flag(Label("z")) + tag_unless_flag(Dot(3)) * 10, 2)
+}
+
+pub fn test_nested_catch_all_is_the_outer_value() -> Unit {
+    assert_eq_nat(nested_tag(Just(KindC)) + nested_tag(Nothing), 77)
+}

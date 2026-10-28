@@ -1,0 +1,7 @@
+// `albite test --format json` over a file that does not elaborate (ADR
+// 29.9.26i AC 5): diagnostic records only — no test record, no summary.
+
+fn test_mismatch() -> Unit {
+    let _n: Nat = true;
+    ()
+}

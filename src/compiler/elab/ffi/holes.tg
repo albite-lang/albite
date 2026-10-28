@@ -1,0 +1,31 @@
+// src/compiler/elab/ffi/holes.tg
+// Bindings for the `check` line's holes seam (ADR 16.10.26g D2).
+//
+// The analysis is not reimplemented here: `sorry_sites`, `RootClass` and the
+// `rests_on_refs` closure all live in `albite_core`, and the bootstrap runs
+// the same ones. What crosses is each definition's name, item kind and term.
+//
+// ## The protocol
+//
+//   reset ( note_item | add_def )* ( authored | not_authored | resting )*
+//
+// `add_def` reduces the term to its hole classes and global references and
+// DROPS it, as the termination mirror does: holding every body cost +587 MiB.
+// A name never noted is a program definition. Every failure RETURNS FALSE and
+// records a message for `tg_get_last_error`.
+
+// Open a program, discarding the last one.
+pub extern "C" fn tg_holes_reset() -> Unit
+
+// Note one item's kind — 0 a program definition, 1 a theorem or lemma, 2 an
+// axiom. `name` is a C-string pointer. Last write wins.
+pub extern "C" fn tg_holes_note_item(name: Nat, kind: Nat) -> Bool
+
+// Reduce one definition's term; false (with a message) on an unreadable name
+// or an invalid handle.
+pub extern "C" fn tg_holes_add_def(name: Nat, term: Nat) -> Bool
+
+// The three numbers the bootstrap's `check` line prints.
+pub extern "C" fn tg_holes_authored() -> Nat
+pub extern "C" fn tg_holes_not_authored() -> Nat
+pub extern "C" fn tg_holes_resting() -> Nat

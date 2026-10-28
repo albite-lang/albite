@@ -1,0 +1,2 @@
+use super::secret;
+pub fn f() -> Nat { 1 }

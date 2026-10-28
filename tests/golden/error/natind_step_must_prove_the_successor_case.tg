@@ -1,0 +1,15 @@
+// == a natind step that proves the wrong case (ADR 29.9.26d AC 4)
+//
+// `zero_add` with the step `fn(k: Nat, ih) => ih`: the IH proves the motive at
+// `k`, but the step must prove it at the successor. The error's expected type
+// is the successor instance — `0 + succ(k) == succ(k)` — which is what shows
+// the step is checked against P(succ k), not against the motive as written.
+// The pair mentions no global, so it is decided at elaboration, never
+// deferred. Evidence only beside test_natind_dependent.tg's accepted step.
+
+fn zero_add_wrong_step(n: Nat) -> Nat {
+    let _p: Eq<Nat, 0 + n, n> = natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => ih, n);
+    0
+}
+
+fn main() -> Nat { 0 }

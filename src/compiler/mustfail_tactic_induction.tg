@@ -1,0 +1,60 @@
+// Negative control for test_tactic_induction.tg (ADR 3.10.26e D7, AC 3).
+//
+// Each theorem below is one wrong `induction` proof, and each must be refused
+// for its own reason. `check-mustfail-fixtures` (make/quality/tg-tests.mk)
+// requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_tactic_induction.tg --require-tests
+//     -> aborting due to 5 errors
+//
+// The count alone cannot say which error fired, so each case's code is also
+// pinned by a Rust test in
+// bootstrap/src/elaborate/tactics/tests/induction_tests.rs (the 2.9.26c
+// lesson). The cases and their codes:
+//
+//   1. ind_mustfail_on_a_bool          the target is a Bool             E0082
+//   2. ind_mustfail_unbound            the target is not in scope       E0082
+//   3. ind_mustfail_mentioned          `h` mentions the target          E0082
+//   4. ind_mustfail_predecessor        the step closed by `exact ih`,
+//                                      the predecessor's case           E0010
+//   5. ind_mustfail_open_step          the step left open               E0083
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+pub theorem ind_mustfail_on_a_bool(b: Bool) -> Eq<Bool, b, b> by {
+    induction b;
+    refl
+}
+
+pub theorem ind_mustfail_unbound(n: Nat) -> Eq<Nat, 0 + n, n> by {
+    induction k;
+    refl
+}
+
+pub theorem ind_mustfail_mentioned(n: Nat, h: Eq<Nat, n, 0>) -> Eq<Nat, 0 + n, n> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact cong(|x: Nat| x + 1, ih)
+}
+
+pub theorem ind_mustfail_predecessor(n: Nat) -> Eq<Nat, 0 + n, n> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact ih
+}
+
+pub theorem ind_mustfail_open_step(n: Nat) -> Eq<Nat, 0 + n, n> by {
+    induction n;
+    refl
+}
+
+fn test_the_wrong_proofs_are_cited() -> Unit {
+    let _bool: Eq<Bool, true, true> = ind_mustfail_on_a_bool(true);
+    let _open: Eq<Nat, 0 + 2, 2> = ind_mustfail_open_step(2);
+    ()
+}

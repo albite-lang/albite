@@ -1,0 +1,4 @@
+// Golden test (ADR 30.9.26j): the `.ll` cannot be written — E0146, exit 3.
+fn main() -> Nat {
+    0
+}

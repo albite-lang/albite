@@ -1,0 +1,19 @@
+// == two levels down, a nested group misses an inner constructor (ADR 16.10.26e)
+//
+// `B(Sm(J(n)))` is lowered as a match over `M` whose `Sm` arm is itself a
+// match over `I` naming only `J`, and no arm covers `B(Sm(Kz()))`. The
+// innermost match refuses with E0020 at the source arm, `B(Sm(J(n)))`, not at
+// the extracted `Sm(J(n))`: both compilers keep the arm's span at every depth.
+type I = J(Nat) | Kz
+type M = Sm(I) | Nn
+type P = A(Nat) | B(M)
+
+fn f(q: P) -> Nat {
+    match q {
+        B(Sm(J(n))) => 1,
+        B(Nn()) => 2,
+        A(n) => 3
+    }
+}
+
+fn main() -> Nat { f(B(Sm(Kz()))) }

@@ -1,0 +1,5 @@
+// `sibling_only.tg`'s import, one level down (ADR 30.9.26i §2.5): the walk-up
+// reaches the workspace root, so `doubling` is found and `double` is not.
+use doubling::{double};
+
+fn main() -> Nat { double(2) }

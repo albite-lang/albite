@@ -1,0 +1,6 @@
+[package]
+name = "app"
+
+[dependencies]
+lib_a = { path = "packages/lib_a" }
+lib_b = { path = "packages/lib_b" }

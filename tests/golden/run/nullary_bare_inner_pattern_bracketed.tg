@@ -1,0 +1,10 @@
+// The bracketed twin of `nullary_bare_inner_pattern.tg` (ADR 13.10.26h AC 4):
+// both spellings print the same, on both compilers.
+type E = A | B | C
+type O = Som(E) | Non
+
+fn f(opt: O) -> Nat {
+    match opt { Som(A()) => 1, Som(B()) => 2, other => 3 }
+}
+
+fn main() -> Nat { f(Som(A())) * 1000 + f(Som(B())) * 100 + f(Som(C())) * 10 + f(Non()) }

@@ -1,0 +1,4 @@
+// A `by` block whose only hole is `exact sorry` keeps the `contains sorry`
+// status and is not also a kernel refusal (ADR 2.10.26c D8, Q4's Holes): the
+// hole is abstracted as a hypothesis and the rest passes `check_proof`.
+theorem later(n: Nat) -> Eq<Nat, n, 0> -> Eq<Nat, n + 0, 0> by { intro h; exact sorry }

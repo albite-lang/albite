@@ -1,0 +1,86 @@
+// src/compiler/elab/items/handles/report.tg
+// The affine handle check over a whole program (ADR 7.10.26t D6): every
+// function of every module, against the declarations of all of them, each
+// finding reported at its offending use.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::modules::tree::parsed::{ParsedModule};
+use parser::ast::{Item, ItemFn, source_file_items, ident_name};
+use elab::error::{
+    ElabError, ElabErrorKind, ErrHandleUsedAfterConsumed, ErrHandleCapturedByClosure,
+    ErrRegionReachesOutside,
+    elab_error_new
+};
+use elab::items::handles::declarations::{HandleDeclarations, handle_declarations};
+use elab::items::handles::state::{HandleFinding, handle_walk_start};
+use elab::items::handles::walk::{handle_walk_expr};
+
+/// Prepend every handle refusal in `module`'s tree to `errors`.
+pub fn report_handle_findings(errors: List<ElabError>, module: ParsedModule) -> List<ElabError> {
+    let items = handle_module_items(module, Nil());
+    handle_report_items(errors, handle_declarations(items), items)
+}
+
+/// Every item of the tree: a module's own, then its submodules', in pre-order
+/// (the bootstrap's order), built back to front.
+// Partial: it recurses into submodules through a list helper, a nested walk
+// the termination checker does not see as one descent.
+#[partial]
+fn handle_module_items(module: ParsedModule, after: List<Item>) -> List<Item> {
+    handle_prepend_items(source_file_items(module.source_file), handle_submodule_items(module.submodules, after))
+}
+
+#[partial]
+fn handle_submodule_items(modules: List<ParsedModule>, after: List<Item>) -> List<Item> {
+    match modules {
+        Nil() => after,
+        Cons(m, rest) => handle_module_items(m, handle_submodule_items(rest, after))
+    }
+}
+
+fn handle_prepend_items(front: List<Item>, back: List<Item>) -> List<Item> {
+    match front {
+        Nil() => back,
+        Cons(item, rest) => Cons(item, handle_prepend_items(rest, back))
+    }
+}
+
+fn handle_report_items(errors: List<ElabError>, d: HandleDeclarations, items: List<Item>) -> List<ElabError> {
+    match items {
+        Nil() => errors,
+        Cons(item, rest) => handle_report_items(handle_report_item(errors, d, item), d, rest)
+    }
+}
+
+fn handle_report_item(errors: List<ElabError>, d: HandleDeclarations, item: Item) -> List<ElabError> {
+    match item {
+        ItemFn(f) => {
+            let walked = handle_walk_expr(handle_walk_start(f.params), d, f.body);
+            handle_findings_errors(errors, ident_name(f.name), walked.findings)
+        },
+        _ => errors
+    }
+}
+
+/// `findings` is newest first, so prepending each in turn leaves the oldest
+/// nearest the front, as the other gates' reports do.
+fn handle_findings_errors(errors: List<ElabError>, definition: String, findings: List<HandleFinding>) -> List<ElabError> {
+    match findings {
+        Nil() => errors,
+        Cons(f, rest) => handle_findings_errors(Cons(handle_finding_error(definition, f), errors), definition, rest)
+    }
+}
+
+fn handle_finding_error(definition: String, f: HandleFinding) -> ElabError {
+    elab_error_new(handle_finding_kind(definition, f), f.span)
+}
+
+fn handle_finding_kind(definition: String, f: HandleFinding) -> ElabErrorKind {
+    if f.in_region {
+        ErrRegionReachesOutside(f.handle, "a resource handle, in `" ++ definition ++ "`")
+    } else if f.captured {
+        ErrHandleCapturedByClosure(f.handle, definition)
+    } else {
+        ErrHandleUsedAfterConsumed(f.handle, definition)
+    }
+}

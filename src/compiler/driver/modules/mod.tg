@@ -1,0 +1,82 @@
+// src/compiler/driver/modules/mod.tg
+// Module resolution and workspace discovery.
+//
+// This module provides:
+// - ModulePath: paths like lexer::span
+// - SourceMap: multi-file source storage for error reporting
+// - ParsedModule: parsed module tree with submodules
+// - ModuleInfo: registry for the elaborator
+// - Workspace discovery and module tree parsing
+
+// Submodules
+pub mod path;
+pub mod source_map;
+pub mod tree;
+pub mod info;
+pub mod workspace;
+pub mod resolve;
+pub mod build;
+
+// Re-export path types and functions
+pub use driver::modules::path::{
+    ModulePath,
+    module_path_root, module_path_new, module_path_single,
+    module_path_child, module_path_parent, module_path_name,
+    module_path_is_root, module_path_join, module_path_eq,
+    module_path_display
+};
+
+// Re-export source map types and functions
+pub use driver::modules::source_map::{
+    SourceMap, SourceEntry,
+    source_map_empty, source_map_single, source_map_insert,
+    source_map_get, source_map_main_source, source_map_main_file
+};
+
+// Re-export parsed module types and functions
+pub use driver::modules::tree::parsed::{
+    ParsedModule,
+    parsed_module_new,
+    parsed_module_path, parsed_module_visibility,
+    parsed_module_source_file, parsed_module_parse_errors,
+    parsed_module_lex_errors, parsed_module_submodules
+};
+
+// Re-export module info types and functions
+pub use driver::modules::info::{
+    ModuleItemNames, ModuleInfo,
+    VisibilityEntry, ModuleFileEntry, ItemModuleEntry, ModuleRegistryEntry,
+    module_item_names_empty, module_item_names_add_type,
+    module_item_names_add_value, module_item_names_add_ctor,
+    module_info_empty, module_info_register_module,
+    module_info_register_item, module_info_get_module,
+    module_info_update_contents
+};
+
+// Re-export workspace discovery, merge and loading (ADR 30.9.26i)
+pub use driver::modules::workspace::{
+    find_workspace_root, discover_sibling_modules,
+    split_lines
+};
+pub use driver::modules::workspace::merge::{merge_module_info};
+pub use driver::modules::workspace::load::{
+    workspace_module_info, workspace_module_info_from, workspace_module_info_in,
+    build_workspace_module_info
+};
+
+// Re-export resolve functions
+pub use driver::modules::resolve::{resolve_module_path};
+
+// Re-export parse functions
+pub use driver::modules::tree::parse::{
+    parse_module_tree, parse_sibling_tree,
+    TreeFailure, TreeUnreadable, TreeInvalid, tree_failure_message, tree_source_from_read
+};
+
+// Re-export build functions
+pub use driver::modules::build::{
+    build_source_map, build_module_info, get_module_name
+};
+pub use driver::modules::build::flatten::{
+    flatten_module_items, build_combined_source_file
+};

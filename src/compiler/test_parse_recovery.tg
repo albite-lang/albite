@@ -1,0 +1,179 @@
+// Parse recovery after a first error (ADR 3.10.26j).
+//
+// The self-host resumes after a failed item where the error was found, not at
+// the item's start (D2); drops a parse error that reports a spot a lex error or
+// an earlier parse error already reported (D3); and stops an unterminated
+// string literal at the end of its line (D4).
+//
+// A source that produces a ParseError leaves the enclosing assertion Stuck
+// (`test_attributes.tg`), so nothing here parses a broken source. Each subject
+// is driven over a CLEAN token list with a hand-built ParseError, over
+// hand-built error lists, or over the lexer alone, whose errors execute. The
+// end-to-end evidence is the JSON-records gate.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_nat, assert_eq_bool, assert_eq_string};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{nat_to_string, string_is_empty};
+use parser::option::{Option, None, Some};
+use lexer::span::{span_new};
+use lexer::token::{Token, TokenKind, token_kind, TokStringLit, TokRBrace};
+use lexer::scanner::{tokenize_no_trivia, lex_result_tokens, lex_result_errors};
+use lexer::error::{LexErrors, NoLexErrors, ConsLexError, lex_error_at, error_count};
+use parser::cursor::{Cursor, cursor_new, cursor_position, cursor_peek, cursor_is_eof};
+use parser::error::{ParseError, ParseErrors, NoParseErrors, ConsParseError,
+    parse_error_expected, parse_error_simple};
+use parser::syntax_kind::{SyntaxUnexpectedToken};
+use parser::items::recovery::{synchronize, resync_after_error};
+use parser::lib::{parse_errors_unreported};
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+// Two clean items. Byte offsets: `a`'s `fn` 0, its body's `1` 16, `b`'s `fn` 20.
+// Token indices: `a` spans 0..8 (`fn a ( ) -> Nat { 1 }`), so `b`'s `fn` is 9.
+fn two_items_cursor() -> Cursor {
+    let src = "fn a() -> Nat { 1 }\nfn b() -> Nat { 2 }";
+    cursor_new(lex_result_tokens(tokenize_no_trivia(src, "t.tg")), "t.tg")
+}
+
+fn error_starting_at(offset: Nat) -> ParseError {
+    parse_error_expected("')'", "';'", span_new(offset, offset + 1, "t.tg"))
+}
+
+fn parse_error_in(file: String, offset: Nat, message: String) -> ParseError {
+    parse_error_simple(SyntaxUnexpectedToken, message, span_new(offset, offset + 1, file))
+}
+
+fn lex_errors_at(offset: Nat) -> LexErrors {
+    ConsLexError(lex_error_at("`await` is a reserved keyword", offset, "t.tg"), NoLexErrors)
+}
+
+/// The cursor's next token's byte offset, or 0 at end of input.
+fn next_token_start(cur: Cursor) -> Nat {
+    match cursor_peek(cur) {
+        None() => 0,
+        Some(tok) => tok.span.start
+    }
+}
+
+/// Every error's span start, comma-separated, in list order.
+fn error_starts(errs: ParseErrors) -> String {
+    match errs {
+        NoParseErrors() => "",
+        ConsParseError(err, rest) => comma_join(nat_to_string(err.span.start), error_starts(rest))
+    }
+}
+
+fn comma_join(head: String, tail: String) -> String {
+    if string_is_empty(tail) { head } else { head ++ "," ++ tail }
+}
+
+fn first_error_message(errs: ParseErrors) -> String {
+    match errs {
+        NoParseErrors() => "",
+        ConsParseError(err, _) => err.message
+    }
+}
+
+fn token_kind_labels(toks: List<Token>) -> String {
+    match toks {
+        Nil() => "",
+        Cons(tok, rest) => token_kind_label(token_kind(tok)) ++ " " ++ token_kind_labels(rest)
+    }
+}
+
+fn token_kind_label(kind: TokenKind) -> String {
+    match kind {
+        TokStringLit(text) => "string(" ++ text ++ ")",
+        TokRBrace() => "}",
+        _ => "other"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D2: resume after the error (AC 1)
+// ---------------------------------------------------------------------------
+
+// 3.10.26j AC1: an error inside `a`'s body resumes at `b`'s `fn`.
+pub fn test_resync_skips_to_the_next_item() -> Unit {
+    let resumed = resync_after_error(two_items_cursor(), error_starting_at(16));
+    assert_eq_nat(cursor_position(resumed), 9);
+    assert_eq_nat(next_token_start(resumed), 20)
+}
+
+// 3.10.26j AC1: an error at `a`'s own `fn` still reaches `b`, because the
+// failed item's first token is always stepped past.
+pub fn test_resync_at_the_item_start_reaches_the_next_item() -> Unit {
+    let resumed = resync_after_error(two_items_cursor(), error_starting_at(0));
+    assert_eq_nat(cursor_position(resumed), 9);
+    assert_eq_nat(next_token_start(resumed), 20)
+}
+
+// 3.10.26j AC1: an error past the last token resumes at end of input.
+pub fn test_resync_past_the_last_token_is_eof() -> Unit {
+    let resumed = resync_after_error(two_items_cursor(), error_starting_at(1000));
+    assert_eq_bool(cursor_is_eof(resumed), true)
+}
+
+// 3.10.26j AC1 contrast: the old `synchronize(cur)` from `a`'s `fn` does not
+// move — it is already at an item start — so it never reaches `b`.
+pub fn test_item_start_resync_does_not_reach_the_next_item() -> Unit {
+    let stayed = synchronize(two_items_cursor());
+    assert_eq_nat(cursor_position(stayed), 0);
+    assert_eq_nat(next_token_start(stayed), 0)
+}
+
+// ---------------------------------------------------------------------------
+// D3: a spot already reported is reported once (AC 2)
+// ---------------------------------------------------------------------------
+
+// 3.10.26j AC2: a parse error at a lex error's start is dropped.
+pub fn test_parse_error_at_a_lex_error_is_dropped() -> Unit {
+    let parse_errs = ConsParseError(parse_error_in("t.tg", 5, "expected expression"),
+        ConsParseError(parse_error_in("t.tg", 20, "expected item"), NoParseErrors));
+    assert_eq_string(error_starts(parse_errors_unreported(parse_errs, lex_errors_at(5))), "20")
+}
+
+// 3.10.26j AC2: one at a different start, or in a different file, is kept,
+// and the output keeps input order.
+pub fn test_parse_error_elsewhere_is_kept() -> Unit {
+    let parse_errs = ConsParseError(parse_error_in("t.tg", 30, "late"),
+        ConsParseError(parse_error_in("other.tg", 5, "other file"),
+        ConsParseError(parse_error_in("t.tg", 7, "early"), NoParseErrors)));
+    assert_eq_string(error_starts(parse_errors_unreported(parse_errs, lex_errors_at(5))), "30,5,7")
+}
+
+// 3.10.26j AC2: of two parse errors at one start, the first is kept.
+pub fn test_second_parse_error_at_one_start_is_dropped() -> Unit {
+    let parse_errs = ConsParseError(parse_error_in("t.tg", 5, "first"),
+        ConsParseError(parse_error_in("t.tg", 5, "second"),
+        ConsParseError(parse_error_in("t.tg", 9, "third"), NoParseErrors)));
+    let kept = parse_errors_unreported(parse_errs, NoLexErrors);
+    assert_eq_string(error_starts(kept), "5,9");
+    assert_eq_string(first_error_message(kept), "first")
+}
+
+// ---------------------------------------------------------------------------
+// D4: an unterminated string stops at its line (AC 3)
+// ---------------------------------------------------------------------------
+
+// 3.10.26j AC3: the literal ends at the newline, and the `}` on the next
+// line is still a token rather than swallowed into the string.
+pub fn test_unterminated_string_stops_at_the_newline() -> Unit {
+    let lexed = tokenize_no_trivia("\"abc\n}", "t.tg");
+    assert_eq_nat(error_count(lex_result_errors(lexed)), 1);
+    assert_eq_string(token_kind_labels(lex_result_tokens(lexed)), "string(abc) } other ")
+}
+
+// 3.10.26j AC3: a terminated literal records no error.
+pub fn test_terminated_string_is_not_an_error() -> Unit {
+    let lexed = tokenize_no_trivia("\"abc\"", "t.tg");
+    assert_eq_nat(error_count(lex_result_errors(lexed)), 0);
+    assert_eq_string(token_kind_labels(lex_result_tokens(lexed)), "string(abc) other ")
+}

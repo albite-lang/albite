@@ -1,0 +1,37 @@
+// Conversion unfolds definitions termination certified total (ADR 28.9.26d AC 2).
+//
+// Tier 3: each typed `let _: Eq<…> = refl;` binding is a proof the elaborator
+// cannot decide without unfolding a global, so it is deferred and discharged
+// after admission. A binding that failed to discharge would be an E0071 and
+// the file would not check. Not `expect_type` / `expect_error`: their operands
+// are elaborated with deferral off (D13), so they cannot observe δ.
+
+type ConversionDeltaList = CdNil | CdCons(Nat, ConversionDeltaList)
+
+fn conversion_delta_two() -> Nat { 2 }
+
+fn conversion_delta_length(l: ConversionDeltaList) -> Nat {
+    match l {
+        CdNil => 0,
+        CdCons(h, t) => 1 + conversion_delta_length(t),
+    }
+}
+
+fn conversion_delta_three() -> Nat {
+    conversion_delta_length(CdCons(1, CdCons(2, CdCons(3, CdNil))))
+}
+
+fn test_a_nullary_total_global_unfolds() -> Unit {
+    let _p: Eq<Nat, conversion_delta_two(), 2> = refl;
+    ()
+}
+
+fn test_a_recursive_total_function_unfolds() -> Unit {
+    let _p: Eq<Nat, conversion_delta_length(CdCons(5, CdCons(6, CdNil))), 2> = refl;
+    ()
+}
+
+fn test_a_nullary_is_evaluated_through_a_recursive_function() -> Unit {
+    let _p: Eq<Nat, conversion_delta_three(), 3> = refl;
+    ()
+}

@@ -1,0 +1,37 @@
+[E0071] Error: `refl` requires both sides to be equal, but found `(zero + n)` and `n`
+    ╭─[tests/golden/error/nat_lemma_false_statements.tg:28:62]
+    │
+ 28 │ theorem add_zero_left_by_refl(n: Nat) -> Eq<Nat, 0 + n, n> { refl }
+    │                                                              ──┬─  
+    │                                                                ╰─── 
+────╯
+[E0071] Error: `refl` requires both sides to be equal, but found `(n + m)` and `(m + n)`
+    ╭─[tests/golden/error/nat_lemma_false_statements.tg:30:69]
+    │
+ 30 │ theorem add_comm_by_refl(n: Nat, m: Nat) -> Eq<Nat, n + m, m + n> { refl }
+    │                                                                     ──┬─  
+    │                                                                       ╰─── 
+────╯
+[E0071] Error: `refl` requires both sides to be equal, but found `(zero * n)` and `zero`
+    ╭─[tests/golden/error/nat_lemma_false_statements.tg:32:62]
+    │
+ 32 │ theorem mul_zero_left_by_refl(n: Nat) -> Eq<Nat, 0 * n, 0> { refl }
+    │                                                              ──┬─  
+    │                                                                ╰─── 
+────╯
+[E0010] Error: expected `Eq<Nat, NatAdd(Var("n"), Succ(Zero)), NatAdd(Succ(Zero), Var("n"))>`, found `Eq<Nat, NatAdd(Succ(Zero), Var("n")), NatAdd(Var("n"), Succ(Zero))>`
+    ╭─[tests/golden/error/nat_lemma_false_statements.tg:34:78]
+    │
+ 34 │ theorem add_comm_cited_in_the_wrong_order(n: Nat) -> Eq<Nat, n + 1, 1 + n> { add_comm(1, n) }
+    │                                                                              ───────┬──────  
+    │                                                                                     ╰──────── expected `Eq<Nat, NatAdd(Var("n"), Succ(Zero)), NatAdd(Succ(Zero), Var("n"))>`, found `Eq<Nat, NatAdd(Succ(Zero), Var("n")), NatAdd(Var("n"), Succ(Zero))>`
+────╯
+[E0010] Error: expected `Eq<Nat, NatAdd(Var("n"), Succ(Var("j"))), NatAdd(Succ(Var("j")), Var("n"))>`, found `Eq<Nat, NatAdd(Var("n"), Var("j")), NatAdd(Var("j"), Var("n"))>`
+    ╭─[tests/golden/error/nat_lemma_false_statements.tg:37:85]
+    │
+ 37 │     natind(|i: Nat| Eq<Nat, n + i, i + n>, sym(add_zero_left(n)), fn(j: Nat, ih) => ih, m)
+    │                                                                                     ─┬  
+    │                                                                                      ╰── expected `Eq<Nat, NatAdd(Var("n"), Succ(Var("j"))), NatAdd(Succ(Var("j")), Var("n"))>`, found `Eq<Nat, NatAdd(Var("n"), Var("j")), NatAdd(Var("j"), Var("n"))>`
+────╯
+
+error: aborting due to 5 errors

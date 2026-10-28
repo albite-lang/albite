@@ -1,0 +1,65 @@
+// The binomial theorem is citable (ADR 9.10.26m AC 3, D4).
+//
+// `binomial_theorem`, `binomial_step` and `nat_sub_succ_lt` cited at
+// variables, under local theorems, and the theorem at numerals, where both
+// sides compute and the citation's statement is checked by conversion.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_nat_binom_theorem.tg`, checked by
+// `make check-mustfail-fixtures`.
+//
+// The library is imported alone and its subject libraries reached through it
+// (`nat_binom_theorem::nat_pow::pow`): a second `mod nat_sum;` would reach
+// nat_order.tg by two paths, which loses its families.
+
+mod nat_binom_theorem;
+
+// A test function takes no parameters, so a citation at variables is a local
+// theorem, whose statement the elaborator and the kernel both check.
+theorem binomial_theorem_cited(a: Nat, b: Nat, n: Nat)
+    -> Eq<Nat, nat_binom_theorem::nat_pow::pow(a + b, n),
+               nat_binom_theorem::nat_sum::sum_below(|k: Nat| nat_binom_theorem::nat_binom::binom(n, k)
+                   * nat_binom_theorem::nat_pow::pow(a, k)
+                   * nat_binom_theorem::nat_pow::pow(b, nat_binom_theorem::nat_pow::nat_sub(n, k)), n + 1)> {
+    nat_binom_theorem::binomial_theorem(a, b, n)
+}
+
+theorem binomial_step_cited(a: Nat, b: Nat, n: Nat,
+    ih: Eq<Nat, nat_binom_theorem::nat_pow::pow(a + b, n),
+               nat_binom_theorem::nat_sum::sum_below(|k: Nat| nat_binom_theorem::nat_binom::binom(n, k)
+                   * nat_binom_theorem::nat_pow::pow(a, k)
+                   * nat_binom_theorem::nat_pow::pow(b, nat_binom_theorem::nat_pow::nat_sub(n, k)), n + 1)>)
+    -> Eq<Nat, nat_binom_theorem::nat_pow::pow(a + b, n + 1),
+               nat_binom_theorem::nat_sum::sum_below(|k: Nat| nat_binom_theorem::nat_binom::binom(n + 1, k)
+                   * nat_binom_theorem::nat_pow::pow(a, k)
+                   * nat_binom_theorem::nat_pow::pow(b, nat_binom_theorem::nat_pow::nat_sub(n + 1, k)), n + 2)> {
+    nat_binom_theorem::binomial_step(a, b, n, ih)
+}
+
+theorem nat_sub_succ_lt_cited(n: Nat, k: Nat, h: nat_binom_theorem::nat_sum::nat_order::Lt<k, n + 1>)
+    -> Eq<Nat, nat_binom_theorem::nat_pow::nat_sub(n + 1, k), nat_binom_theorem::nat_pow::nat_sub(n, k) + 1> {
+    nat_binom_theorem::nat_sub_succ_lt(n, k, h)
+}
+
+// `(2 + 3)^2 == 25`: the sum's three terms, 9 + 12 + 4, compute.
+fn test_binomial_theorem_at_numerals() -> Unit {
+    let _r: Eq<Nat, nat_binom_theorem::nat_pow::pow(2 + 3, 2), 25> = nat_binom_theorem::binomial_theorem(2, 3, 2);
+    let _sum: Eq<Nat, nat_binom_theorem::nat_sum::sum_below(|k: Nat| nat_binom_theorem::nat_binom::binom(2, k)
+                  * nat_binom_theorem::nat_pow::pow(2, k)
+                  * nat_binom_theorem::nat_pow::pow(3, nat_binom_theorem::nat_pow::nat_sub(2, k)), 3), 25> =
+        sym(nat_binom_theorem::binomial_theorem(2, 3, 2));
+    ()
+}
+
+// `n = 0`: `pow(a + b, 0)` and the one-term sum are both 1.
+fn test_binomial_theorem_at_zero() -> Unit {
+    let _r: Eq<Nat, nat_binom_theorem::nat_pow::pow(4 + 7, 0), 1> = nat_binom_theorem::binomial_theorem(4, 7, 0);
+    ()
+}
+
+// A hand-built `Lt<2, 5 + 1>` is `(3, refl)`: `(2 + 1) + 3 == 6`.
+fn test_nat_sub_succ_lt_at_numerals() -> Unit {
+    let h: nat_binom_theorem::nat_sum::nat_order::Lt<2, 5 + 1> = (3, refl);
+    let _r: Eq<Nat, nat_binom_theorem::nat_pow::nat_sub(6, 2), 3 + 1> = nat_binom_theorem::nat_sub_succ_lt(5, 2, h);
+    ()
+}

@@ -1,0 +1,38 @@
+// `albite test --format json` (ADR 29.9.26i AC 5): one record per verdict
+// the runner can reach here, then the summary. `duration_ms` is normalised to
+// 0 by the golden runner (D9); the failing test's assertion diff and the
+// printing test's line are captured into their records (D8, D8a).
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+extern "C" fn tg_never_executable_probe(x: Nat) -> Nat
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+fn assert_eq_nat(a: Nat, b: Nat) -> Unit { tg_assert_eq_nat(a, b) }
+fn stuck_value() -> Nat { tg_never_executable_probe(1) }
+
+fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+pub fn test_passes() -> Unit { assert_eq_nat(2 + 2, 4) }
+
+pub fn test_fails() -> Unit { assert_eq_nat(2, 3) }
+
+pub fn test_asserts_nothing() -> Unit { assert_eq_nat(stuck_value(), 1) }
+
+pub fn test_does_not_finish() -> Unit {
+    let _first = assert_eq_nat(1, 1);
+    let _stuck = stuck_value();
+    assert_eq_nat(2, 2)
+}
+
+pub fn test_prints() -> Unit {
+    println("hello from a test body");
+    assert_eq_nat(1, 1)
+}

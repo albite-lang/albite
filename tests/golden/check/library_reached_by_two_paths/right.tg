@@ -1,0 +1,7 @@
+// The other side of the diamond over `base` (ADR 9.10.26p).
+
+mod base;
+
+pub fn right_refl(n: Nat) -> Eq<Nat, n + 0, n> {
+    base::base_refl(n)
+}

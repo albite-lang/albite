@@ -1,0 +1,3 @@
+// A root sibling that shares its name with `sub/lexer.tg` (ADR 30.9.26i §2.5).
+// An entry that declares `mod lexer;` must see its own, never this one.
+pub fn root_only() -> Nat { 1 }

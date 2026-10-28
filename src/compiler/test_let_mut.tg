@@ -1,0 +1,141 @@
+// A binding can be reassigned: `let mut` and assignment (ADR 13.10.26r AC 3, AC 6).
+//
+// `x = e;` is a rebinding, and an `if`, `match` or block whose arms assign a
+// `mut` binding declared outside it joins the values its arms hand back. So
+// `pick(true)` sees the `then` arm's `x` and `pick(false)` the `else` arm's
+// `y`. The refusals, each beside its accepted twin, are in
+// `test_let_mut_refusals.tg`: `expect_error` names BOOTSTRAP codes, which
+// `./albite1 check` compares against its own numbering, so this file — the
+// one `albite1` must accept — holds none.
+//
+// Cost 5: the joined values are read at RUNTIME, and `--assertion-census`
+// proves each comparison ran. The lemmas are kernel-checked at the admission
+// boundary. The bootstrap evaluator runs this file; `./albite1 check`
+// accepts it (no `albite1 test` route exists).
+//
+// This file is its own entry and must NEVER be imported from
+// `src/compiler/main.tg`. The extern is declared here rather than imported
+// from `driver::ffi::test`: a `mod driver;` would elaborate the whole
+// self-hosted compiler to reach a two-line wrapper.
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+
+fn assert_eq_nat(left: Nat, right: Nat) -> Unit {
+    tg_assert_eq_nat(left, right)
+}
+
+type List<T> = Nil | Cons(T, List<T>)
+
+fn id(n: Nat) -> Nat { n }
+
+fn len(xs: List<Nat>) -> Nat {
+    match xs {
+        Nil => 0,
+        Cons(_, rest) => 1 + len(rest)
+    }
+}
+
+// ── Accepted ────────────────────────────────────────────────────────────────
+
+fn chain() -> Nat {
+    let mut x = 1;
+    x = x + 1;
+    x = x * 10;
+    x
+}
+
+/// §1.2's join, written with `let mut`: 12 and 31.
+fn pick(c: Bool) -> Nat {
+    let mut x = 1;
+    let mut y = 10;
+    if c { x = 2; } else { y = 30; };
+    x + y
+}
+
+fn three_arms(n: Nat) -> Nat {
+    let mut r = 0;
+    match n {
+        0 => { r = 5; },
+        1 => { r = 6; },
+        _ => ()
+    };
+    r
+}
+
+fn typed_int() -> Int {
+    let mut x: Int = 3;
+    x = x - 5;
+    x
+}
+
+fn in_lambda(n: Nat) -> Nat {
+    let g = |y: Nat| { let mut z = y; z = z + 1; z };
+    g(n)
+}
+
+fn in_region() -> Nat {
+    region { let mut r = 1; if true { r = 7; }; r }
+}
+
+/// A join whose value is a `List<Nat>` with a `Nil` arm: the typed join.
+fn nil_arm(c: Bool) -> Nat {
+    let mut n = 0;
+    let xs: List<Nat> = if c { n = 1; Nil } else { Cons(5, Cons(6, Nil)) };
+    len(xs) + n
+}
+
+/// The hygiene case: the arm hands back 2, not the shadowing 99.
+fn hygiene() -> Nat {
+    let mut x = 1;
+    if true { x = 2; let x = 99; };
+    x
+}
+
+fn test_a_rebinding_chain() -> Unit { assert_eq_nat(chain(), 20) }
+
+// 13.10.26r AC3: §1.2's join with `let mut` — each arm's assignment reaches the code after.
+fn test_pick_true_sees_the_then_arm() -> Unit { assert_eq_nat(pick(true), 12) }
+
+fn test_pick_false_sees_the_else_arm() -> Unit { assert_eq_nat(pick(false), 31) }
+
+fn test_a_match_joins_three_arms() -> Unit {
+    assert_eq_nat(three_arms(0) + three_arms(1) * 10 + three_arms(2) * 100, 65)
+}
+
+fn test_a_typed_let_mut_int() -> Unit {
+    let back: Int = typed_int() + 5;
+    assert_eq_nat(if back == 3 { 1 } else { 0 }, 1)
+}
+
+fn test_a_let_mut_inside_a_lambda() -> Unit { assert_eq_nat(in_lambda(4), 5) }
+
+fn test_a_let_mut_inside_a_region() -> Unit { assert_eq_nat(in_region(), 7) }
+
+fn test_a_nil_arm_takes_the_joined_type() -> Unit {
+    assert_eq_nat(nil_arm(true) * 10 + nil_arm(false), 12)
+}
+
+fn test_an_arm_hands_back_its_own_value() -> Unit { assert_eq_nat(hygiene(), 2) }
+
+fn test_a_joined_block_has_the_bindings_type() -> Unit {
+    let _ = expect_type({ let mut x = 1; if true { x = 2; }; x }, "Nat");
+    assert_eq_nat({ let mut x = 1; if true { x = 2; }; x }, 2)
+}
+
+// ── A proof may use it (AC 6) ───────────────────────────────────────────────
+
+lemma pick_true_is_twelve() -> Eq<Nat, pick(true), 12> { refl }
+
+/// A join the kernel reduces: a lemma statement is a type, so the `let mut`
+/// sits in the definition the lemma unfolds.
+fn joined() -> Nat {
+    let mut x: Nat = 1;
+    if true { x = 2; };
+    x + 3
+}
+
+lemma a_join_in_a_term() -> Eq<Nat, joined(), 5> { refl }
+
+// 13.10.26r AC6: the definition the lemma unfolds runs to the value the
+// kernel admitted (5), so the proof and the program agree on the join.
+fn test_a_proof_may_use_a_join() -> Unit { assert_eq_nat(joined(), 5) }

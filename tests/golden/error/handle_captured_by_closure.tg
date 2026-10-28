@@ -1,0 +1,36 @@
+// ADR 7.10.26t: a closure that mentions a builder bound outside it, which
+// could run it twice. Refused (E0093).
+
+pub type StringBuilder = MkStringBuilder(Nat)
+
+extern "C" fn tg_string_builder_new() -> Nat
+extern "C" fn tg_string_builder_push_str(sb: Nat, s: String) -> Nat
+extern "C" fn tg_string_builder_len(sb: Nat) -> Nat
+extern "C" fn tg_string_builder_to_string(sb: Nat) -> String
+
+pub fn string_builder_new() -> StringBuilder {
+    MkStringBuilder(tg_string_builder_new())
+}
+
+pub fn push_str(sb: StringBuilder, s: String) -> StringBuilder {
+    match sb { MkStringBuilder(h) => MkStringBuilder(tg_string_builder_push_str(h, s)) }
+}
+
+// Reads the builder and leaves it live.
+pub fn string_builder_len(sb: StringBuilder) -> Nat {
+    match sb { MkStringBuilder(h) => tg_string_builder_len(h) }
+}
+
+// Consumes the builder: any later use of it aborts.
+pub fn to_string(sb: StringBuilder) -> String {
+    match sb { MkStringBuilder(h) => tg_string_builder_to_string(h) }
+}
+
+fn deferred(sb: StringBuilder) -> String {
+    let finish = |suffix: String| to_string(push_str(sb, suffix));
+    finish("!")
+}
+
+fn main() -> String {
+    deferred(string_builder_new())
+}

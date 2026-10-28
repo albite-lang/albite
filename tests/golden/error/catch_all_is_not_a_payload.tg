@@ -1,0 +1,11 @@
+// A catch-all name is the whole matched value, not a constructor's payload
+// (ADR 9.10.26e AC 5): `other` is a `Pair`, so it is not the `Nat` the
+// function returns, though each constructor's payload is one.
+type Pair = Left(Nat) | Right(Nat)
+
+fn payload_of(p: Pair) -> Nat {
+    match p {
+        Right(x) => 100,
+        other => other
+    }
+}

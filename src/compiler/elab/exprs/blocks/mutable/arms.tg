@@ -1,0 +1,235 @@
+// src/compiler/elab/exprs/blocks/mutable/arms.tg
+// The pure pieces of the self-host's `lower_joins` (ADR 13.10.26r D3): the
+// frames it keeps, a join's arms, and how the construct is rebuilt.
+
+use lexer::span::Span;
+use parser::ast::{
+    Expr, ExprBlock, ExprIf, ExprIfLet, ExprMatch, ExprPath, ExprTuple, ExprUnit, ExprReturn,
+    ExprTry, ExprTryBlock, ExprLambda, ExprApp, ExprBinary, ExprUnary, ExprParen, ExprAnnot,
+    ExprField, ExprRegion, ExprLet, ExprLetElse, ExprTypeApp, expr_span,
+    Stmt, StmtLet, StmtLetElse, StmtExpr, StmtLetMut, StmtAssign,
+    Pattern, PatVar, PatTuple, PatConstructor, PatOr, MatchArm,
+    MaybeExpr, NoExpr, SomeExpr, NoTypeExpr, ident_new, path_simple
+};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_append, list_reverse};
+
+/// One block being lowered: its binders (newest first), whether it is a
+/// join's arm, and what it assigned outside itself.
+pub type Frame = { names: List<Binder>, is_arm: Bool, assigned: List<Target>, latest: List<Latest> }
+pub type Binder = { name: String, mutable: Bool }
+/// A join target, keyed by where it was declared (frame × 65536 + position).
+pub type Target = { key: Nat, name: String }
+/// The fresh name an arm last assigned a target through.
+pub type Latest = { name: String, fresh: String }
+/// A name a join unpacks, and its source binding ("" for the value).
+pub type JoinEntry = { fresh: String, source: String }
+/// A join's arm before lowering: its block's parts and its pattern's names.
+pub type ArmSource = { stmts: List<Stmt>, tail: MaybeExpr, bound: List<String>, span: Span }
+/// An arm after lowering.
+pub type LoweredArm = { stmts: List<Stmt>, tail: MaybeExpr, span: Span, assigned: List<Target>, latest: List<Latest> }
+
+pub type Resolved =
+    | RLocal(Nat, Nat, Bool)   // (frame, key, mutable)
+    | ROuter
+
+pub type MaybeExit =
+    | NoExit
+    | SomeExit(Span, String)
+
+pub fn join_entry(fresh: String, source: String) -> JoinEntry {
+    { fresh: fresh, source: source }
+}
+
+pub fn frame_new(bound: List<String>, is_arm: Bool) -> Frame {
+    { names: binders_of(list_reverse(bound), false, Nil()), is_arm: is_arm, assigned: Nil(), latest: Nil() }
+}
+
+fn binders_of(names: List<String>, mutable: Bool, acc: List<Binder>) -> List<Binder> {
+    match names {
+        Nil() => list_reverse(acc),
+        Cons(name, rest) =>
+            let binder: Binder = { name: name, mutable: mutable };
+            binders_of(rest, mutable, Cons(binder, acc))
+    }
+}
+
+pub fn frame_bind(frame: Frame, names: List<String>, mutable: Bool) -> Frame {
+    let added = list_reverse(binders_of(names, mutable, Nil()));
+    { names: list_append(added, frame.names), is_arm: frame.is_arm, assigned: frame.assigned, latest: frame.latest }
+}
+
+pub fn list_len<T>(xs: List<T>) -> Nat {
+    match xs {
+        Nil() => 0,
+        Cons(_, rest) => 1 + list_len(rest)
+    }
+}
+
+/// Find `name` in the frames, innermost first.
+pub fn resolve_in_frames(frames: List<Frame>, name: String) -> Resolved {
+    resolve_from(frames, name, list_len(frames))
+}
+
+fn resolve_from(frames: List<Frame>, name: String, count: Nat) -> Resolved {
+    match frames {
+        Nil() => ROuter,
+        Cons(frame, outer) => {
+            let index = count - 1;
+            let (found, pos, mutable) = find_binder(frame.names, name, list_len(frame.names));
+            if found { RLocal(index, index * 65536 + pos, mutable) } else { resolve_from(outer, name, index) }
+        }
+    }
+}
+
+fn find_binder(names: List<Binder>, name: String, count: Nat) -> (Bool, Nat, Bool) {
+    match names {
+        Nil() => (false, 0, false),
+        Cons(b, rest) => if b.name == name { (true, count - 1, b.mutable) } else { find_binder(rest, name, count - 1) }
+    }
+}
+
+/// The index of the innermost arm frame, or 0 when there is none (the root
+/// frame is never an arm).
+pub fn innermost_arm_index(frames: List<Frame>) -> Nat {
+    arm_index_from(frames, list_len(frames))
+}
+
+fn arm_index_from(frames: List<Frame>, count: Nat) -> Nat {
+    match frames {
+        Nil() => 0,
+        Cons(frame, outer) => if frame.is_arm { count - 1 } else { arm_index_from(outer, count - 1) }
+    }
+}
+
+/// Record, in the innermost arm, that `target` was assigned through `fresh`.
+pub fn record_assignment(frames: List<Frame>, target: Target, fresh: String) -> List<Frame> {
+    match frames {
+        Nil() => Nil(),
+        Cons(frame, outer) =>
+            if frame.is_arm {
+                let (seen, _) = latest_of(frame.latest, target.name);
+                let assigned = if seen { frame.assigned } else { Cons(target, frame.assigned) };
+                let newest: Latest = { name: target.name, fresh: fresh };
+                let updated: Frame = { names: frame.names, is_arm: true, assigned: assigned, latest: Cons(newest, frame.latest) };
+                Cons(updated, outer)
+            } else {
+                Cons(frame, record_assignment(outer, target, fresh))
+            }
+    }
+}
+
+/// The fresh name `name` was last assigned through in an arm.
+pub fn latest_of(latest: List<Latest>, name: String) -> (Bool, String) {
+    match latest {
+        Nil() => (false, ""),
+        Cons(l, rest) => if l.name == name { (true, l.fresh) } else { latest_of(rest, name) }
+    }
+}
+
+/// The outer bindings any arm assigned, once each, in declaration order.
+pub fn join_targets(arms: List<LoweredArm>) -> List<Target> {
+    sort_targets(collect_targets(arms, Nil()), Nil())
+}
+
+fn collect_targets(arms: List<LoweredArm>, acc: List<Target>) -> List<Target> {
+    match arms {
+        Nil() => acc,
+        Cons(arm, rest) => collect_targets(rest, add_targets(list_reverse(arm.assigned), acc))
+    }
+}
+
+fn add_targets(ts: List<Target>, acc: List<Target>) -> List<Target> {
+    match ts {
+        Nil() => acc,
+        Cons(t, rest) => if has_target(acc, t.name) { add_targets(rest, acc) } else { add_targets(rest, Cons(t, acc)) }
+    }
+}
+
+fn has_target(ts: List<Target>, name: String) -> Bool {
+    match ts {
+        Nil() => false,
+        Cons(t, rest) => t.name == name || has_target(rest, name)
+    }
+}
+
+fn sort_targets(ts: List<Target>, sorted: List<Target>) -> List<Target> {
+    match ts {
+        Nil() => sorted,
+        Cons(t, rest) => sort_targets(rest, insert_target(t, sorted))
+    }
+}
+
+fn insert_target(t: Target, sorted: List<Target>) -> List<Target> {
+    match sorted {
+        Nil() => Cons(t, Nil()),
+        Cons(s, rest) => if t.key < s.key { Cons(t, sorted) } else { Cons(s, insert_target(t, rest)) }
+    }
+}
+
+pub fn target_names(ts: List<Target>) -> List<String> {
+    match ts {
+        Nil() => Nil(),
+        Cons(t, rest) => Cons(t.name, target_names(rest))
+    }
+}
+
+/// A join position's constructs: a block, `if`, `if let` and `match`.
+pub fn is_construct(e: Expr) -> Bool {
+    match e {
+        ExprBlock(_, _, _) => true,
+        ExprIf(_, _, _, _) => true,
+        ExprIfLet(_, _, _, _, _) => true,
+        ExprMatch(_, _, _) => true,
+        _ => false
+    }
+}
+
+fn arm_source(body: Expr, bound: List<String>) -> ArmSource {
+    match body {
+        ExprBlock(stmts, tail, span) => { stmts: stmts, tail: tail, bound: bound, span: span },
+        _ => { stmts: Nil(), tail: SomeExpr(body), bound: bound, span: expr_span(body) }
+    }
+}
+
+/// Each arm of a construct, with the names its pattern binds.
+pub fn arm_sources(e: Expr) -> List<ArmSource> {
+    match e {
+        ExprIf(_, then_e, else_e, _) => Cons(arm_source(then_e, Nil()), Cons(arm_source(else_e, Nil()), Nil())),
+        ExprIfLet(pat, _, then_e, other, _) => Cons(arm_source(then_e, pattern_names(pat)), else_source(other)),
+        ExprMatch(_, arms, _) => match_sources(arms),
+        _ => Cons(arm_source(e, Nil()), Nil())
+    }
+}
+
+fn else_source(other: MaybeExpr) -> List<ArmSource> {
+    match other {
+        NoExpr() => Nil(),
+        SomeExpr(e) => Cons(arm_source(e, Nil()), Nil())
+    }
+}
+
+fn match_sources(arms: List<MatchArm>) -> List<ArmSource> {
+    match arms {
+        Nil() => Nil(),
+        Cons(arm, rest) => Cons(arm_source(arm.body, pattern_names(arm.pattern)), match_sources(rest))
+    }
+}
+
+/// Every name a pattern binds.
+pub fn pattern_names(p: Pattern) -> List<String> {
+    match p {
+        PatVar(id) => Cons(id.name, Nil()),
+        PatTuple(ps, _) => pattern_list_names(ps),
+        PatConstructor(_, ps, _) => pattern_list_names(ps),
+        PatOr(left, _, _) => pattern_names(left),
+        _ => Nil()
+    }
+}
+
+fn pattern_list_names(ps: List<Pattern>) -> List<String> {
+    match ps {
+        Nil() => Nil(),
+        Cons(p, rest) => list_append(pattern_names(p), pattern_list_names(rest))
+    }
+}

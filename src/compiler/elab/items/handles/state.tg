@@ -1,0 +1,286 @@
+// src/compiler/elab/items/handles/state.tg
+// The affine handle walk's state and its moves (ADR 7.10.26t D4), the
+// self-host's mirror of `UseWalk` in `bootstrap/src/elaborate/handles/uses.rs`.
+//
+// A handle variable is a scope entry with a non-zero id; id 0 is any other
+// binder, which shadows a handle of its name. `consumed` holds the ids used up
+// on the current path, `live` whether the path is still running (a `return`
+// ends it), and inside a closure every id below `floor` was bound outside it;
+// inside a region every id below a non-zero `region_floor` was (ADR 9.10.26o).
+// Findings are kept newest first.
+
+use lexer::span::{Span};
+use parser::ast::{
+    Pattern, PatVar, PatTuple, PatConstructor, PatOr, Param, LambdaParam, TypeExpr, TyPath,
+    TyParen, Expr, ExprPath, ExprParen, ExprAnnot, ExprTry, ExprTypeApp, ExprApp, ExprIf,
+    ExprMatch, ExprBlock, MatchArm, MaybeExpr, NoExpr, SomeExpr, Path, ident_name,
+    path_item_name, path_is_simple
+};
+use parser::option::{Option, None, Some};
+use driver::ffi::{List, Nil, Cons};
+use elab::items::handles::declarations::{
+    HandleDeclarations, HandleObserver, is_handle_type_name, handle_kind_of, handle_string_in
+};
+
+pub type HandleBinding = { name: String, id: Nat }
+
+/// One refusal: `in_region` is E0731, else `captured` is E0721, otherwise E0720.
+pub type HandleFinding = { captured: Bool, in_region: Bool, handle: String, span: Span }
+
+pub type HandleWalk = {
+    scope: List<HandleBinding>,
+    consumed: List<Nat>,
+    live: Bool,
+    next_id: Nat,
+    floor: Nat,
+    region_floor: Nat,
+    findings: List<HandleFinding>
+}
+
+/// A function's starting state: its parameters bound, a parameter declared
+/// as a listed handle being a handle variable.
+pub fn handle_walk_start(params: List<Param>) -> HandleWalk {
+    let empty: HandleWalk = {
+        scope: Nil(), consumed: Nil(), live: true, next_id: 1, floor: 0, region_floor: 0,
+        findings: Nil()
+    };
+    handle_bind_params(empty, params)
+}
+
+fn handle_bind_params(w: HandleWalk, params: List<Param>) -> HandleWalk {
+    match params {
+        Nil() => w,
+        Cons(p, rest) => handle_bind_params(handle_bind_param(w, p), rest)
+    }
+}
+
+fn handle_bind_param(w: HandleWalk, p: Param) -> HandleWalk {
+    match p.pattern {
+        PatVar(id) => handle_bind(w, ident_name(id), handle_is_listed(p.ty)),
+        _ => handle_bind_shadows(w, p.pattern)
+    }
+}
+
+/// Whether a declared type is itself a listed handle.
+pub fn handle_is_listed(ty: TypeExpr) -> Bool {
+    match ty {
+        TyPath(p) => is_handle_type_name(ident_name(path_item_name(p))),
+        TyParen(inner, _) => handle_is_listed(inner),
+        _ => false
+    }
+}
+
+// The self-host has no record update (`{ ...w, f: v }` is E0902 there), so
+// every change of state is spelled through these two, or in full.
+
+/// `w` with its path — scope, consumed set, liveness — replaced.
+pub fn handle_with_path(w: HandleWalk, scope: List<HandleBinding>, consumed: List<Nat>, live: Bool) -> HandleWalk {
+    let next: HandleWalk = {
+        scope: scope, consumed: consumed, live: live,
+        next_id: w.next_id, floor: w.floor, region_floor: w.region_floor, findings: w.findings
+    };
+    next
+}
+
+/// `w`'s path and closure floor, with `tally`'s next id and findings: how a
+/// later arm, or the path after a closure, carries what an earlier walk found.
+pub fn handle_with_tally(w: HandleWalk, tally: HandleWalk) -> HandleWalk {
+    let next: HandleWalk = {
+        scope: w.scope, consumed: w.consumed, live: w.live,
+        next_id: tally.next_id, floor: w.floor, region_floor: w.region_floor,
+        findings: tally.findings
+    };
+    next
+}
+
+pub fn handle_bind(w: HandleWalk, name: String, is_handle: Bool) -> HandleWalk {
+    let binding: HandleBinding = { name: name, id: if is_handle { w.next_id } else { 0 } };
+    let next: HandleWalk = {
+        scope: Cons(binding, w.scope), consumed: w.consumed, live: w.live,
+        next_id: if is_handle { w.next_id + 1 } else { w.next_id },
+        floor: w.floor, region_floor: w.region_floor, findings: w.findings
+    };
+    next
+}
+
+/// Bind every variable of `pattern` as a non-handle: tracking stops at a
+/// pattern (D4).
+pub fn handle_bind_shadows(w: HandleWalk, pattern: Pattern) -> HandleWalk {
+    match pattern {
+        PatVar(id) => handle_bind(w, ident_name(id), false),
+        PatTuple(items, _) => handle_bind_shadow_list(w, items),
+        PatConstructor(_, items, _) => handle_bind_shadow_list(w, items),
+        PatOr(a, b, _) => handle_bind_shadows(handle_bind_shadows(w, a), b),
+        _ => w
+    }
+}
+
+fn handle_bind_shadow_list(w: HandleWalk, patterns: List<Pattern>) -> HandleWalk {
+    match patterns {
+        Nil() => w,
+        Cons(p, rest) => handle_bind_shadow_list(handle_bind_shadows(w, p), rest)
+    }
+}
+
+pub fn handle_bind_lambda_params(w: HandleWalk, params: List<LambdaParam>) -> HandleWalk {
+    match params {
+        Nil() => w,
+        Cons(p, rest) => handle_bind_lambda_params(handle_bind_shadows(w, p.pattern), rest)
+    }
+}
+
+/// The id `name` is bound to, most recent binder first; 0 when it is not a
+/// handle variable.
+pub fn handle_id(scope: List<HandleBinding>, name: String) -> Nat {
+    match scope {
+        Nil() => 0,
+        Cons(b, rest) => if b.name == name { b.id } else { handle_id(rest, name) }
+    }
+}
+
+pub fn handle_nat_in(id: Nat, ids: List<Nat>) -> Bool {
+    match ids {
+        Nil() => false,
+        Cons(n, rest) => n == id || handle_nat_in(id, rest)
+    }
+}
+
+fn handle_union(a: List<Nat>, b: List<Nat>) -> List<Nat> {
+    match b {
+        Nil() => a,
+        Cons(n, rest) => handle_union(if handle_nat_in(n, a) { a } else { Cons(n, a) }, rest)
+    }
+}
+
+pub fn handle_restore(w: HandleWalk, scope: List<HandleBinding>) -> HandleWalk {
+    handle_with_path(w, scope, w.consumed, w.live)
+}
+
+/// A use of `name` at `span`; `consuming` is false for an observer's.
+pub fn handle_use(w: HandleWalk, name: String, span: Span, consuming: Bool) -> HandleWalk {
+    let id = handle_id(w.scope, name);
+    if id == 0 {
+        w
+    } else if id < w.floor {
+        handle_report(w, true, name, span)
+    } else if handle_nat_in(id, w.consumed) {
+        handle_report(w, false, name, span)
+    } else if consuming {
+        handle_with_path(w, w.scope, Cons(id, w.consumed), w.live)
+    } else {
+        w
+    }
+}
+
+fn handle_report(w: HandleWalk, captured: Bool, name: String, span: Span) -> HandleWalk {
+    let finding: HandleFinding = { captured: captured, in_region: false, handle: name, span: span };
+    let reported: HandleWalk = {
+        scope: w.scope, consumed: w.consumed, live: w.live,
+        next_id: w.next_id, floor: w.floor, region_floor: w.region_floor,
+        findings: Cons(finding, w.findings)
+    };
+    reported
+}
+
+// ===========================================================================
+// ARMS (D4: arms take their maximum)
+// ===========================================================================
+//
+// Each arm starts from `start` — its consumed set, its liveness, its scope —
+// carrying the findings and the next id of the arms before it. The arms that
+// are still live when they end join by union; when none is, the path ended.
+
+/// The accumulator before the first arm: nothing joined, nothing live.
+pub fn handle_arms_begin(start: HandleWalk) -> HandleWalk {
+    handle_with_path(start, start.scope, Nil(), false)
+}
+
+pub fn handle_arm_start(start: HandleWalk, acc: HandleWalk) -> HandleWalk {
+    handle_with_tally(start, acc)
+}
+
+pub fn handle_arm_joined(acc: HandleWalk, arm: HandleWalk) -> HandleWalk {
+    let consumed = if arm.live { handle_union(acc.consumed, arm.consumed) } else { acc.consumed };
+    handle_with_path(handle_with_tally(acc, arm), acc.scope, consumed, acc.live || arm.live)
+}
+
+pub fn handle_arms_end(start: HandleWalk, acc: HandleWalk) -> HandleWalk {
+    let consumed = if acc.live { acc.consumed } else { start.consumed };
+    handle_with_path(handle_with_tally(start, acc), start.scope, consumed, acc.live)
+}
+
+// ===========================================================================
+// READING A CALL OR A DEFINITION
+// ===========================================================================
+
+/// The bare name a call's callee is, through parentheses and type arguments.
+pub fn handle_callee_name(callee: Expr) -> Option<String> {
+    match callee {
+        ExprParen(inner, _) => handle_callee_name(inner),
+        ExprTypeApp(inner, _, _) => handle_callee_name(inner),
+        ExprPath(p) => Some(ident_name(path_item_name(p))),
+        _ => None()
+    }
+}
+
+/// Whether the callee is an observer, whose bare handle arguments are read.
+pub fn handle_callee_observes(d: HandleDeclarations, callee: Expr) -> Bool {
+    match handle_callee_name(callee) {
+        Some(name) => handle_is_observer_kind(d, name),
+        None() => false
+    }
+}
+
+fn handle_is_observer_kind(d: HandleDeclarations, name: String) -> Bool {
+    match handle_kind_of(d, name) {
+        HandleObserver() => true,
+        _ => false
+    }
+}
+
+/// An argument that is a bare variable, through parentheses.
+pub fn handle_bare_variable(arg: Expr) -> Option<Path> {
+    match arg {
+        ExprParen(inner, _) => handle_bare_variable(inner),
+        ExprPath(p) => if path_is_simple(p) { Some(p) } else { None() },
+        _ => None()
+    }
+}
+
+/// Whether a `let`'s definition yields a handle (D4): a handle variable, a
+/// call whose callee's declared result contains one, or an `if`, `match` or
+/// block one of whose results does.
+pub fn handle_yields(w: HandleWalk, d: HandleDeclarations, e: Expr) -> Bool {
+    match e {
+        ExprParen(inner, _) => handle_yields(w, d, inner),
+        ExprAnnot(inner, _, _) => handle_yields(w, d, inner),
+        ExprTry(inner, _) => handle_yields(w, d, inner),
+        ExprPath(p) => path_is_simple(p) && handle_id(w.scope, ident_name(path_item_name(p))) != 0,
+        ExprApp(callee, _, _) => handle_callee_returns(d, callee),
+        ExprIf(_, then, otherwise, _) => handle_yields(w, d, then) || handle_yields(w, d, otherwise),
+        ExprMatch(_, arms, _) => handle_arms_yield(w, d, arms),
+        ExprBlock(_, tail, _) => handle_maybe_yields(w, d, tail),
+        _ => false
+    }
+}
+
+fn handle_callee_returns(d: HandleDeclarations, callee: Expr) -> Bool {
+    match handle_callee_name(callee) {
+        Some(name) => handle_string_in(name, d.returning),
+        None() => false
+    }
+}
+
+fn handle_arms_yield(w: HandleWalk, d: HandleDeclarations, arms: List<MatchArm>) -> Bool {
+    match arms {
+        Nil() => false,
+        Cons(arm, rest) => handle_yields(w, d, arm.body) || handle_arms_yield(w, d, rest)
+    }
+}
+
+fn handle_maybe_yields(w: HandleWalk, d: HandleDeclarations, tail: MaybeExpr) -> Bool {
+    match tail {
+        NoExpr() => false,
+        SomeExpr(e) => handle_yields(w, d, e)
+    }
+}

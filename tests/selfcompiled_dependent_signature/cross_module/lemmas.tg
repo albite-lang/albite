@@ -1,0 +1,5 @@
+// ADR 2.10.26f §2.4: lemmas cited from another module keep their `Pi`.
+
+pub fn add_zero_right(n: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+pub fn refl_at<T>(x: T) -> Eq<T, x, x> { refl }

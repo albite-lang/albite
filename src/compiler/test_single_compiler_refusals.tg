@@ -1,0 +1,35 @@
+// The pure half of the self-host's builtin-name refusal (ADR 6.10.26k AC 4).
+//
+// Type collection refuses a user `type` under a builtin's name (E0107, the
+// bootstrap's E0091) by asking `is_builtin_type_name`, the table the builtin
+// type lookup itself answers through. The refusal runs inside type collection,
+// which calls type-handle externs the evaluator does not execute, so the
+// refusals are checked by hand with `albite1 check`; this suite pins the
+// table both of them read.
+
+// Full module tree (matches test_projections.tg): with only `mod elab`,
+// Signature Collection fails resolving `Option` in driver::util.
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::assert_eq_bool;
+use elab::types::is_builtin_type_name;
+
+/// AC 4: the six builtin type names are builtins.
+fn test_the_six_builtin_names_are_builtin() -> Unit {
+    let _ = assert_eq_bool(is_builtin_type_name("Nat"), true);
+    let _ = assert_eq_bool(is_builtin_type_name("Int"), true);
+    let _ = assert_eq_bool(is_builtin_type_name("Bool"), true);
+    let _ = assert_eq_bool(is_builtin_type_name("String"), true);
+    let _ = assert_eq_bool(is_builtin_type_name("Unit"), true);
+    assert_eq_bool(is_builtin_type_name("Void"), true)
+}
+
+/// AC 4: a name that only resembles one is not, so `type CInt` stays legal.
+fn test_a_lookalike_name_is_not_builtin() -> Unit {
+    let _ = assert_eq_bool(is_builtin_type_name("CInt"), false);
+    let _ = assert_eq_bool(is_builtin_type_name("Integer"), false);
+    assert_eq_bool(is_builtin_type_name("nat"), false)
+}

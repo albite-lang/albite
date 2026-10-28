@@ -1,0 +1,87 @@
+{
+  "name": "Tungsten Development",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": true
+    }
+  },
+  // ADR 16.10.26p D1: the workspace root is READ-ONLY, and each directory in
+  // .devcontainer/writable-dirs.txt is bound writable on top of it. A read-only
+  // bind over `.claude` alone is bypassed by spelling it `.CLAUDE` on a
+  // case-insensitive host; inverting it means every unlisted spelling resolves
+  // inside the read-only root. `docker-vm ro-check` (make devcontainer-ro-check)
+  // holds this file to that shape.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,readonly",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  // Creates any missing allowlisted directory (a bind needs its source),
+  // refuses a symlinked one, and links the root tungsten1/tungsten2 names into
+  // out/ (D2). Runs on the host before every `up`.
+  "initializeCommand": "sh ${localWorkspaceFolder}/.devcontainer/initialize.sh ${localWorkspaceFolder}",
+  "mounts": [
+    "type=bind,source=${localWorkspaceFolder}/.devcontainer/logs,target=/var/log/tungsten",
+    // ADR 24.7.26b: isolate the container's Cargo build dir from the
+    // bind-mounted workspace target/ so host↔container builds can no longer
+    // clobber each other (Mach-O vs ELF, BSD-ar vs GNU-ar). A named volume —
+    // not /tmp — so the warm incremental cache survives a container recreate.
+    // Reset a poisoned cache with `make devcontainer-target-reset`.
+    "type=volume,source=tungsten-arm-target,target=/build/target",
+    // ADR 16.10.26p D1: one writable bind per writable-dirs.txt entry.
+    "type=bind,source=${localWorkspaceFolder}/.git,target=/workspaces/${localWorkspaceFolderBasename}/.git",
+    "type=bind,source=${localWorkspaceFolder}/out,target=/workspaces/${localWorkspaceFolderBasename}/out",
+    "type=bind,source=${localWorkspaceFolder}/src,target=/workspaces/${localWorkspaceFolderBasename}/src",
+    "type=bind,source=${localWorkspaceFolder}/bootstrap,target=/workspaces/${localWorkspaceFolderBasename}/bootstrap",
+    "type=bind,source=${localWorkspaceFolder}/tungsten_core,target=/workspaces/${localWorkspaceFolderBasename}/tungsten_core",
+    "type=bind,source=${localWorkspaceFolder}/tungsten_codegen,target=/workspaces/${localWorkspaceFolderBasename}/tungsten_codegen",
+    "type=bind,source=${localWorkspaceFolder}/tungsten_runtime,target=/workspaces/${localWorkspaceFolderBasename}/tungsten_runtime",
+    "type=bind,source=${localWorkspaceFolder}/stdlib,target=/workspaces/${localWorkspaceFolderBasename}/stdlib",
+    "type=bind,source=${localWorkspaceFolder}/tests,target=/workspaces/${localWorkspaceFolderBasename}/tests",
+    "type=bind,source=${localWorkspaceFolder}/examples,target=/workspaces/${localWorkspaceFolderBasename}/examples",
+    "type=bind,source=${localWorkspaceFolder}/benchmarks,target=/workspaces/${localWorkspaceFolderBasename}/benchmarks",
+    "type=bind,source=${localWorkspaceFolder}/build,target=/workspaces/${localWorkspaceFolderBasename}/build",
+    "type=bind,source=${localWorkspaceFolder}/.tmp,target=/workspaces/${localWorkspaceFolderBasename}/.tmp"
+  ],
+  // CPU profiling prerequisite (ADR 17.7.26f): Docker's default seccomp
+  // profile blocks perf_event_open, and the VM kernel runs
+  // perf_event_paranoid=2. These grants let `perf record` / samply sample
+  // unprivileged inside the container (see `make devcontainer-profile-selfcompiled`).
+  "runArgs": [
+    "--cap-add=PERFMON",
+    "--security-opt",
+    "seccomp=unconfined"
+  ],
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb",
+        "serayuzgur.crates"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.features": "all",
+        "rust-analyzer.checkOnSave.command": "clippy",
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "containerEnv": {
+    "LLVM_SYS_180_PREFIX": "/usr/lib/llvm-18",
+    // ADR 24.7.26b: build into the isolated /build/target volume (mounted
+    // above), mirroring the x86_64 container's CARGO_TARGET_DIR=/tmp/target_x86.
+    // containerEnv propagates to every process (interactive shells, cargo,
+    // rust-analyzer, tungsten-dev), so no post-create export is needed.
+    "CARGO_TARGET_DIR": "/build/target",
+    "RUST_MIN_STACK": "67108864",
+    // ADR 16.10.26p D1/D2: the root is read-only, so outputs and scratch go
+    // under the writable out/ bind, and the marker tells the host guards that
+    // out/ is the intended location here.
+    "ALBITE_IN_CONTAINER": "1",
+    "TUNGSTEN1": "out/tungsten1",
+    "TUNGSTEN2": "out/tungsten2",
+    "WS_SCRATCH": "out/scratch"
+  },
+  "remoteUser": "vscode"
+}

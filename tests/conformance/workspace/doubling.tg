@@ -1,0 +1,3 @@
+// A sibling no `mod` declares (ADR 30.9.26i §2.5). Its names are registered,
+// its body is never elaborated, so importing `double` is value-not-found.
+pub fn double(count: Nat) -> Nat { count + count }

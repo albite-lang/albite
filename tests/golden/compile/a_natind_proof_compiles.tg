@@ -1,0 +1,30 @@
+// Golden test (ADR 3.10.26e AC 5): a `natind` proof compiles. Proofs over a
+// proposition are erased at the compile entry (D4), so neither a theorem by
+// `induction`, a theorem proved by a `natind` term, nor an ordinary function
+// binding one in a typed `let` (the shape 30.9.26d parked) reaches codegen as
+// a `natrec` loop. Before D4 the last two failed LLVM verification with
+// "PHI node operands are not the same type as the result".
+
+theorem probe_by_induction(n: Nat) -> Eq<Nat, 0 + n, n> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact cong(|x: Nat| x + 1, ih)
+}
+
+theorem probe_add_zero_left(n: Nat) -> Eq<Nat, 0 + n, n> {
+    natind(|i: Nat| Eq<Nat, 0 + i, i>, refl, fn(j: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}
+
+fn zero_add_then_double(n: Nat) -> Nat {
+    let _proof: Eq<Nat, 0 + n, n> =
+        natind(|i: Nat| Eq<Nat, 0 + i, i>, refl, fn(j: Nat, ih) => cong(|x: Nat| x + 1, ih), n);
+    n + n
+}
+
+fn main() -> String {
+    let _by_tactic: Eq<Nat, 0 + 4, 4> = probe_by_induction(4);
+    let _cited: Eq<Nat, 0 + 5, 5> = probe_add_zero_left(5);
+    if zero_add_then_double(21) == 42 { "natind proof compiled" } else { "wrong value" }
+}

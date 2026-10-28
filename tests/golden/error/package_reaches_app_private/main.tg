@@ -1,0 +1,5 @@
+// E0016: a library calling the application's private root-level function by
+// bare name — a name the library does not define, so D8 does not fire (D6).
+use lib_a::f;
+fn secret() -> Nat { 7 }
+fn main() -> Nat { f() }

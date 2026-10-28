@@ -1,0 +1,32 @@
+// Golden test (ADR 13.10.26q D6): a list reachable twice from a region's
+// value is copied once (the copy-out's forwarding table), and pointers that
+// lie outside the region — a list built before it opened, returned
+// unchanged, and a string literal — are kept where they are.
+type List<T> = Nil | Cons(T, List<T>)
+
+#[partial]
+fn build(n: Nat, acc: List<Nat>) -> List<Nat> {
+    if n == 0 { acc } else { build(n - 1, Cons(n, acc)) }
+}
+
+#[partial]
+fn total(xs: List<Nat>, acc: Nat) -> Nat {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => total(rest, acc + x)
+    }
+}
+
+fn main() -> Nat {
+    let (a, b) = region {
+        let xs = build(100, Nil);
+        (xs, xs)
+    };
+    let outer = build(10, Nil);
+    let kept = region { outer };
+    let literal = region { "kept" };
+    let shared = total(a, 0) + total(b, 0);
+    let outside = total(kept, 0) + total(outer, 0);
+    let text = if literal == "kept" { 1 } else { 0 };
+    shared * 1000 + outside * 10 + text
+}

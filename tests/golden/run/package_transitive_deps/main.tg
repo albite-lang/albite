@@ -1,0 +1,12 @@
+// A diamond (ADR 3.10.26m): `lib_a` and `lib_b` both depend on `lib_c`, which
+// is mounted once. `double` is `lib_c`'s, re-exported by `lib_a`: the
+// application declared only `lib_a` and `lib_b`, yet names it through the
+// re-export and calls it bare.
+
+use lib_a::a;
+use lib_a::double;
+use lib_b::b;
+
+fn main() -> Nat {
+    double(a() + b())
+}

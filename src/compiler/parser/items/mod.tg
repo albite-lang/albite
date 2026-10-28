@@ -1,0 +1,34 @@
+use driver::util::{Result, Ok, Err};
+// src/compiler/parser/items/mod.tg
+// Item parsing module for the Tungsten self-hosted compiler.
+//
+// Refactored into submodules:
+// - result.tg: Parse result types and ItemList
+// - shared/: Visibility, type params, and params (shared helpers)
+// - dispatch.tg: Single-item dispatch (parse_item). The item LOOP is
+//   parse_items_with_recovery in parser/lib.tg, not here.
+// - decls/: Function, extern, and theorem parsing
+// - types.tg: Type definition parsing (ADT, record, alias)
+// - use_decl.tg: Module and use declaration parsing
+// - recovery.tg: Error recovery (synchronize, resync_after_error)
+
+pub mod result;
+pub mod shared;
+pub mod dispatch;
+pub mod decls;
+pub mod types;
+pub mod use_decl;
+pub mod recovery;
+
+// Re-export all public types and functions
+pub use parser::items::result::{item_list_reverse};
+
+pub use parser::items::shared::visibility::parse_visibility;
+
+pub use parser::items::shared::type_params::{parse_type_params, parse_optional_type_params};
+
+pub use parser::items::shared::params::parse_params;
+
+pub use parser::items::dispatch::{parse_item};
+
+pub use parser::items::recovery::{synchronize, resync_after_error};

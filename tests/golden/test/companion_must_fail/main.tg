@@ -1,0 +1,8 @@
+// ADR 2.10.26j AC 4, the must-fail twin of companion_joins_its_module: the
+// companion's assertion is false, and the run must say so. A green
+// companion_joins_its_module beside this red one is the non-vacuity pair.
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+
+fn assert_eq_nat(a: Nat, b: Nat) -> Unit { tg_assert_eq_nat(a, b) }
+
+fn root_secret() -> Nat { 7 }

@@ -1,0 +1,75 @@
+// src/compiler/parser/exprs/compound/assign.tg
+// `let mut x [: T] = e` and `x = e` statements (ADR 13.10.26r D2).
+//
+// Both are statements only: the block parser checks the `;` after each, and
+// an assignment as a block's tail is refused with a message saying so.
+
+use lexer::token::{TokenKind, TokEq, TokColon, TokMut, TokIdent};
+use lexer::span::{Span, span_merge};
+use parser::error::{ParseError, parse_error_expected};
+use parser::cursor::{Cursor, cursor_peek_kind, cursor_check, cursor_check_ahead, cursor_check_ident,
+    cursor_advance, cursor_expect, cursor_eat_ident, token_kind_name,
+    EatIdentResult, SomeIdentResult, NoIdentResult};
+use parser::option::{Option, None, Some};
+use parser::ast::nodes::{Expr, expr_span, MaybeTypeExpr, NoTypeExpr, SomeTypeExpr,
+    Stmt, StmtLetMut, StmtAssign};
+use parser::exprs::result::{cursor_peek_span};
+use parser::exprs::pratt::parse_expr;
+use parser::types::{parse_type};
+use driver::util::{Result, Ok, Err};
+
+/// Whether the cursor is at `name =`, an assignment statement.
+pub fn is_assign_start(cur: Cursor) -> Bool {
+    cursor_check_ident(cur) && cursor_check_ahead(cur, TokEq())
+}
+
+/// The message for an assignment with no `;` after it.
+pub fn assign_needs_semi(cur: Cursor) -> ParseError {
+    parse_error_expected("';' after an assignment (an assignment is a statement, not a value)",
+        found_name(cur), cursor_peek_span(cur))
+}
+
+fn found_name(cur: Cursor) -> String {
+    match cursor_peek_kind(cur) {
+        None() => "end of file",
+        Some(k) => token_kind_name(k)
+    }
+}
+
+/// `name = value`, the caller checking the `;`.
+pub fn parse_assign_stmt(cur: Cursor) -> Result<(Stmt, Cursor), ParseError> {
+    let start_span = cursor_peek_span(cur);
+    match cursor_eat_ident(cur) {
+        NoIdentResult() => Err(parse_error_expected("identifier", found_name(cur), start_span)),
+        SomeIdentResult(name, cur2) =>
+            let (_, cur3) = cursor_expect(cur2, TokEq())?;
+            let (value, cur4) = parse_expr(cur3)?;
+            Ok((StmtAssign(name, value, span_merge(start_span, expr_span(value))), cur4))
+    }
+}
+
+/// After `let`: `mut name [: T] = value`, the caller checking the `;`.
+pub fn parse_let_mut_rest(start_span: Span, cur: Cursor) -> Result<(Stmt, Cursor), ParseError> {
+    let after_mut = cursor_advance(cur);
+    match cursor_eat_ident(after_mut) {
+        NoIdentResult() => Err(parse_error_expected(
+            "a name after `let mut` (only a single name can be declared `mut`)",
+            found_name(after_mut), cursor_peek_span(after_mut))),
+        SomeIdentResult(name, cur2) => parse_let_mut_type(start_span, name, cur2)
+    }
+}
+
+fn parse_let_mut_type(start_span: Span, name: String, cur: Cursor) -> Result<(Stmt, Cursor), ParseError> {
+    if cursor_check(cur, TokColon()) {
+        let (t, cur2) = parse_type(cursor_advance(cur))?;
+        parse_let_mut_value(start_span, name, SomeTypeExpr(t), cur2)
+    } else {
+        parse_let_mut_value(start_span, name, NoTypeExpr, cur)
+    }
+}
+
+fn parse_let_mut_value(start_span: Span, name: String, ty: MaybeTypeExpr, cur: Cursor) -> Result<(Stmt, Cursor), ParseError> {
+    let (_, cur2) = cursor_expect(cur, TokEq())?;
+    let (value, cur3) = parse_expr(cur2)?;
+    Ok((StmtLetMut(name, ty, value, span_merge(start_span, expr_span(value))), cur3))
+}

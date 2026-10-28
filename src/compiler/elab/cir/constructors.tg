@@ -1,0 +1,141 @@
+// src/compiler/elab/cir/constructors.tg
+// Helper constructor functions for CodegenIR — the TERM half of the CIR
+// builder surface.
+//
+// The CodegenType constructors (`ct_*`) and the TypeHandle → CodegenType
+// conversion that feeds them live in the sibling `type_constructors.tg`,
+// split out by ADR 10.9.26b along the CIR node family seam.
+
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::TypeHandle;
+use elab::cir::free_vars::free_vars;
+use elab::cir::type_constructors::type_handle_to_codegen_type;
+use elab::cir::types::{CodegenIR, CodegenType,
+    CIRNatLit, CIRVar, CIRGlobal, CIRLambda, CIRApp, CIRLet,
+    CIRPair, CIRFst, CIRSnd, CIRInl, CIRInr, CIRCase,
+    CIRIf, CIRFold, CIRUnfold, CIRExternCall,
+    CIRIntLit, CIRIntBin, CIRIntNeg, CIRNatToInt, CIRIntToNat
+};
+
+// ===========================================================================
+// TERM HELPER CONSTRUCTORS
+// ===========================================================================
+
+/// Create a natural number literal CIR.
+pub fn cir_nat_lit(n: Nat) -> CodegenIR {
+    CIRNatLit(n)
+}
+
+// --- Signed integers (ADR 14.9.26c) ---
+
+/// Create a signed literal CIR from its two's-complement bits.
+pub fn cir_int_lit(bits: Nat) -> CodegenIR {
+    CIRIntLit(bits)
+}
+
+/// Create a signed binary operation; `op` is the bootstrap's `IntBinOp::code`.
+pub fn cir_int_bin(op: Nat, a: CodegenIR, b: CodegenIR) -> CodegenIR {
+    CIRIntBin(op, a, b)
+}
+
+/// Create signed negation.
+pub fn cir_int_neg(a: CodegenIR) -> CodegenIR {
+    CIRIntNeg(a)
+}
+
+/// Create the `Nat → Int` bridge.
+pub fn cir_nat_to_int(n: CodegenIR) -> CodegenIR {
+    CIRNatToInt(n)
+}
+
+/// Create the `Int → Nat` bridge.
+pub fn cir_int_to_nat(i: CodegenIR) -> CodegenIR {
+    CIRIntToNat(i)
+}
+
+/// Create a variable reference.
+pub fn cir_var(name: String, ty: CodegenType) -> CodegenIR {
+    CIRVar(name, ty)
+}
+
+/// Create a global reference.
+pub fn cir_global(path: String) -> CodegenIR {
+    CIRGlobal(path)
+}
+
+/// Create a lambda with automatically computed captures.
+pub fn cir_lambda(name: String, ty: CodegenType, body: CodegenIR, ret_ty: CodegenType) -> CodegenIR {
+    let captures = free_vars(body, Cons(name, Nil()));
+    CIRLambda(name, ty, body, captures, ret_ty)
+}
+
+/// Create an application.
+pub fn cir_app(func: CodegenIR, arg: CodegenIR, arg_ty: CodegenType, ret_ty: CodegenType) -> CodegenIR {
+    CIRApp(func, arg, arg_ty, ret_ty)
+}
+
+/// Create a let binding.
+pub fn cir_let(name: String, ty: CodegenType, def: CodegenIR, body: CodegenIR) -> CodegenIR {
+    CIRLet(name, ty, def, body)
+}
+
+/// Create a pair.
+pub fn cir_pair(fst: CodegenIR, snd: CodegenIR) -> CodegenIR {
+    CIRPair(fst, snd)
+}
+
+/// Create first projection.
+pub fn cir_fst(p: CodegenIR) -> CodegenIR {
+    CIRFst(p)
+}
+
+/// Create second projection.
+pub fn cir_snd(p: CodegenIR) -> CodegenIR {
+    CIRSnd(p)
+}
+
+/// Create left injection.
+pub fn cir_inl(v: CodegenIR, sum_ty: CodegenType) -> CodegenIR {
+    CIRInl(v, sum_ty)
+}
+
+/// Create right injection.
+pub fn cir_inr(v: CodegenIR, sum_ty: CodegenType) -> CodegenIR {
+    CIRInr(v, sum_ty)
+}
+
+/// Create case analysis from TypeHandle values (converts to CodegenType).
+/// Avoids repeating type_handle_to_codegen_type at every CIRCase site.
+pub fn build_cir_case_from_handles(
+    scrut_cir: CodegenIR,
+    sum_ty_handle: TypeHandle,
+    left_name: String,
+    left_cir: CodegenIR,
+    right_name: String,
+    right_cir: CodegenIR,
+    result_ty_handle: TypeHandle
+) -> CodegenIR {
+    let sum_ct = type_handle_to_codegen_type(sum_ty_handle);
+    let result_ct = type_handle_to_codegen_type(result_ty_handle);
+    CIRCase(scrut_cir, sum_ct, left_name, left_cir, right_name, right_cir, result_ct)
+}
+
+/// Create an if-then-else.
+pub fn cir_if(cond: CodegenIR, then_e: CodegenIR, else_e: CodegenIR) -> CodegenIR {
+    CIRIf(cond, then_e, else_e)
+}
+
+/// Create a fold.
+pub fn cir_fold(mu_ty: CodegenType, v: CodegenIR) -> CodegenIR {
+    CIRFold(mu_ty, v)
+}
+
+/// Create an unfold.
+pub fn cir_unfold(mu_ty: CodegenType, v: CodegenIR) -> CodegenIR {
+    CIRUnfold(mu_ty, v)
+}
+
+/// Create an extern call.
+pub fn cir_extern_call(name: String, args: List<CodegenIR>) -> CodegenIR {
+    CIRExternCall(name, args)
+}

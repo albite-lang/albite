@@ -1,0 +1,298 @@
+// src/compiler/elab/items/handles/walk.tg
+// The affine handle walk over a parsed body (ADR 7.10.26t D4), form for form
+// the bootstrap's `UseWalk::expr` in `bootstrap/src/elaborate/handles/uses.rs`.
+//
+// Evaluation order throughout: a call's callee, then its arguments left to
+// right; a `let`'s definition, then its body. A bare handle variable is a
+// consuming use everywhere except as an observer's argument. Every walk here
+// is `#[partial]`: the recursion runs through helpers that receive subterms of
+// subterms, a structure the termination checker cannot see as one descent.
+// Executable compiler code no proof reaches; E0063 guards that.
+
+use parser::ast::{
+    Expr, ExprPath, ExprIntLit, ExprBoolLit, ExprStringLit, ExprUnit, ExprLambda, ExprApp,
+    ExprTypeApp, ExprBinary, ExprUnary, ExprLet, ExprBlock, ExprIf, ExprMatch, ExprTuple,
+    ExprRecordLit, ExprNamedRecord, ExprField, ExprAnnot, ExprParen, ExprHave, ExprShow,
+    ExprAssume, ExprRefl, ExprSubst, ExprSym, ExprTrans, ExprCong, ExprNatInd, ExprNatRec,
+    ExprSorry, ExprReturn, ExprTry, ExprTryBlock, ExprRegion, ExprLetElse, ExprIfLet, ExprIfLetChain,
+    ExprError, MaybeExpr, NoExpr, SomeExpr, LambdaParam, MatchArm, FieldInit, Motive,
+    MotiveExpr, Stmt, StmtLet, StmtLetElse, StmtExpr, StmtItem, StmtLetMut, StmtAssign, Pattern, PatVar,
+    IfLetCondition, IfLetBind, IfLetGuard, Path, ident_name, path_item_name, path_span,
+    path_is_simple
+};
+use parser::option::{Option, None, Some};
+use driver::ffi::{List, Nil, Cons};
+use elab::items::handles::declarations::{HandleDeclarations};
+use elab::items::handles::regions::{handle_with_region_floor, handle_region_reference};
+use elab::items::handles::assign::{handle_synthesised, handle_lowered_stmts, handle_lowered_tail, handle_alias_source,
+    handle_bind_alias, handle_join_names, handle_join_open, handle_join_close, handle_pairing};
+use lexer::span::{Span, span_start};
+use elab::items::handles::state::{
+    HandleWalk, handle_with_path, handle_with_tally, handle_bind, handle_bind_shadows, handle_bind_lambda_params, handle_restore,
+    handle_use, handle_arms_begin, handle_arm_start, handle_arm_joined, handle_arms_end,
+    handle_callee_observes, handle_bare_variable, handle_yields
+};
+
+#[partial]
+pub fn handle_walk_expr(w: HandleWalk, d: HandleDeclarations, e: Expr) -> HandleWalk {
+    match e {
+        ExprPath(p) => handle_walk_path(handle_region_reference(w, d, p), p),
+        ExprLambda(params, body, _) => handle_walk_closure(w, d, params, body),
+        ExprApp(callee, args, _) => handle_walk_args(handle_walk_expr(w, d, callee), d, args, handle_callee_observes(d, callee)),
+        ExprTypeApp(inner, _, _) => handle_walk_expr(w, d, inner),
+        ExprBinary(_, a, b, _) => handle_walk_expr(handle_walk_expr(w, d, a), d, b),
+        ExprUnary(_, inner, _) => handle_walk_expr(w, d, inner),
+        ExprLet(pat, _, value, body, _) => handle_walk_let(w, d, pat, value, body),
+        ExprBlock(stmts, tail, span) => handle_restore(handle_walk_block(w, d, handle_lowered_stmts(stmts, tail, span_start(span)),
+            handle_lowered_tail(stmts, tail, span_start(span))), w.scope),
+        ExprIf(c, then, otherwise, _) => handle_walk_if(handle_walk_expr(w, d, c), d, then, otherwise),
+        ExprMatch(s, arms, _) => handle_walk_match(handle_walk_expr(w, d, s), d, arms),
+        ExprTuple(items, _) => handle_walk_exprs(w, d, items),
+        ExprRecordLit(spread, fields, _) => handle_walk_fields(handle_walk_maybe(w, d, spread), d, fields),
+        ExprNamedRecord(_, spread, fields, _) => handle_walk_fields(handle_walk_maybe(w, d, spread), d, fields),
+        ExprField(base, _, _) => handle_walk_expr(w, d, base),
+        ExprAnnot(inner, _, _) => handle_walk_expr(w, d, inner),
+        ExprParen(inner, _) => handle_walk_expr(w, d, inner),
+        ExprHave(name, _, proof, body, _) => handle_walk_bound(handle_walk_expr(w, d, proof), d, ident_name(name), body),
+        ExprShow(_, proof, _) => handle_walk_expr(w, d, proof),
+        ExprAssume(name, _, body, _) => handle_walk_bound(w, d, ident_name(name), body),
+        ExprSubst(proof, motive, witness, _) =>
+            handle_walk_expr(handle_walk_motive(handle_walk_expr(w, d, proof), d, motive), d, witness),
+        ExprSym(proof, _) => handle_walk_expr(w, d, proof),
+        ExprTrans(a, b, _) => handle_walk_expr(handle_walk_expr(w, d, a), d, b),
+        ExprCong(a, b, _) => handle_walk_expr(handle_walk_expr(w, d, a), d, b),
+        ExprNatInd(motive, base, step, n, _) =>
+            handle_walk_exprs(handle_walk_motive(w, d, motive), d, Cons(base, Cons(step, Cons(n, Nil())))),
+        ExprNatRec(_, base, step, n, _) => handle_walk_exprs(w, d, Cons(base, Cons(step, Cons(n, Nil())))),
+        ExprReturn(value, _) => handle_walk_return(handle_walk_maybe(w, d, value)),
+        ExprTry(inner, _) => handle_walk_expr(w, d, inner),
+        ExprTryBlock(inner, _) => handle_walk_expr(w, d, inner),
+        ExprRegion(inner, _) => handle_walk_region(w, d, inner),
+        ExprLetElse(pat, _, value, diverge, body, _) =>
+            handle_restore(handle_walk_expr(handle_bind_shadows(handle_walk_let_else(w, d, value, diverge), pat), d, body), w.scope),
+        ExprIfLet(pat, s, then, otherwise, _) => handle_walk_if_let(handle_walk_expr(w, d, s), d, pat, then, otherwise),
+        ExprIfLetChain(conds, then, otherwise, _) => handle_walk_if_let_chain(w, d, conds, then, otherwise),
+        _ => w
+    }
+}
+
+fn handle_walk_path(w: HandleWalk, p: Path) -> HandleWalk {
+    let name = ident_name(path_item_name(p));
+    if !path_is_simple(p) { w } else if handle_synthesised(name) { handle_pairing(w, name) } else { handle_use(w, name, path_span(p), true) }
+}
+
+fn handle_walk_return(w: HandleWalk) -> HandleWalk {
+    handle_with_path(w, w.scope, w.consumed, false)
+}
+
+#[partial]
+fn handle_walk_exprs(w: HandleWalk, d: HandleDeclarations, es: List<Expr>) -> HandleWalk {
+    match es {
+        Nil() => w,
+        Cons(e, rest) => handle_walk_exprs(handle_walk_expr(w, d, e), d, rest)
+    }
+}
+
+#[partial]
+fn handle_walk_maybe(w: HandleWalk, d: HandleDeclarations, e: MaybeExpr) -> HandleWalk {
+    match e {
+        NoExpr() => w,
+        SomeExpr(inner) => handle_walk_expr(w, d, inner)
+    }
+}
+
+#[partial]
+fn handle_walk_fields(w: HandleWalk, d: HandleDeclarations, fields: List<FieldInit>) -> HandleWalk {
+    match fields {
+        Nil() => w,
+        Cons(f, rest) => handle_walk_fields(handle_walk_expr(w, d, f.value), d, rest)
+    }
+}
+
+#[partial]
+fn handle_walk_motive(w: HandleWalk, d: HandleDeclarations, motive: Motive) -> HandleWalk {
+    match motive {
+        MotiveExpr(e) => handle_walk_expr(w, d, e),
+        _ => w
+    }
+}
+
+/// `body` with `name` bound as a non-handle (`have`, `assume`).
+#[partial]
+fn handle_walk_bound(w: HandleWalk, d: HandleDeclarations, name: String, body: Expr) -> HandleWalk {
+    handle_restore(handle_walk_expr(handle_bind(w, name, false), d, body), w.scope)
+}
+
+/// A call's arguments, left to right (P0.6). A bare variable passed to an
+/// observer is read, not consumed.
+#[partial]
+fn handle_walk_args(w: HandleWalk, d: HandleDeclarations, args: List<Expr>, observer: Bool) -> HandleWalk {
+    match args {
+        Nil() => w,
+        Cons(a, rest) => handle_walk_args(handle_walk_arg(w, d, a, observer), d, rest, observer)
+    }
+}
+
+#[partial]
+fn handle_walk_arg(w: HandleWalk, d: HandleDeclarations, a: Expr, observer: Bool) -> HandleWalk {
+    if observer { handle_observe_or_walk(w, d, a, handle_bare_variable(a)) } else { handle_walk_expr(w, d, a) }
+}
+
+#[partial]
+fn handle_observe_or_walk(w: HandleWalk, d: HandleDeclarations, a: Expr, bare: Option<Path>) -> HandleWalk {
+    match bare {
+        Some(p) => handle_use(w, ident_name(path_item_name(p)), path_span(p), false),
+        None() => handle_walk_expr(w, d, a)
+    }
+}
+
+/// A region body (ADR 9.10.26o): every handle bound before it is outside it.
+#[partial]
+fn handle_walk_region(w: HandleWalk, d: HandleDeclarations, body: Expr) -> HandleWalk {
+    let inner = handle_walk_expr(handle_with_region_floor(w, w.next_id), d, body);
+    handle_with_region_floor(inner, w.region_floor)
+}
+
+/// A closure's body, where every handle bound outside it is off limits; it
+/// changes nothing on the enclosing path.
+#[partial]
+fn handle_walk_closure(w: HandleWalk, d: HandleDeclarations, params: List<LambdaParam>, body: Expr) -> HandleWalk {
+    let fenced: HandleWalk = {
+        scope: w.scope, consumed: w.consumed, live: w.live,
+        next_id: w.next_id, floor: w.next_id, region_floor: w.region_floor, findings: w.findings
+    };
+    let inner = handle_walk_expr(handle_bind_lambda_params(fenced, params), d, body);
+    handle_with_tally(w, inner)
+}
+
+#[partial]
+fn handle_walk_let(w: HandleWalk, d: HandleDeclarations, pat: Pattern, value: Expr, body: Expr) -> HandleWalk {
+    let bound = handle_bind_let(handle_walk_expr(w, d, value), d, pat, value);
+    handle_restore(handle_walk_expr(bound, d, body), w.scope)
+}
+
+/// Bind a `let`'s pattern: a variable bound to a handle-yielding definition is
+/// a handle variable (D4); anything else is not.
+fn handle_bind_let(w: HandleWalk, d: HandleDeclarations, pat: Pattern, value: Expr) -> HandleWalk {
+    match pat {
+        PatVar(id) => handle_bind(w, ident_name(id), handle_yields(w, d, value)),
+        _ => handle_bind_shadows(w, pat)
+    }
+}
+
+/// A `let … else`'s definition, then its diverging `else`, whose path never
+/// rejoins.
+#[partial]
+fn handle_walk_let_else(w: HandleWalk, d: HandleDeclarations, value: Expr, diverge: Expr) -> HandleWalk {
+    let after = handle_walk_expr(w, d, value);
+    let diverged = handle_walk_expr(after, d, diverge);
+    handle_with_tally(after, diverged)
+}
+
+/// A block's statements, then its tail. A statement after a `return` is on no
+/// path through the block, so the walk stops there.
+#[partial]
+fn handle_walk_block(w: HandleWalk, d: HandleDeclarations, stmts: List<Stmt>, tail: MaybeExpr) -> HandleWalk {
+    match stmts {
+        Nil() => if w.live { handle_walk_maybe(w, d, tail) } else { w },
+        Cons(s, rest) => if w.live { handle_walk_block(handle_walk_stmt(w, d, s), d, rest, tail) } else { w }
+    }
+}
+
+#[partial]
+fn handle_walk_stmt(w: HandleWalk, d: HandleDeclarations, s: Stmt) -> HandleWalk {
+    match s {
+        StmtLet(pat, _, value, _) => match pat {
+            PatVar(id) => handle_walk_rebind(w, d, ident_name(id), value),
+            _ => handle_walk_join_or_let(w, d, pat, value)
+        },
+        StmtLetMut(name, _, value, _) => handle_walk_rebind(w, d, name, value),
+        StmtAssign(name, value, _) => handle_walk_rebind(w, d, name, value),
+        StmtLetElse(pat, _, value, diverge, _) => handle_bind_shadows(handle_walk_let_else(w, d, value, diverge), pat),
+        StmtExpr(e, _) => handle_walk_expr(w, d, e),
+        StmtItem(_) => w
+    }
+}
+
+/// `name = value` from a `let`, a `let mut` or an assignment (ADR 13.10.26r D6):
+/// an alias, a single-binding join, or B4.1's `let`.
+#[partial]
+fn handle_walk_rebind(w: HandleWalk, d: HandleDeclarations, name: String, value: Expr) -> HandleWalk {
+    let source = handle_alias_source(name, value);
+    if source != "" { handle_bind_alias(w, name, source) }
+    else if handle_synthesised(name) { handle_walk_join(w, d, Cons(name, Nil()), value) }
+    else { let after = handle_walk_expr(w, d, value); handle_bind(after, name, handle_yields(after, d, value)) }
+}
+
+#[partial]
+fn handle_walk_join_or_let(w: HandleWalk, d: HandleDeclarations, pat: Pattern, value: Expr) -> HandleWalk {
+    let names = handle_join_names(pat);
+    match names {
+        Nil() => handle_bind_let(handle_walk_expr(w, d, value), d, pat, value),
+        _ => handle_walk_join(w, d, names, value)
+    }
+}
+
+#[partial]
+fn handle_walk_join(w: HandleWalk, d: HandleDeclarations, names: List<String>, value: Expr) -> HandleWalk {
+    handle_join_close(handle_walk_expr(handle_join_open(w, names), d, value), d, value, names, w.scope)
+}
+
+#[partial]
+fn handle_walk_if(w: HandleWalk, d: HandleDeclarations, then: Expr, otherwise: Expr) -> HandleWalk {
+    let first = handle_arm_joined(handle_arms_begin(w), handle_walk_expr(handle_arm_start(w, handle_arms_begin(w)), d, then));
+    handle_arms_end(w, handle_arm_joined(first, handle_walk_expr(handle_arm_start(w, first), d, otherwise)))
+}
+
+#[partial]
+fn handle_walk_match(w: HandleWalk, d: HandleDeclarations, arms: List<MatchArm>) -> HandleWalk {
+    handle_arms_end(w, handle_walk_match_arms(w, d, arms, handle_arms_begin(w)))
+}
+
+#[partial]
+fn handle_walk_match_arms(start: HandleWalk, d: HandleDeclarations, arms: List<MatchArm>, acc: HandleWalk) -> HandleWalk {
+    match arms {
+        Nil() => acc,
+        Cons(arm, rest) =>
+            handle_walk_match_arms(start, d, rest, handle_arm_joined(acc, handle_walk_match_arm(handle_arm_start(start, acc), d, arm)))
+    }
+}
+
+#[partial]
+fn handle_walk_match_arm(w: HandleWalk, d: HandleDeclarations, arm: MatchArm) -> HandleWalk {
+    let guarded = handle_walk_maybe(handle_bind_shadows(w, arm.pattern), d, arm.guard);
+    handle_restore(handle_walk_expr(guarded, d, arm.body), w.scope)
+}
+
+#[partial]
+fn handle_walk_if_let(w: HandleWalk, d: HandleDeclarations, pat: Pattern, then: Expr, otherwise: MaybeExpr) -> HandleWalk {
+    let then_arm = handle_restore(handle_walk_expr(handle_bind_shadows(handle_arm_start(w, handle_arms_begin(w)), pat), d, then), w.scope);
+    let first = handle_arm_joined(handle_arms_begin(w), then_arm);
+    handle_arms_end(w, handle_arm_joined(first, handle_walk_maybe(handle_arm_start(w, first), d, otherwise)))
+}
+
+/// The conditions in order, their bindings visible to the `then` arm only.
+#[partial]
+fn handle_walk_if_let_chain(w: HandleWalk, d: HandleDeclarations, conds: List<IfLetCondition>, then: Expr, otherwise: MaybeExpr) -> HandleWalk {
+    let after = handle_walk_conditions(w, d, conds);
+    let base = handle_restore(after, w.scope);
+    let then_arm = handle_restore(handle_walk_expr(handle_restore(handle_arm_start(base, handle_arms_begin(base)), after.scope), d, then), w.scope);
+    let first = handle_arm_joined(handle_arms_begin(base), then_arm);
+    handle_arms_end(base, handle_arm_joined(first, handle_walk_maybe(handle_arm_start(base, first), d, otherwise)))
+}
+
+#[partial]
+fn handle_walk_conditions(w: HandleWalk, d: HandleDeclarations, conds: List<IfLetCondition>) -> HandleWalk {
+    match conds {
+        Nil() => w,
+        Cons(c, rest) => handle_walk_conditions(handle_walk_condition(w, d, c), d, rest)
+    }
+}
+
+#[partial]
+fn handle_walk_condition(w: HandleWalk, d: HandleDeclarations, c: IfLetCondition) -> HandleWalk {
+    match c {
+        IfLetBind(pat, e) => handle_bind_shadows(handle_walk_expr(w, d, e), pat),
+        IfLetGuard(e) => handle_walk_expr(w, d, e)
+    }
+}

@@ -1,0 +1,9 @@
+[E0104] Error: cannot assign to `x`: it is not declared `let mut`
+   ╭─[tests/golden/error/mut_not_mut.tg:5:5]
+   │
+ 5 │     x = 2;
+   │     ───┬──  
+   │        ╰──── 
+───╯
+
+error: aborting due to 1 error

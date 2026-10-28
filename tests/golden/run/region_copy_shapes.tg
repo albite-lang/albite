@@ -1,0 +1,54 @@
+// Golden test (ADR 13.10.26q D6): one region value of each copy-layout shape
+// — a tuple holding a String, a record ADT holding a String and a list,
+// `Result<Nat, String>` in each arm, and a mutually recursive tree and
+// forest — each copied out before its region is released.
+type List<T> = Nil | Cons(T, List<T>)
+type Result<T, E> = Ok(T) | Err(E)
+type Row = MkRow(Nat, String, List<Nat>)
+type Tree = Node(Nat, Forest)
+type Forest = FNil | FCons(Tree, Forest)
+
+fn leaf(n: Nat) -> Tree {
+    Node(n, FNil)
+}
+
+fn size_t(t: Tree) -> Nat {
+    match t {
+        Node(n, f) => n + size_f(f)
+    }
+}
+
+fn size_f(f: Forest) -> Nat {
+    match f {
+        FNil => 0,
+        FCons(t, rest) => size_t(t) + size_f(rest)
+    }
+}
+
+fn label(n: Nat) -> Result<Nat, String> {
+    region {
+        if n % 2 == 0 { Ok(n * 3) } else { Err("odd" ++ "!") }
+    }
+}
+
+fn main() -> Nat {
+    let (n, s) = region { (3, "ab" ++ "c") };
+    let tuple = if s == "abc" { n } else { 0 };
+    let row = region { MkRow(2, "x" ++ "y", Cons(5, Cons(6, Nil))) };
+    let record = match row {
+        MkRow(k, text, xs) => match xs {
+            Cons(a, _) => if text == "xy" { k + a } else { 0 },
+            Nil => 0
+        }
+    };
+    let ok = match label(4) {
+        Ok(v) => v,
+        Err(_) => 0
+    };
+    let err = match label(5) {
+        Ok(_) => 0,
+        Err(e) => if e == "odd!" { 1 } else { 0 }
+    };
+    let tree = region { Node(1, FCons(leaf(2), FCons(Node(3, FCons(leaf(4), FNil)), FNil))) };
+    tuple + record * 10 + ok * 100 + err * 10000 + size_t(tree) * 100000
+}

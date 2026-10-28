@@ -1,0 +1,33 @@
+// Negative control for test_tactic_exists.tg (ADR 6.10.26e D8, AC 3). Each
+// theorem below must be refused, and `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires the file to fail with its exact error
+// count, so a twin that starts being accepted lowers the count and the gate
+// goes red.
+//
+// Each twin is ALSO asserted by its own code in
+// `bootstrap/src/elaborate/tactics/tests/exists_tests.rs`, so one failing for
+// another reason is caught there.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+
+pub theorem nat_premise(a: Nat, z: Nat) -> Le<a, a> { (0, refl) }
+
+// E0082: `exists` needs an `exists` goal, and an equation is not one.
+pub theorem witness_for_an_equation(n: Nat) -> n == n by { exists 1 }
+
+// E0010: the witness is checked at the binder's type, `Nat`.
+pub theorem witness_of_the_wrong_type(n: Nat) -> Le<n, n> by { exists true }
+
+// E0071: the witness `1` leaves `n + 1 == n`, which `refl` cannot close.
+pub theorem wrong_witness(n: Nat) -> Le<n, n> by { exists 1; refl }
+
+// E0082: a pair arm unpacks an `exists` local, and `n` is a `Nat`.
+pub theorem pair_arm_on_a_nat(n: Nat) -> Le<n, n> by {
+    cases n { (k, e) => exact (0, refl) }
+}
+
+// E0082: a non-dependent `Nat` premise is still data under D2.
+pub theorem apply_with_a_data_premise(a: Nat) -> Le<a, a> by { apply nat_premise }

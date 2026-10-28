@@ -1,0 +1,21 @@
+// src/compiler/parser/exprs/compound/region_block.tg
+// (`region` is a keyword, so no module can take the name.)
+// Parse `region { ... }` expressions (ADR 9.10.26o D8).
+
+use lexer::span::{Span, span_merge};
+use parser::error::ParseError;
+use parser::cursor::{Cursor, cursor_advance};
+use parser::ast::nodes::{Expr, ExprRegion, expr_span};
+use parser::exprs::compound::blocks::parse_block;
+use parser::exprs::result::cursor_peek_span;
+use driver::util::{Result, Ok, Err};
+
+/// Parse a `region { body }` expression: its value is the block's value.
+/// The cursor should be pointing at the `region` keyword.
+pub fn parse_region(cur: Cursor) -> Result<(Expr, Cursor), ParseError> {
+    let start_span = cursor_peek_span(cur);
+    let cur2 = cursor_advance(cur);
+    let (body, cur3) = parse_block(cur2)?;
+    let span = span_merge(start_span, expr_span(body));
+    Ok((ExprRegion(body, span), cur3))
+}

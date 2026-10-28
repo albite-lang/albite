@@ -1,0 +1,21 @@
+[package]
+name = "albite-dev"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "Internal development tool for Tungsten devcontainer workflows"
+publish = false
+
+[[bin]]
+name = "albite-dev"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+cost-baseline = { path = "../cost-baseline" }
+libc = "0.2"
+# The settings seam, `ALBITE_*` first (ADR 20.10.26e D1).
+albite_runtime = { path = "../../albite_runtime" }
+
+[dev-dependencies]
+tempfile = "3"

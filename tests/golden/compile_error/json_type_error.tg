@@ -1,0 +1,2 @@
+// Golden test (ADR 30.9.26j): a front-end error under `compile` — E0010.
+fn main() -> Nat { true }

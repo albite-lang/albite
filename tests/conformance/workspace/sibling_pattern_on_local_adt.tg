@@ -1,0 +1,12 @@
+// A sibling's constructor, imported but names-only, as a pattern over a local
+// ADT (ADR 3.10.26l §2.4): 2.10.26g §6.1's halting probe. Wired, `MkBox`
+// resolves to nothing, so it must be refused as `Foo` is.
+use boxes::{MkBox};
+
+type OptSib = NadaSib | AlgoSib(Nat)
+
+fn pick(o: OptSib) -> Nat {
+    match o { MkBox(k) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(AlgoSib(1)) }

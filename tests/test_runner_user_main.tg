@@ -1,0 +1,23 @@
+// The harness's parse-aware `main` rename, pinned end to end (ADR 28.9.26g §1.3).
+//
+// `tungsten1 test` generates a harness with its own `main`, so it renames the
+// program's root `main` first. ADR 7.8.26b made that rename walk the parsed item
+// list rather than replace the first textual `pub fn main(`; this file carries
+// the text in the three places a textual rewrite would get wrong — this comment
+// (pub fn main( ), a string literal, and the real definition below.
+//
+// Expected under BOTH runners: `test_user_main_text_is_a_string` and
+// `test_user_main_does_not_disturb_the_tests` ok, exit 0. The runner-parity gate
+// (`make devcontainer-test-runner-gate`) lists this file as an Agree fixture.
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+fn assert_eq_nat(a: Nat, b: Nat) -> Unit { tg_assert_eq_nat(a, b) }
+
+fn main_signature_text() -> String { "pub fn main() -> Nat" }
+
+pub fn main() -> Nat { 7 }
+
+pub fn test_user_main_text_is_a_string() -> Unit {
+    let _text: String = main_signature_text();
+    assert_eq_nat(1, 1)
+}
+pub fn test_user_main_does_not_disturb_the_tests() -> Unit { assert_eq_nat(3, 3) }

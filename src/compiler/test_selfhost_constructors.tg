@@ -1,0 +1,66 @@
+// The binders and payload a constructor's Core term is built from (ADR 3.9.26e).
+//
+// A constructor's type is curried, `A -> B -> T`, and its term used to be one
+// lambda over the whole payload product — so a saturated two-field application
+// reduced to a folded sum applied to an argument and stuck. The term now takes
+// one binder per field and builds the payload right-nested from them. These
+// assert the binders and the nesting at one, two and three fields: three is
+// where left- and right-nesting stop coinciding. The term builders themselves
+// call `tg_term_*` externs the evaluator does not execute, so the pure shape
+// they fold is what is asserted here.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_nat, assert_eq_string};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_len};
+use elab::exprs::bind::vars::ctor_payload::{
+    CtorPayloadShape, CtorPayloadLast, CtorPayloadPair,
+    ctor_field_binder_names, ctor_payload_shape
+};
+
+/// A payload shape as a tuple expression, so the nesting reads off the string.
+fn render_payload(shape: CtorPayloadShape) -> String {
+    match shape {
+        CtorPayloadLast(name) => name,
+        CtorPayloadPair(name, rest) => "(" ++ name ++ ", " ++ render_payload(rest) ++ ")"
+    }
+}
+
+/// The payload an `arity`-field constructor builds from its own binders.
+fn payload_for_arity(arity: Nat) -> String {
+    match ctor_field_binder_names(arity) {
+        Nil() => "",
+        Cons(first, rest) => render_payload(ctor_payload_shape(first, rest))
+    }
+}
+
+// 3.9.26e AC3: a nullary constructor takes no binders, so the n-ary builder
+// is never handed one.
+fn test_zero_fields_take_no_binders() -> Unit {
+    assert_eq_nat(list_len(ctor_field_binder_names(0)), 0)
+}
+
+// 3.9.26e AC3: one field is its own payload — no pair, one binder.
+fn test_one_field_is_its_own_payload() -> Unit {
+    let _ = assert_eq_nat(list_len(ctor_field_binder_names(1)), 1);
+    assert_eq_string(payload_for_arity(1), "_ctor_field_0")
+}
+
+// 3.9.26e AC3: two fields take two binders and pair them — the arity the
+// unary lambda got wrong.
+fn test_two_fields_take_two_binders_and_pair_them() -> Unit {
+    let _ = assert_eq_nat(list_len(ctor_field_binder_names(2)), 2);
+    assert_eq_string(payload_for_arity(2), "(_ctor_field_0, _ctor_field_1)")
+}
+
+// 3.9.26e AC3: three fields nest to the RIGHT, the product the match side
+// destructures (ADR 1.8.26b D1); left-nesting would read
+// `((_ctor_field_0, _ctor_field_1), _ctor_field_2)`.
+fn test_three_fields_nest_to_the_right() -> Unit {
+    let _ = assert_eq_nat(list_len(ctor_field_binder_names(3)), 3);
+    assert_eq_string(payload_for_arity(3), "(_ctor_field_0, (_ctor_field_1, _ctor_field_2))")
+}

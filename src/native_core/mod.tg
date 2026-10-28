@@ -1,0 +1,20 @@
+// The native core (ADR 4.10.26n): runtime exports written in Tungsten.
+//
+// These sources are EMBEDDED in the bootstrap (`include_str!` in
+// `bootstrap/src/compile/native_core/mod.rs`) and compiled by a second,
+// independent code-generation run on every `ALBITE_NATIVE_CORE=on` build,
+// whose objects join the program's link. Every symbol that run defines carries
+// the `__albite_native_core__` prefix, except the fixed C symbols listed in
+// `albite_codegen`'s `NATIVE_CORE_EXPORTS` table.
+//
+// Rules, checked by a bootstrap test over these files (`native_core/rules.rs`):
+// no `++` (it would call the export being defined), no generic definition,
+// only byte-intrinsic `extern`s and the core runtime intrinsics
+// (`CORE_RUNTIME_INTRINSICS`: `tg_core_write_stderr`, `tg_core_abort`, ADR
+// 7.10.26q D1; `tg_core_publish_args`, ADR 7.10.26r D2), and no import from
+// outside this directory.
+
+mod args;
+mod bytes;
+mod string;
+mod trap;

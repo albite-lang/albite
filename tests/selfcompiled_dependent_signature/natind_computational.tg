@@ -1,0 +1,9 @@
+// ADR 3.10.26i §2.5: a NON-dependent motive `|k: Nat| Nat` computes, and keeps
+// the path it always had on both compilers (D1): base against the body, step
+// against `Nat -> body -> body`. Both compilers must accept every line.
+
+fn double(n: Nat) -> Nat {
+    natind(|k: Nat| Nat, 0, fn(j: Nat, acc: Nat) => acc + 2, n)
+}
+
+fn main() -> Nat { double(3) }

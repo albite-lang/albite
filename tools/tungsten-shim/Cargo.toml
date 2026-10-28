@@ -1,0 +1,23 @@
+[package]
+name = "tungsten-shim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The deprecated `tungsten` command: prints one notice and execs the `albite` binary beside it (ADR 20.10.26d D1)"
+publish = false
+
+# A crate of its own, not a second `[[bin]]` on bootstrap's `main.rs`: that
+# would compile every compiler module twice. A default workspace member, so
+# every `cargo build` rebuilds `tungsten` next to `albite` and a stale
+# pre-rename `target/*/tungsten` cannot survive to run old code.
+[[bin]]
+name = "tungsten"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

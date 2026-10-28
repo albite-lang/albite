@@ -1,0 +1,153 @@
+// Unit tests for ADR 13.10.26f D3: the self-host refuses a name defined twice
+// in one file. Every subject runs over hand-built items; nothing here parses.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_string, assert_eq_nat, assert_eq_bool};
+use parser::ast::common::{VisPrivate, Ident, ident_new, MkPath};
+use parser::ast::nodes::items::{
+    Item, ItemUse, ItemTypeAlias, ItemType, TypeDefAdt, Variant,
+    UseTree, UseTreeSimple, UseTreeAlias, UseTreeGroup, UseTreeGlob
+};
+use parser::ast::nodes::types::{TyUnit};
+use lexer::span::{Span, span_new};
+use elab::env::{env_new};
+use elab::items::result::{ElabContext, elab_context_new};
+use elab::error::{ElabError, error_kind_code};
+use elab::items::collect::duplicates::{
+    DefinitionSite, check_duplicate_definitions_pass, definition_namespaces_collide,
+    earlier_site_collides, item_definition_sites, use_tree_definition_sites,
+    items_to_elaborate_after_duplicates
+};
+use driver::util::{list_len};
+
+// --- Builders ---------------------------------------------------------------
+
+fn dup_span(start: Nat) -> Span { span_new(start, start + 1, "") }
+
+fn dup_ident(name: String, start: Nat) -> Ident { ident_new(name, dup_span(start)) }
+
+fn dup_use(name: String, start: Nat) -> UseTree {
+    let segments: List<Ident> = Cons(dup_ident("util", start), Cons(dup_ident(name, start), Nil));
+    UseTreeSimple(MkPath(segments, dup_span(start)))
+}
+
+fn dup_use_item(tree: UseTree, start: Nat) -> Item {
+    ItemUse({ vis: VisPrivate, tree: tree, span: dup_span(start) })
+}
+
+fn dup_alias_item(name: String, start: Nat) -> Item {
+    let none: List<parser::ast::nodes::items::TypeParam> = Nil;
+    ItemTypeAlias({ vis: VisPrivate, name: dup_ident(name, start), type_params: none, ty: TyUnit(dup_span(start)), span: dup_span(start) })
+}
+
+fn dup_sum_item(name: String, ctors: List<String>, start: Nat) -> Item {
+    let none: List<parser::ast::nodes::items::TypeParam> = Nil;
+    ItemType({ vis: VisPrivate, name: dup_ident(name, start), type_params: none, body: TypeDefAdt(dup_variants(ctors, start)), span: dup_span(start) })
+}
+
+fn dup_variants(ctors: List<String>, start: Nat) -> List<Variant> {
+    match ctors {
+        Nil() => Nil,
+        Cons(c, rest) =>
+            let fields: List<parser::ast::nodes::types::TypeExpr> = Nil;
+            Cons({ name: dup_ident(c, start), fields: fields, span: dup_span(start) }, dup_variants(rest, start))
+    }
+}
+
+fn dup_codes(errors: List<ElabError>) -> String {
+    match errors {
+        Nil() => "",
+        Cons(err, rest) => error_kind_code(err.kind) ++ dup_codes(rest)
+    }
+}
+
+fn dup_check(items: List<Item>) -> ElabContext {
+    check_duplicate_definitions_pass(elab_context_new(env_new()), items)
+}
+
+fn dup_count(sites: List<DefinitionSite>) -> Nat {
+    match sites {
+        Nil() => 0,
+        Cons(_, rest) => 1 + dup_count(rest)
+    }
+}
+
+fn dup_first_name(sites: List<DefinitionSite>) -> String {
+    match sites {
+        Nil() => "",
+        Cons(site, _) => site.name
+    }
+}
+
+// --- Namespaces -------------------------------------------------------------
+
+// 13.10.26f D3: value 0, type 1, import 2 — import meets both, not itself.
+fn test_namespaces_collide_as_the_bootstraps_do() {
+    assert_eq_bool(definition_namespaces_collide(0, 0), true);
+    assert_eq_bool(definition_namespaces_collide(1, 1), true);
+    assert_eq_bool(definition_namespaces_collide(0, 1), false);
+    assert_eq_bool(definition_namespaces_collide(2, 0), true);
+    assert_eq_bool(definition_namespaces_collide(1, 2), true);
+    assert_eq_bool(definition_namespaces_collide(2, 2), false)
+}
+
+// 13.10.26f D3: a name collides only with an earlier site of the same name.
+fn test_earlier_site_collides_needs_the_same_name() {
+    let earlier: List<DefinitionSite> = Cons({ name: "a", span: dup_span(0), namespace: 0 }, Nil);
+    assert_eq_bool(earlier_site_collides(earlier, { name: "a", span: dup_span(5), namespace: 0 }), true);
+    assert_eq_bool(earlier_site_collides(earlier, { name: "b", span: dup_span(5), namespace: 0 }), false);
+    assert_eq_bool(earlier_site_collides(earlier, { name: "a", span: dup_span(5), namespace: 1 }), false)
+}
+
+// --- What an item defines ---------------------------------------------------
+
+// 13.10.26f D3: a group names each member, an alias its alias, a glob nothing.
+fn test_use_trees_name_their_imports() {
+    let none: List<DefinitionSite> = Nil;
+    let group = UseTreeGroup(MkPath(Cons(dup_ident("util", 0), Nil), dup_span(0)), Cons(dup_use("a", 1), Cons(dup_use("b", 2), Nil)), dup_span(0));
+    assert_eq_nat(dup_count(use_tree_definition_sites(group, none)), 2);
+    let alias = UseTreeAlias(MkPath(Cons(dup_ident("x", 0), Nil), dup_span(0)), dup_ident("y", 0));
+    assert_eq_string(dup_first_name(use_tree_definition_sites(alias, none)), "y");
+    assert_eq_nat(dup_count(use_tree_definition_sites(UseTreeGlob(MkPath(Nil, dup_span(0)), dup_span(0)), none)), 0)
+}
+
+// 13.10.26f D3: a sum type defines itself and each constructor.
+fn test_a_sum_type_defines_its_constructors() {
+    assert_eq_nat(dup_count(item_definition_sites(dup_sum_item("T", Cons("A", Cons("B", Nil)), 0))), 3)
+}
+
+// --- The pass ---------------------------------------------------------------
+
+// 13.10.26f AC5: two aliases of one name give one E0103; a type and an import
+// of one name give one; two imports of one name give none.
+fn test_the_pass_reports_each_later_definition_once() {
+    let twice = Cons(dup_alias_item("T", 0), Cons(dup_alias_item("T", 10), Nil));
+    assert_eq_string(dup_codes(dup_check(twice).errors), "E0103");
+    let imported = Cons(dup_use_item(dup_use("T", 0), 0), Cons(dup_alias_item("T", 10), Nil));
+    assert_eq_string(dup_codes(dup_check(imported).errors), "E0103");
+    let two_imports = Cons(dup_use_item(dup_use("T", 0), 0), Cons(dup_use_item(dup_use("T", 10), 10), Nil));
+    assert_eq_string(dup_codes(dup_check(two_imports).errors), "");
+    let ctor_twice = Cons(dup_sum_item("T", Cons("A", Nil), 0), Cons(dup_sum_item("U", Cons("A", Nil), 10), Nil));
+    assert_eq_string(dup_codes(dup_check(ctor_twice).errors), "E0103")
+}
+
+// 13.10.26f D3: once the pass refuses a duplicate no body is elaborated, as in
+// the bootstrap; a clean pass leaves every item to elaborate.
+fn test_a_refused_file_elaborates_no_body() {
+    let twice = Cons(dup_alias_item("T", 0), Cons(dup_alias_item("T", 10), Nil));
+    let clean = elab_context_new(env_new());
+    assert_eq_nat(list_len(items_to_elaborate_after_duplicates(clean, dup_check(twice), twice)), 0);
+    let distinct = Cons(dup_alias_item("T", 0), Cons(dup_alias_item("U", 10), Nil));
+    assert_eq_nat(list_len(items_to_elaborate_after_duplicates(clean, dup_check(distinct), distinct)), 2)
+}
+
+// 13.10.26f D3: distinct names are silent.
+fn test_distinct_names_are_silent() {
+    let distinct = Cons(dup_alias_item("T", 0), Cons(dup_alias_item("U", 10), Nil));
+    assert_eq_string(dup_codes(dup_check(distinct).errors), "")
+}

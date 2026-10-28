@@ -1,0 +1,174 @@
+// Punctuation lexing in the self-hosted lexer (ADR 29.9.26k AC 2).
+//
+// Pins every spelling `scan_punctuation` recognises, and the one ordering
+// constraint its stage chain must keep: every two-character test runs before
+// any one-character test on the same first character (`<=` before `<`, `::`
+// before `:`, `..` before `.`). The suite was run against the unchanged
+// single-function scanner before the chain replaced it, so it describes the
+// lexer as it was, not as it was rewritten.
+//
+// Every assertion runs the real `tokenize`, so nothing is mocked.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_bool, assert_eq_nat};
+use driver::ffi::{List, Nil, Cons};
+use lexer::token::{
+    Token, TokenKind, token_kind,
+    TokIdent, TokEof, TokError,
+    TokLParen, TokRParen, TokLBrace, TokRBrace, TokLBracket, TokRBracket,
+    TokLAngle, TokRAngle, TokComma, TokSemi, TokColon, TokColonColon,
+    TokDot, TokDotDot, TokDotDotDot, TokArrow, TokFatArrow, TokAt,
+    TokHash, TokQuestion, TokEq, TokEqEq, TokBangEq, TokLe, TokGe,
+    TokPlus, TokPlusPlus, TokMinus, TokStar, TokSlash, TokPercent,
+    TokAmp, TokAmpAmp, TokPipe, TokPipePipe, TokPipeRight, TokBang,
+    TokCaret, TokTilde
+};
+use lexer::scanner::{tokenize, lex_result_tokens, lex_result_errors};
+use lexer::error::{error_count};
+use parser::cursor::token_kinds::{token_kind_eq};
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+fn tokens_of(src: String) -> List<Token> {
+    lex_result_tokens(tokenize(src, "t.tg"))
+}
+
+fn punctuation_token_count(toks: List<Token>) -> Nat {
+    match toks {
+        Nil() => 0,
+        Cons(_, rest) => 1 + punctuation_token_count(rest)
+    }
+}
+
+/// Whether the token at `index` has `expected`'s kind; false past the end.
+fn kind_at_is(toks: List<Token>, index: Nat, expected: TokenKind) -> Bool {
+    match toks {
+        Nil() => false,
+        Cons(t, rest) =>
+            if index == 0 { token_kind_eq(token_kind(t), expected) }
+            else { kind_at_is(rest, index - 1, expected) }
+    }
+}
+
+/// `src` lexes to exactly one token of kind `expected`, then end of input.
+fn assert_single_token(src: String, expected: TokenKind) -> Unit {
+    let toks: List<Token> = tokens_of(src);
+    assert_eq_nat(punctuation_token_count(toks), 2);
+    assert_eq_bool(kind_at_is(toks, 0, expected), true);
+    assert_eq_bool(kind_at_is(toks, 1, TokEof), true)
+}
+
+// ---------------------------------------------------------------------------
+// The twelve multi-character spellings
+// ---------------------------------------------------------------------------
+
+// 29.9.26k AC2: every spelling, the tier order, `.. .`, `a<b` and `$`.
+pub fn test_comparison_and_arrow_pairs() -> Unit {
+    assert_single_token("==", TokEqEq);
+    assert_single_token("!=", TokBangEq);
+    assert_single_token("<=", TokLe);
+    assert_single_token(">=", TokGe);
+    assert_single_token("=>", TokFatArrow);
+    assert_single_token("->", TokArrow)
+}
+
+pub fn test_operator_and_path_pairs() -> Unit {
+    assert_single_token("++", TokPlusPlus);
+    assert_single_token("&&", TokAmpAmp);
+    assert_single_token("||", TokPipePipe);
+    assert_single_token("|>", TokPipeRight);
+    assert_single_token("::", TokColonColon)
+}
+
+pub fn test_dots() -> Unit {
+    assert_single_token("..", TokDotDot);
+    assert_single_token("...", TokDotDotDot)
+}
+
+// ---------------------------------------------------------------------------
+// The twenty-six single characters
+// ---------------------------------------------------------------------------
+
+pub fn test_brackets() -> Unit {
+    assert_single_token("(", TokLParen);
+    assert_single_token(")", TokRParen);
+    assert_single_token("{", TokLBrace);
+    assert_single_token("}", TokRBrace);
+    assert_single_token("[", TokLBracket);
+    assert_single_token("]", TokRBracket);
+    assert_single_token("<", TokLAngle);
+    assert_single_token(">", TokRAngle)
+}
+
+pub fn test_separators() -> Unit {
+    assert_single_token(",", TokComma);
+    assert_single_token(";", TokSemi);
+    assert_single_token(":", TokColon);
+    assert_single_token(".", TokDot);
+    assert_single_token("@", TokAt);
+    assert_single_token("#", TokHash);
+    assert_single_token("?", TokQuestion)
+}
+
+pub fn test_operator_chars() -> Unit {
+    assert_single_token("=", TokEq);
+    assert_single_token("!", TokBang);
+    assert_single_token("+", TokPlus);
+    assert_single_token("-", TokMinus);
+    assert_single_token("*", TokStar);
+    assert_single_token("/", TokSlash);
+    assert_single_token("%", TokPercent);
+    assert_single_token("&", TokAmp);
+    assert_single_token("|", TokPipe);
+    assert_single_token("^", TokCaret);
+    assert_single_token("~", TokTilde)
+}
+
+// ---------------------------------------------------------------------------
+// Tier order: a pair is one token, never its two halves
+// ---------------------------------------------------------------------------
+
+pub fn test_pairs_are_not_split_into_their_first_character() -> Unit {
+    // The same spellings as above, asserted as a count rather than a kind: a
+    // chain that tested `<` before `<=` would lex two tokens here.
+    assert_eq_nat(punctuation_token_count(tokens_of("<=")), 2);
+    assert_eq_nat(punctuation_token_count(tokens_of("::")), 2);
+    assert_eq_nat(punctuation_token_count(tokens_of("..")), 2);
+    assert_eq_nat(punctuation_token_count(tokens_of("|>")), 2);
+    assert_eq_nat(punctuation_token_count(tokens_of("->")), 2);
+    assert_eq_nat(punctuation_token_count(tokens_of("=>")), 2)
+}
+
+pub fn test_dot_dot_space_dot_is_two_tokens() -> Unit {
+    let toks: List<Token> = tokens_of(".. .");
+    assert_eq_nat(punctuation_token_count(toks), 3);
+    assert_eq_bool(kind_at_is(toks, 0, TokDotDot), true);
+    assert_eq_bool(kind_at_is(toks, 1, TokDot), true)
+}
+
+pub fn test_less_than_between_identifiers() -> Unit {
+    let toks: List<Token> = tokens_of("a<b");
+    assert_eq_nat(punctuation_token_count(toks), 4);
+    assert_eq_bool(kind_at_is(toks, 0, TokIdent("a")), true);
+    assert_eq_bool(kind_at_is(toks, 1, TokLAngle), true);
+    assert_eq_bool(kind_at_is(toks, 2, TokIdent("b")), true);
+    assert_eq_bool(kind_at_is(toks, 3, TokEof), true)
+}
+
+// ---------------------------------------------------------------------------
+// The error arm
+// ---------------------------------------------------------------------------
+
+pub fn test_unexpected_character_is_one_error_token() -> Unit {
+    let result = tokenize("$", "t.tg");
+    let toks: List<Token> = lex_result_tokens(result);
+    assert_eq_nat(punctuation_token_count(toks), 2);
+    assert_eq_bool(kind_at_is(toks, 0, TokError("")), true);
+    assert_eq_nat(error_count(lex_result_errors(result)), 1)
+}

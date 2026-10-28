@@ -1,0 +1,3 @@
+// Golden test (ADR 9.10.26o AC 3): a region in a theorem is E0096.
+theorem one_is_one(): Eq<Nat, 1, 1> { region { refl } }
+fn main() -> Nat { 0 }

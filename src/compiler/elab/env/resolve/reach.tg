@@ -1,0 +1,208 @@
+// src/compiler/elab/env/resolve/reach.tg
+// Bare-name reach (ADR 6.10.26p D3): a bare value, constructor or type the
+// module neither defines nor imports falls through to the program-wide
+// table (`fallback.tg`), and is found there only if its defining package is
+// one the current package may name, as the bootstrap's `unreachable_value`
+// decides (ADR 3.10.26m D5). To a package that did not declare it, the name
+// does not exist, so the caller reports it not found.
+//
+// P0.4: the defining module is recoverable without keying values by module.
+// A constructor's or type's table entry keeps the span it was declared at,
+// and the module tree (`ModuleInfo.module_files`) names each file's module.
+// A value's entry is seeded span-less, so its module is the registry's item
+// map entry (`ModuleInfo.item_modules`). The module maps to a package; one
+// no module owns (a builtin) is in reach. Without a manifest nothing is
+// consulted.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Option, Some, None};
+use driver::modules::info::{ModuleFileEntry, ItemModuleEntry};
+use driver::packages::table::{package_table_is_empty, package_path_may_reach};
+use elab::env::types::{Env, env_current_module_contents};
+use elab::env::ops::{elab_path_segments, env_check_visibility};
+use elab::env::module::{
+    ElabModulePath, Import, MaybeImport, ModuleContents, module_map_lookup,
+    SomeModuleContents, NoModuleContents, elab_module_path_to_string,
+    module_contents_lookup_import, SomeImport, NoImport
+};
+use parser::ast::{Visibility};
+use lexer::span::{Span};
+use elab::env::defs::{EnvError, env_error_coded};
+use elab::env::defs::{
+    value_def_list_lookup, NoValueDef, SomeValueDef,
+    MaybeResolvedValue, NoResolvedValue, SomeResolvedValue,
+    MaybeResolvedType, NoResolvedType, SomeResolvedType,
+    ResolvedValue, ResolvedGlobal, ResolvedConstructor, ResolvedLocal,
+    ResolvedType, ResolvedTypeDef, ResolvedTypeVar
+};
+use elab::env::resolve::fallback::{
+    env_global_table_contents, env_resolve_value_in_global_table, env_resolve_type_in_global_table
+};
+
+/// A bare value or constructor from the global table, if in reach.
+pub fn env_resolve_value_in_reach(env: Env, name: String) -> MaybeResolvedValue {
+    let found = env_resolve_value_in_global_table(env, name);
+    if package_table_is_empty(env.module_registry.packages) {
+        found
+    } else {
+        match found {
+            SomeResolvedValue(resolved) =>
+                if resolved_value_in_reach(env, resolved) { found } else { NoResolvedValue },
+            NoResolvedValue() => NoResolvedValue
+        }
+    }
+}
+
+/// A bare type from the global table, if in reach.
+pub fn env_resolve_type_in_reach(env: Env, name: String) -> MaybeResolvedType {
+    let found = env_resolve_type_in_global_table(env, name);
+    if package_table_is_empty(env.module_registry.packages) {
+        found
+    } else {
+        match found {
+            SomeResolvedType(resolved) =>
+                if resolved_type_in_reach(env, resolved) { found } else { NoResolvedType },
+            NoResolvedType() => NoResolvedType
+        }
+    }
+}
+
+fn resolved_type_in_reach(env: Env, resolved: ResolvedType) -> Bool {
+    match resolved {
+        ResolvedTypeDef(def) => defined_in_reach(env, def.span.file),
+        ResolvedTypeVar(_) => true
+    }
+}
+
+fn resolved_value_in_reach(env: Env, resolved: ResolvedValue) -> Bool {
+    match resolved {
+        ResolvedGlobal(def_name, _) => global_value_in_reach(env, def_name),
+        ResolvedConstructor(info) => defined_in_reach(env, info.span.file),
+        ResolvedLocal(_, _, _) => true
+    }
+}
+
+/// A global value's entry is seeded span-less from its signature export
+/// (`extract_value_infos`), so its module is read from the registry's item
+/// map instead: where the bare name is recorded, last writer first.
+fn global_value_in_reach(env: Env, def_name: String) -> Bool {
+    match value_def_list_lookup(env_global_table_contents(env).values, def_name) {
+        SomeValueDef(def) =>
+            if def.span.file == "" { module_in_reach(env, module_of_item(env.module_registry.item_modules, def_name)) }
+            else { defined_in_reach(env, def.span.file) },
+        NoValueDef() => true
+    }
+}
+
+/// Whether the current module's package may name what `file` defines.
+pub fn defined_in_reach(env: Env, file: String) -> Bool {
+    module_in_reach(env, module_of_file(env.module_registry.module_files, file))
+}
+
+/// Whether the current module's package may name `module`; an unknown
+/// module (a builtin's) is in reach.
+fn module_in_reach(env: Env, module: Option<List<String>>) -> Bool {
+    match module {
+        None() => true,
+        Some(segments) =>
+            package_path_may_reach(env.module_registry.packages, elab_path_segments(env.current_module), segments)
+    }
+}
+
+/// The module the registry records a bare item name under.
+pub fn module_of_item(entries: List<ItemModuleEntry>, name: String) -> Option<List<String>> {
+    match entries {
+        Nil() => None,
+        Cons(entry, rest) => {
+            let (item, path) = entry;
+            if item == name { Some(path.segments) } else { module_of_item(rest, name) }
+        }
+    }
+}
+
+/// The module whose source is `file`, as segments.
+pub fn module_of_file(entries: List<ModuleFileEntry>, file: String) -> Option<List<String>> {
+    match entries {
+        Nil() => None,
+        Cons(entry, rest) => {
+            let (path, entry_file) = entry;
+            if entry_file == file { Some(path.segments) } else { module_of_file(rest, file) }
+        }
+    }
+}
+
+// ===========================================================================
+// A BARE VALUE IMPORTED ACROSS A PACKAGE
+// ===========================================================================
+
+/// The refusal for a bare value imported from another package that keeps it
+/// `pub(crate)`, directly or through a `pub use` re-export (ADR 6.10.26p D6
+/// (a), `package_reexport_capped`): the import is admitted and the use is
+/// refused, at the use, as the bootstrap refuses it. A value the module
+/// defines shadows the import, so it is never checked. Only a manifest
+/// project is checked: inside one package `pub(crate)` is visible anywhere.
+pub fn imported_value_package_privacy(env: Env, name: String, span: Span) -> Option<EnvError> {
+    if package_table_is_empty(env.module_registry.packages) {
+        None
+    } else {
+        let contents = env_current_module_contents(env);
+        match value_def_list_lookup(contents.values, name) {
+            SomeValueDef(_) => None,
+            NoValueDef() => match module_contents_lookup_import(contents, name) {
+                SomeImport(imp) => imported_value_privacy(env, name, imp, span),
+                NoImport() => None
+            }
+        }
+    }
+}
+
+/// The imported value's definition — in the source module, or one re-export
+/// further on — checked against the current module.
+fn imported_value_privacy(env: Env, name: String, imp: Import, span: Span) -> Option<EnvError> {
+    match module_map_lookup(env.modules, imp.source_path) {
+        NoModuleContents() => None,
+        SomeModuleContents(source) => source_value_privacy(env, name, source, imp, span)
+    }
+}
+
+/// The value in the import's source module, else the re-export it holds.
+fn source_value_privacy(env: Env, name: String, source: ModuleContents, imp: Import, span: Span) -> Option<EnvError> {
+    match value_def_list_lookup(source.values, imp.source_name) {
+        SomeValueDef(def) => privacy_error(env, name, def.visibility, imp.source_path, span),
+        NoValueDef() => reexport_privacy(env, name, module_contents_lookup_import(source, imp.source_name), span)
+    }
+}
+
+fn reexport_privacy(env: Env, name: String, found: MaybeImport, span: Span) -> Option<EnvError> {
+    match found {
+        NoImport() => None,
+        SomeImport(reexport) => reexported_value_privacy(env, name, reexport, span)
+    }
+}
+
+fn reexported_value_privacy(env: Env, name: String, reexport: Import, span: Span) -> Option<EnvError> {
+    match module_map_lookup(env.modules, reexport.source_path) {
+        NoModuleContents() => None,
+        SomeModuleContents(origin) => origin_value_privacy(env, name, origin, reexport, span)
+    }
+}
+
+fn origin_value_privacy(env: Env, name: String, origin: ModuleContents, reexport: Import, span: Span) -> Option<EnvError> {
+    match value_def_list_lookup(origin.values, reexport.source_name) {
+        SomeValueDef(def) => privacy_error(env, name, def.visibility, reexport.source_path, span),
+        NoValueDef() => None
+    }
+}
+
+fn privacy_error(env: Env, name: String, visibility: Visibility, module: ElabModulePath, span: Span) -> Option<EnvError> {
+    if env_check_visibility(env, visibility, module) {
+        None
+    } else {
+        Some(env_error_coded(
+            "function `" ++ name ++ "` is private (defined in `" ++ elab_module_path_to_string(module)
+                ++ "`) and cannot be accessed from `" ++ elab_module_path_to_string(env.current_module) ++ "`",
+            span,
+            "E0104"
+        ))
+    }
+}

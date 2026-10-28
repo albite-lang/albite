@@ -1,0 +1,231 @@
+// src/compiler/parser/types/eq_sugar.tg
+// == sugar parsing: `expr == expr` in type position → TyEq(lhs, rhs, span).
+// Split from types/mod.tg for complexity (ADR 21.5.26f P5).
+
+use lexer::token::{TokenKind, TokIntLit, TokStringLit, TokTrue, TokFalse, TokEqEq, TokLParen,
+    Token, token_kind, TokIdent, TokRParen, TokLBracket, TokRBracket, TokLBrace, TokRBrace,
+    TokSemi, TokFatArrow, TokEof, TokFn, TokPub, TokTheorem, TokLemma, TokAxiom, TokType,
+    TokStruct, TokEnum, TokMod, TokUse, TokExtern, TokHash, TokReserved};
+use lexer::span::{Span, span_merge};
+use parser::error::{ParseError, parse_error_simple, parse_error_expected};
+use parser::syntax_kind::{SyntaxExpected};
+use parser::cursor::{Cursor, cursor_peek_kind, cursor_peek_span, cursor_check, cursor_expect,
+    cursor_is_eof, token_kind_name};
+use parser::option::{Option, None, Some};
+use parser::ast::common::{Path, path_span};
+use parser::ast::nodes::{TypeExpr, TyPath, TyEq, type_expr_span};
+use parser::ast::nodes::{Expr, ExprPath, ExprApp, expr_span};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Result, Ok, Err, list_take, list_drop};
+use parser::exprs::pratt::parse_expr_prec;
+use parser::exprs::postfix::{parse_postfix_loop, parse_call_args};
+
+/// Check if the current token can only start an expression, not a type.
+pub fn is_eq_sugar_start(cur: Cursor) -> Bool {
+    match cursor_peek_kind(cur) {
+        None() => false,
+        Some(kind) => is_eq_sugar_token(kind)
+    }
+}
+
+fn is_eq_sugar_token(kind: TokenKind) -> Bool {
+    match kind {
+        TokIntLit(_) => true,
+        TokTrue() => true,
+        TokFalse() => true,
+        TokStringLit(_) => true,
+        _ => false
+    }
+}
+
+/// Parse `expr == expr` when the LHS is known to be expression-only.
+pub fn parse_eq_sugar(cur: Cursor) -> Result<(TypeExpr, Cursor), ParseError> {
+    let (lhs, cur2) = parse_expr_prec(cur, 4)?;
+    let (_, cur3) = cursor_expect(cur2, TokEqEq())?;
+    let (rhs, cur4) = parse_expr_prec(cur3, 4)?;
+    let full_span = span_merge(expr_span(lhs), expr_span(rhs));
+    Ok((TyEq(lhs, rhs, full_span), cur4))
+}
+
+/// After parsing a type followed by `==`, convert the type LHS to an expression.
+/// Only path types (identifiers) can be reinterpreted as expressions.
+pub fn parse_eq_sugar_after_type(lhs_ty: TypeExpr, cur: Cursor) -> Result<(TypeExpr, Cursor), ParseError> {
+    match lhs_ty {
+        TyPath(path) => {
+            let start = path_span(path);
+            let lhs = ExprPath(path);
+            let (_, cur2) = cursor_expect(cur, TokEqEq())?;
+            let (rhs, cur3) = parse_expr_prec(cur2, 4)?;
+            let full_span = span_merge(start, expr_span(rhs));
+            Ok((TyEq(lhs, rhs, full_span), cur3))
+        },
+        _ => {
+            let span = cursor_peek_span(cur);
+            Err(parse_error_simple(
+                SyntaxExpected,
+                "left side of `==` in type position must be an identifier or literal",
+                span
+            ))
+        }
+    }
+}
+
+/// Parse `ident(args...) == expr` in type position.
+/// Called when a path was parsed as a type, then `(` follows.
+pub fn parse_eq_sugar_fn_call(path: Path, cur: Cursor) -> Result<(TypeExpr, Cursor), ParseError> {
+    let start = path_span(path);
+    let lhs_base = ExprPath(path);
+    let (lhs, cur2) = parse_postfix_loop(lhs_base, cur)?;
+    let (_, cur3) = cursor_expect(cur2, TokEqEq())?;
+    let (rhs, cur4) = parse_expr_prec(cur3, 4)?;
+    let full_span = span_merge(start, expr_span(rhs));
+    Ok((TyEq(lhs, rhs, full_span), cur4))
+}
+
+// ===========================================================================
+// STATEMENT POSITION (ADR 2.10.26f D7, mirroring 30.9.26d D10)
+// ===========================================================================
+//
+// A return type or a theorem's or axiom's proposition may also be spelled with
+// a leading identifier or `(`: `n + 0 == n`, which `parse_type` reads as a sum
+// type. A bounded lookahead decides; the terminators are the bootstrap's
+// `ends_statement` (`bootstrap/src/parser/types/eq_sugar.rs`), and `lemma` is
+// added because only the self-host lexes it as a keyword.
+
+/// Whether the statement starting at `cur` is `==` sugar: an identifier or `(`
+/// start, and an `==` at bracket depth 0 before the statement's terminator.
+pub fn statement_is_eq_sugar(cur: Cursor) -> Bool {
+    match cursor_peek_kind(cur) {
+        None() => false,
+        Some(kind) => starts_statement_scan(kind) && scan_statement(cur.remaining, 0)
+    }
+}
+
+fn starts_statement_scan(kind: TokenKind) -> Bool {
+    match kind {
+        TokIdent(_) => true,
+        TokLParen() => true,
+        _ => false
+    }
+}
+
+/// An `==` at depth 0 before a depth-0 terminator. A `{` nests only inside
+/// brackets (a closure body); at depth 0 it is the body. An unbalanced close
+/// ends the scan rather than underflowing.
+#[decreasing(tokens)]
+fn scan_statement(tokens: List<Token>, depth: Nat) -> Bool {
+    match tokens {
+        Nil() => false,
+        Cons(tok, rest) =>
+            let kind = token_kind(tok);
+            if depth == 0 && is_eq_eq(kind) {
+                true
+            } else if opens_bracket(kind, depth) {
+                scan_statement(rest, depth + 1)
+            } else if closes_bracket(kind) {
+                if depth == 0 { false } else { scan_statement(rest, depth - 1) }
+            } else if depth == 0 && ends_statement(kind) {
+                false
+            } else {
+                scan_statement(rest, depth)
+            }
+    }
+}
+
+/// How many tokens the statement spans: up to its first depth-0 terminator.
+#[decreasing(tokens)]
+fn statement_extent(tokens: List<Token>, depth: Nat, count: Nat) -> Nat {
+    match tokens {
+        Nil() => count,
+        Cons(tok, rest) =>
+            let kind = token_kind(tok);
+            if opens_bracket(kind, depth) {
+                statement_extent(rest, depth + 1, count + 1)
+            } else if closes_bracket(kind) && depth > 0 {
+                statement_extent(rest, depth - 1, count + 1)
+            } else if depth == 0 && ends_statement(kind) {
+                count
+            } else {
+                statement_extent(rest, depth, count + 1)
+            }
+    }
+}
+
+fn is_eq_eq(kind: TokenKind) -> Bool {
+    match kind {
+        TokEqEq() => true,
+        _ => false
+    }
+}
+
+fn opens_bracket(kind: TokenKind, depth: Nat) -> Bool {
+    match kind {
+        TokLParen() => true,
+        TokLBracket() => true,
+        TokLBrace() => depth > 0,
+        _ => false
+    }
+}
+
+fn closes_bracket(kind: TokenKind) -> Bool {
+    match kind {
+        TokRParen() => true,
+        TokRBracket() => true,
+        TokRBrace() => true,
+        _ => false
+    }
+}
+
+/// A token that ends a statement at bracket depth 0: the body's `{`, `;`,
+/// `=>`, `where`, end of input, or a keyword opening the next item (an axiom
+/// has no body, so the next item ends its proposition).
+fn ends_statement(kind: TokenKind) -> Bool {
+    match kind {
+        TokLBrace() => true,
+        TokSemi() => true,
+        TokFatArrow() => true,
+        TokEof() => true,
+        TokFn() => true,
+        TokPub() => true,
+        TokTheorem() => true,
+        TokLemma() => true,
+        TokAxiom() => true,
+        TokType() => true,
+        TokStruct() => true,
+        TokEnum() => true,
+        TokMod() => true,
+        TokUse() => true,
+        TokExtern() => true,
+        TokHash() => true,
+        TokReserved(word) => ends_statement_word(word),
+        _ => false
+    }
+}
+
+/// `where`, `impl`, `trait` and `const` lex as reserved words here.
+fn ends_statement_word(word: String) -> Bool {
+    word == "where" || word == "impl" || word == "trait" || word == "const"
+}
+
+/// Parse a statement already classified as sugar. The operands see only the
+/// statement's own tokens, so a trailing path cannot open a named record over
+/// the body's `{` (`-> x == Some { refl }`): the bootstrap clears
+/// `named_records_allowed` for the same reason.
+pub fn parse_eq_sugar_statement(cur: Cursor) -> Result<(TypeExpr, Cursor), ParseError> {
+    let extent = statement_extent(cur.remaining, 0, 0);
+    let bounded: Cursor = { remaining: list_take(cur.remaining, extent), position: cur.position, filename: cur.filename };
+    let (ty, rest) = parse_eq_sugar(bounded)?;
+    if cursor_is_eof(rest) {
+        let after: Cursor = { remaining: list_drop(cur.remaining, extent), position: cur.position + extent, filename: cur.filename };
+        Ok((ty, after))
+    } else {
+        Err(parse_error_expected("end of `==` statement", statement_token_name(rest), cursor_peek_span(rest)))
+    }
+}
+
+fn statement_token_name(cur: Cursor) -> String {
+    match cursor_peek_kind(cur) {
+        None() => "end of file",
+        Some(k) => token_kind_name(k)
+    }
+}

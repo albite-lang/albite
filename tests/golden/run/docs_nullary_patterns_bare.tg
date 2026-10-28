@@ -1,0 +1,10 @@
+// Bare constructor names as patterns, on a type whose constructors all have
+// no payload, are read by name (ADR 6.10.26k D2, D3). Each arm's weight is
+// distinct, so a first-arm-takes-all reading prints 300, not 111.
+type Color = Red | Green | Blue
+
+fn weight(c: Color) -> Nat {
+    match c { Red => 100, Green => 10, Blue => 1 }
+}
+
+fn main() -> Nat { weight(Red()) + weight(Green()) + weight(Blue()) }

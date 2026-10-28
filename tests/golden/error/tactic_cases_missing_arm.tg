@@ -1,0 +1,5 @@
+// E0082 (ADR 3.10.26f D4): `cases` needs one arm per constructor, and
+// `Mid` has none.
+type Tri = Lo | Mid(Nat) | Hi
+
+theorem tri_refl(t: Tri) -> Eq<Tri, t, t> by { cases t { Lo => refl, Hi => refl } }

@@ -1,0 +1,65 @@
+// A bare nullary name inside a constructor pattern names that constructor
+// (ADR 13.10.26h AC 5).
+//
+// `Som(A)` once bound `A` to every `Som` payload, so the first `Som` arm took
+// them all and the arms after it were dropped. Each function below is spelled
+// bare, and each assertion is the value the source means.
+//
+// Cost 5: which arm ran is read at RUNTIME, and `--assertion-census` proves
+// each comparison ran.
+//
+// This file is its own entry and must NEVER be imported from
+// `src/compiler/main.tg`. The extern is declared here rather than imported
+// from `driver::ffi::test`: a `mod driver;` would elaborate the whole
+// self-hosted compiler to reach a two-line wrapper.
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+
+fn assert_eq_nat(left: Nat, right: Nat) -> Unit {
+    tg_assert_eq_nat(left, right)
+}
+
+type Shade = Ash | Bone | Coal
+type Held = Got(Shade) | Empty
+type Boxed = Boxd(Held) | Bare
+
+/// §1.1 row 1: two nested arms, then a catch-all.
+fn pick_with_catch_all(held: Held) -> Nat {
+    match held { Got(Ash) => 1, Got(Bone) => 2, other => 3 }
+}
+
+/// §1.1 row 3: every payload named, no catch-all.
+fn pick_exhaustive(held: Held) -> Nat {
+    match held { Got(Ash) => 1, Got(Bone) => 2, Got(Coal) => 3, Empty => 0 }
+}
+
+/// Two levels down: the rewrite reaches every depth.
+fn pick_two_deep(boxed: Boxed) -> Nat {
+    match boxed { Boxd(Got(Ash)) => 1, Boxd(Got(Bone)) => 2, _ => 3 }
+}
+
+// 13.10.26h AC5: §1.1 row 1 answers 1233, not 1113.
+pub fn test_nested_arms_with_a_catch_all_read_by_name() -> Unit {
+    assert_eq_nat(
+        pick_with_catch_all(Got(Ash())) * 1000 + pick_with_catch_all(Got(Bone())) * 100
+            + pick_with_catch_all(Got(Coal())) * 10 + pick_with_catch_all(Empty()),
+        1233
+    )
+}
+
+// 13.10.26h AC5: §1.1 row 3 answers 230, not 110.
+pub fn test_an_exhaustive_nested_match_reads_by_name() -> Unit {
+    assert_eq_nat(
+        pick_exhaustive(Got(Bone())) * 100 + pick_exhaustive(Got(Coal())) * 10 + pick_exhaustive(Empty()),
+        230
+    )
+}
+
+// 13.10.26h AC5: a bare name two constructors down is read by name too.
+pub fn test_two_levels_down_read_by_name() -> Unit {
+    assert_eq_nat(
+        pick_two_deep(Boxd(Got(Ash()))) * 100 + pick_two_deep(Boxd(Got(Bone()))) * 10
+            + pick_two_deep(Boxd(Got(Coal()))),
+        123
+    )
+}

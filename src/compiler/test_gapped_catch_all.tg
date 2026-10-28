@@ -1,0 +1,71 @@
+// The self-host's padding of a gapped catch-all (ADR 13.10.26k D2, D6).
+//
+// `pad_limit` decides how many slots a padded match fills: through the last
+// named constructor, then one slot that the lowering hands the rest of the
+// sum. `token_kind_eq` compares declaration indices, so it no longer pads at
+// all; these assertions pin that the rewrite kept its meaning, including for
+// the constructors whose old arm order differed from the declaration's.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_bool, assert_eq_nat};
+use lexer::token::{
+    TokIntLit, TokStringLit, TokIdent, TokFn, TokLet,
+    TokRefl, TokSubst, TokRegion, TokTry, TokEof, TokError
+};
+use parser::cursor::token_kinds::{token_kind_eq, token_kind_tag};
+use elab::exprs::matches::arm_reorder::{pad_limit};
+
+// ---------------------------------------------------------------------------
+// pad_limit
+// ---------------------------------------------------------------------------
+
+// 13.10.26k D2: a gap before the last named arm is padded, the tail is one slot.
+pub fn test_pad_limit_stops_one_past_the_last_named_arm() -> Unit {
+    assert_eq_nat(pad_limit(93, 0), 2);
+    assert_eq_nat(pad_limit(93, 4), 6);
+    assert_eq_nat(pad_limit(5, 1), 3)
+}
+
+// The last or second-last constructor named: every slot, as before D2's cap.
+pub fn test_pad_limit_is_total_near_the_end() -> Unit {
+    assert_eq_nat(pad_limit(5, 4), 5);
+    assert_eq_nat(pad_limit(5, 3), 5);
+    assert_eq_nat(pad_limit(1, 0), 1)
+}
+
+// No arm resolved: `last_named_index` reports `total`, and nothing is capped.
+pub fn test_pad_limit_without_a_named_arm_is_total() -> Unit {
+    assert_eq_nat(pad_limit(7, 7), 7)
+}
+
+// ---------------------------------------------------------------------------
+// token_kind_eq / token_kind_tag
+// ---------------------------------------------------------------------------
+
+// 13.10.26k D6: a kind equals itself; the payload is ignored.
+pub fn test_token_kind_eq_same_kind() -> Unit {
+    assert_eq_bool(token_kind_eq(TokFn, TokFn), true);
+    assert_eq_bool(token_kind_eq(TokIdent("a"), TokIdent("b")), true);
+    assert_eq_bool(token_kind_eq(TokIntLit(1), TokIntLit(2)), true);
+    assert_eq_bool(token_kind_eq(TokError("x"), TokError("y")), true)
+}
+
+pub fn test_token_kind_eq_different_kinds() -> Unit {
+    assert_eq_bool(token_kind_eq(TokFn, TokLet), false);
+    assert_eq_bool(token_kind_eq(TokIntLit(1), TokStringLit("1")), false);
+    assert_eq_bool(token_kind_eq(TokRefl, TokSubst), false);
+    assert_eq_bool(token_kind_eq(TokTry, TokRegion), false);
+    assert_eq_bool(token_kind_eq(TokEof, TokError("")), false)
+}
+
+// The tag is the declaration index: first, a reordered one, and last.
+pub fn test_token_kind_tag_is_the_declaration_index() -> Unit {
+    assert_eq_nat(token_kind_tag(TokIntLit(0)), 0);
+    assert_eq_nat(token_kind_tag(TokRefl), 27);
+    assert_eq_nat(token_kind_tag(TokRegion), 45);
+    assert_eq_nat(token_kind_tag(TokError("")), 92)
+}

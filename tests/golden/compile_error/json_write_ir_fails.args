@@ -1,0 +1,1 @@
+--emit-llvm -o tests/golden/compile_error/missing/out.ll --error-format json

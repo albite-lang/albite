@@ -1,0 +1,10 @@
+// A sibling's constructor as a pattern over a `Nat` scrutinee (ADR 2.10.26g
+// §2.4, D5): no sibling type in the signature, so nothing but the pattern can
+// make this a refusal.
+use boxes::{MkBox};
+
+fn pick(scrutinee: Nat) -> Nat {
+    match scrutinee { MkBox(k) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(1) }

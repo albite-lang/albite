@@ -1,0 +1,41 @@
+// Negative control for the refutations (ADR 7.10.26m D7, AC 2).
+//
+// Each definition below refutes a hypothesis that is not impossible, or that
+// the kernel does not trust directly, and each must be refused.
+// `check-mustfail-fixtures` (make/quality/tg-tests.mk) requires this file to
+// fail with exactly
+//
+//   albite test src/compiler/mustfail_refutation.tg --require-tests
+//     -> aborting due to 5 errors
+//
+// The cases, in the bootstrap's codes:
+//
+//   1. `absurd(h)` with `h: Eq<Bool, true, true>`, which holds (E0010)
+//   2. `absurd(h)` with `h: Eq<Nat, 0, 1>`: `Nat` goes through
+//      `succ_ne_zero`, never the trusted premise (E0010)
+//   3. `absurd(h)` with `h: Eq<Bool, b, false>` and `b` a parameter (E0010)
+//   4. `absurd(h)` with no expected type, which never reaches the
+//      check-mode built-in (E0001)
+//   5. `lt_irrefl(x, h)` with `h: Lt<x, y>` (E0010)
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+mod nat_order;
+
+fn test_absurd_on_a_true_equation(h: Eq<Bool, true, true>) -> Nat {
+    absurd(h)
+}
+
+pub theorem absurd_on_a_nat_equation(h: Eq<Nat, 0, 1>) -> Void { absurd(h) }
+
+pub theorem absurd_on_an_open_bool(b: Bool, h: Eq<Bool, b, false>) -> Void { absurd(h) }
+
+fn test_absurd_with_no_expected_type(h: Void) -> Unit {
+    let _v = absurd(h);
+    ()
+}
+
+pub theorem lt_irrefl_at_distinct_bounds(x: Nat, y: Nat, h: nat_order::Lt<x, y>) -> Void {
+    nat_order::lt_irrefl(x, h)
+}

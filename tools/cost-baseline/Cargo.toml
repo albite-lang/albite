@@ -1,0 +1,18 @@
+[package]
+name = "cost-baseline"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "The decision logic of `albite-dev check-cost`: the stored cost record, its statistics, the verdict, the trigger and the phase order — pure, LLVM-free and scored by the diff gates (ADR 15.10.26f D8)"
+publish = false
+
+[lib]
+name = "cost_baseline"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[lints]
+workspace = true

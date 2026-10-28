@@ -1,0 +1,8 @@
+
+running 3 tests
+
+test test_double_doubles ... ok
+test test_scaled_adds_one ... ok
+test test_root_secret_is_seven ... ok
+
+result: ok. 3 passed; 0 failed; 0 skipped; finished in 0.00s

@@ -1,0 +1,51 @@
+// src/compiler/driver/packages/notes.tg
+// The package plan's non-fatal notes (ADR 20.10.26i D2): a manifest still
+// named `tungsten.toml`, read this release with a note to rename it, or one an
+// `albite.toml` beside it shadows. The core words each note; both compilers
+// print it after `note: `, or as a `note`-level record under
+// `--error-format json`, as the bootstrap's `note_output` does.
+//
+// `package_note_line` is the pure decision; `report_package_notes` is the one
+// effectful caller each pipeline runs once the project has mounted.
+
+use driver::ffi::{List, Nil, Cons, println, eprintln};
+use driver::util::{list_reverse};
+use driver::cli::{ErrorFormat, error_format_is_json};
+use driver::packages::ffi::{PlanHandle, packages_note_count, packages_note_text};
+use elab::error::{json_note_record};
+
+/// How one note prints in `format`: a `note:` line, or a JSON record.
+pub fn package_note_line(format: ErrorFormat, text: String) -> String {
+    if error_format_is_json(format) { json_note_record(text) } else { "note: " ++ text }
+}
+
+/// Print each note: a human line on stderr, a record on stdout beside the
+/// pipeline's other records.
+pub fn report_package_notes(notes: List<String>, format: ErrorFormat) -> Unit {
+    match notes {
+        Nil() => (),
+        Cons(text, rest) => {
+            if error_format_is_json(format) {
+                println(package_note_line(format, text))
+            } else {
+                eprintln(package_note_line(format, text))
+            };
+            report_package_notes(rest, format)
+        }
+    }
+}
+
+/// Every note of `plan`, in the planner's order.
+pub fn read_plan_notes(plan: PlanHandle) -> List<String> {
+    read_plan_notes_from(plan, 0, packages_note_count(plan), Nil)
+}
+
+// Partial (ADR 11.8.26b): a measure recursion over an index, as `mount.tg`'s.
+#[partial]
+fn read_plan_notes_from(plan: PlanHandle, index: Nat, count: Nat, acc: List<String>) -> List<String> {
+    if index >= count {
+        list_reverse(acc)
+    } else {
+        read_plan_notes_from(plan, index + 1, count, Cons(packages_note_text(plan, index), acc))
+    }
+}

@@ -1,0 +1,23 @@
+// ADR 13.10.26q D6: a 1,000,000-element `List<Nat>` built in a region is
+// copied out — the runtime's walk uses a work stack, not the C stack — and
+// summed after the release. Native only (`make check-region-copy-out`): the
+// evaluator cannot build it in minutes. Expected: 4500000 (100,000 × 45).
+type List<T> = Nil | Cons(T, List<T>)
+
+#[partial]
+fn build(n: Nat, acc: List<Nat>) -> List<Nat> {
+    if n == 0 { acc } else { build(n - 1, Cons(n % 10, acc)) }
+}
+
+#[partial]
+fn total(xs: List<Nat>, acc: Nat) -> Nat {
+    match xs {
+        Nil => acc,
+        Cons(x, rest) => total(rest, acc + x)
+    }
+}
+
+fn main() -> Nat {
+    let xs = region { build(1000000, Nil) };
+    total(xs, 0)
+}

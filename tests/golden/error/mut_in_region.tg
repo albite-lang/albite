@@ -1,0 +1,6 @@
+// Golden test (ADR 13.10.26r AC 5): a region body that assigns an outer
+// `let mut` is E0106 (M6), not E0104. The self-host raises E0742.
+fn main() -> Nat {
+    let mut x = 1;
+    region { x = 5; 1 }
+}

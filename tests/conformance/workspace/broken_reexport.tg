@@ -1,0 +1,3 @@
+// A sibling whose re-export resolves nowhere (ADR 30.9.26i D7). Neither
+// compiler may print a warning about it: a sibling's re-export pass is silent.
+pub use nosuch::{gone};

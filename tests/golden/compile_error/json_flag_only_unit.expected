@@ -1,0 +1,1 @@
+{"schema":1,"kind":"diagnostic","level":"error","code":"E0141","message":"--only-unit requires --emit-llvm.","primary_span":null,"notes":[{"message":"Unit isolation emits .ll files for the selected unit(s) only;","span":null},{"message":"a partial object set cannot be linked into a binary.","span":null}],"help":[],"diagnostic_hints":[]}

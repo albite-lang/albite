@@ -1,0 +1,20 @@
+[E0010] Error: expected `Nat`, found `Bool`
+   ╭─[tests/golden/test/junit_elab_error.tg:6:19]
+   │
+ 5 │ fn test_mismatch() -> Unit {
+   │                       ──┬─  
+   │                         ╰─── expected due to return type
+ 6 │     let _n: Nat = true;
+   │                   ──┬─  
+   │                     ╰─── expected `Nat`, found `Bool`
+───╯
+
+error: aborting due to 1 error
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="albite test" tests="1" failures="0" errors="1" skipped="0" time="0.000">
+  <testsuite name="tests/golden/test/junit_elab_error.tg" tests="1" failures="0" errors="1" skipped="0" time="0.000">
+    <testcase name="(elaboration)" classname="junit_elab_error" file="tests/golden/test/junit_elab_error.tg" assertions="0" time="0.000">
+      <error message="the file did not elaborate; diagnostics are on stderr" type="diagnostics"/>
+    </testcase>
+  </testsuite>
+</testsuites>

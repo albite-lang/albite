@@ -1,0 +1,93 @@
+// The Tier 4 prime library is citable (ADR 9.10.26k AC 3, D7).
+//
+// Each D4 lemma of nat_prime.tg cited in a typed `let`. A lemma taking
+// `IsPrime<p>` is cited at a variable `p`, under a hypothesis parameter of a
+// local theorem: a numeral `IsPrime<3>` would need every divisor of 3
+// enumerated by hand. The others are cited at numerals.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_nat_prime.tg`, checked by
+// `make check-mustfail-fixtures`.
+//
+// The library is imported alone and its families reached through it
+// (`nat_prime::nat_divides::Divides`): a second `mod nat_divides;` would reach
+// the family-declaring file by two paths, which loses its families.
+
+mod nat_prime;
+
+// `Congr` has no lemmas (I2's), so a local theorem shows it is well formed.
+theorem congr_shift(b: Nat) -> nat_prime::Congr<3, b + 6, b> by {
+    left;
+    exists 2;
+    ring
+}
+
+// A test function takes no parameters, so a citation at a variable prime is a
+// local theorem, whose statement the elaborator and the kernel both check.
+theorem prime_gt_one_cited(p: Nat, hp: nat_prime::IsPrime<p>) -> nat_prime::nat_divmod::nat_order::Lt<1, p> {
+    nat_prime::prime_gt_one(p, hp)
+}
+
+theorem prime_divisor_cases_cited(p: Nat, d: Nat, hp: nat_prime::IsPrime<p>,
+    hd: nat_prime::nat_divides::Divides<d, p>) -> Eq<Nat, d, 1> + Eq<Nat, d, p> {
+    nat_prime::prime_divisor_cases(p, d, hp, hd)
+}
+
+theorem euclid_lemma_cited(p: Nat, a: Nat, b: Nat, hp: nat_prime::IsPrime<p>,
+    hab: nat_prime::nat_divides::Divides<p, a * b>, hna: nat_prime::nat_divides::Divides<p, a> -> Void)
+    -> nat_prime::nat_divides::Divides<p, b> {
+    nat_prime::euclid_lemma(p, a, b, hp, hab, hna)
+}
+
+// 9.10.26l AC2: a prime divides every middle entry of its binomial row.
+theorem prime_divides_binom_cited(p: Nat, k: Nat, hp: nat_prime::IsPrime<p>,
+    h0: nat_prime::nat_divmod::nat_order::Lt<0, k>, hk: nat_prime::nat_divmod::nat_order::Lt<k, p>)
+    -> nat_prime::nat_divides::Divides<p, nat_prime::nat_binom::binom(p, k)> {
+    nat_prime::prime_divides_binom(p, k, hp, h0, hk)
+}
+
+// A hand-built `Lt<0, 6>` is `(5, refl)`: it is `exists k: Nat. (0 + 1) + k == 6`.
+fn test_divides_le_is_cited() -> Unit {
+    let hd: nat_prime::nat_divides::Divides<3, 6> = (2, refl);
+    let hn: nat_prime::nat_divmod::nat_order::Lt<0, 6> = (5, refl);
+    let _r: nat_prime::nat_divmod::nat_order::Le<3, 6> = nat_prime::divides_le(3, 6, hd, hn);
+    ()
+}
+
+fn test_not_divides_below_is_cited() -> Unit {
+    let h0: nat_prime::nat_divmod::nat_order::Lt<0, 2> = (1, refl);
+    let hk: nat_prime::nat_divmod::nat_order::Lt<2, 5> = (2, refl);
+    let _r: nat_prime::nat_divides::Divides<5, 2> -> Void = nat_prime::not_divides_below(5, 2, h0, hk);
+    ()
+}
+
+fn test_divides_sub_is_cited() -> Unit {
+    let hmn: nat_prime::nat_divides::Divides<3, 6 + 9> = (5, refl);
+    let hm: nat_prime::nat_divides::Divides<3, 6> = (2, refl);
+    let _r: nat_prime::nat_divides::Divides<3, 9> = nat_prime::divides_sub(3, 6, 9, hmn, hm);
+    ()
+}
+
+// `2 * binom(4, 2)` and `4 * binom(3, 1)` are both 12.
+fn test_binom_absorb_is_cited() -> Unit {
+    let _r: Eq<Nat, 2 * nat_prime::nat_binom::binom(4, 2), 4 * nat_prime::nat_binom::binom(3, 1)> =
+        nat_prime::nat_binom::binom_absorb(3, 1);
+    ()
+}
+
+// Stated at `1 + 6`, not `7`: `Congr`'s body is a sum of `exists`, and the
+// elaborator compares that expansion without normalising a closed numeral sum
+// (9.10.26i § 6 met the same with `Lt<1 + 1, 4>`).
+fn test_congr_is_well_formed() -> Unit {
+    let _c: nat_prime::Congr<3, 1 + 6, 1> = congr_shift(1);
+    ()
+}
+
+// A citation whose stated conclusion is the wrong side is refused.
+fn test_wrong_citation_is_refused() -> Unit {
+    expect_error(
+        { let _r: nat_prime::nat_divides::Divides<3, 6> = nat_prime::divides_sub(3, 6, 9, (5, refl), (2, refl)); () },
+        "E0010",
+    );
+    ()
+}

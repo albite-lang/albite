@@ -1,0 +1,2 @@
+use lib_c::base;
+pub fn a() -> Nat { base() + 1 }

@@ -1,0 +1,10 @@
+// Golden test (ADR 7.10.26q D5): the native byte-index trap line.
+// The compiled binary's check branches to the trap — `tg_int_trap(8)` under
+// `off`, the core's `tg_native_int_trap(8)` under `all` — and the golden
+// runner snapshots its stderr, so both settings must print the line
+// run/bytes_trap_index.tg pins for the evaluator. An index equal to the
+// length is the first one out of range.
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_get(h: Nat, i: Nat) -> Nat
+
+fn main() -> Nat { tg_bytes_get(tg_bytes_new(4), 4) }

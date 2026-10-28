@@ -1,0 +1,182 @@
+// src/compiler/driver/pipeline/test/records/frames.tg
+// Reading a machine-format harness's frames back (ADR 1.10.26i D3).
+//
+// The harness writes one frame per test with `tg_test_record_end`:
+//
+//   \x1e tgtest \t 1 \t name \t failed \t assertions \t duration_ms
+//        \t stdout_len \t stderr_len \n  <stdout bytes> <stderr bytes>
+//
+// (spaces for legibility only). Lengths are in bytes, so a payload holding a
+// `\x1e`, a tab or a newline cannot desynchronise the stream, and everything
+// OUTSIDE a frame — `running N tests`, each `  name ... ok`, the summary — is
+// skipped. The payloads are already valid UTF-8 with no NUL (D3's fallback:
+// the core decodes them lossily before framing), so the boundaries a length
+// names are scalar boundaries and `string_copy_range` reads them whole.
+//
+// EVALUATOR. Only `string_len`, `string_char_at_internal` and the
+// StringBuilder wrappers are reached, all executable, so `test_test_records.tg`
+// asserts every case on the evaluator. Every name is `frame`-prefixed: both
+// compilers key values on the bare name.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::types::{string_len, string_char_at_internal, ffi_list_reverse};
+use driver::util::{
+    Option, Some, None, Result, Ok, Err, string_eq, parse_nat, nat_to_string,
+    list_len, list_get
+};
+use driver::util::strings::scalars::{string_copy_range};
+
+/// One test's result, as its frame reported it.
+pub type TestFrame = {
+    name: String,
+    failed: Bool,
+    assertions: Nat,
+    duration_ms: Nat,
+    stdout: String,
+    stderr: String
+}
+
+/// Every frame in order, or why the stream cannot be trusted — which the
+/// driver treats as a runner failure (exit 2, D6).
+pub type FrameParse =
+    | FramesParsed(List<TestFrame>)
+    | FramesMalformed(String)
+
+/// A frame's header, before its payloads are read.
+type FrameHeader = {
+    name: String,
+    failed: Bool,
+    assertions: Nat,
+    duration_ms: Nat,
+    stdout_len: Nat,
+    stderr_len: Nat
+}
+
+/// The record separator that opens a frame.
+fn frame_marker() -> Nat { 30 }
+
+/// Parse every frame in `text`, skipping the bytes between them.
+pub fn parse_frames(text: String) -> FrameParse {
+    parse_frames_from(text, 0, string_len(text), Nil)
+}
+
+// Partial (ADR 11.8.26b): `i` ascends toward `len` — a measure recursion.
+// Executable compiler code no proof reaches; E0063 guards it.
+#[partial]
+fn parse_frames_from(text: String, i: Nat, len: Nat, acc: List<TestFrame>) -> FrameParse {
+    let start = frame_index_of_byte(text, frame_marker(), i, len);
+    if start >= len {
+        FramesParsed(ffi_list_reverse(acc))
+    } else {
+        let header_end = frame_index_of_byte(text, 10, start, len);
+        if header_end >= len {
+            FramesMalformed("truncated frame header at byte " ++ frame_nat_text(start))
+        } else {
+            match frame_header_of(frame_split_tabs(string_copy_range(text, start + 1, header_end))) {
+                Err(msg) => FramesMalformed(msg),
+                Ok(header) => frame_with_payloads(text, header, header_end + 1, len, acc)
+            }
+        }
+    }
+}
+
+/// Read a header's two payloads and carry on after them.
+#[partial]
+fn frame_with_payloads(text: String, header: FrameHeader, body: Nat, len: Nat,
+                       acc: List<TestFrame>) -> FrameParse {
+    let stderr_at = body + header.stdout_len;
+    let after = stderr_at + header.stderr_len;
+    if after > len {
+        FramesMalformed("truncated payload in the frame for " ++ header.name)
+    } else {
+        let frame = {
+            name: header.name,
+            failed: header.failed,
+            assertions: header.assertions,
+            duration_ms: header.duration_ms,
+            stdout: string_copy_range(text, body, stderr_at),
+            stderr: string_copy_range(text, stderr_at, after)
+        } : TestFrame;
+        parse_frames_from(text, after, len, Cons(frame, acc))
+    }
+}
+
+/// The eight header fields, checked: the tag, version 1, the name, then five
+/// numbers. Read by index rather than by a nested `Cons` pattern, whose
+/// lowering the self-host handles differently (CLAUDE.md, closed terms).
+fn frame_header_of(fields: List<String>) -> Result<FrameHeader, String> {
+    let version = frame_field(fields, 1);
+    if list_len(fields) != 8 {
+        Err("a frame header has " ++ frame_nat_text(list_len(fields)) ++ " fields, not 8")
+    } else if !string_eq(frame_field(fields, 0), "tgtest") {
+        Err("a frame header does not start with tgtest")
+    } else if !string_eq(version, "1") {
+        Err("unknown frame version " ++ version)
+    } else {
+        frame_header_values(frame_field(fields, 2), fields)
+    }
+}
+
+fn frame_header_values(name: String, fields: List<String>) -> Result<FrameHeader, String> {
+    let failed = frame_number(fields, 3);
+    let assertions = frame_number(fields, 4);
+    let ms = frame_number(fields, 5);
+    let out_len = frame_number(fields, 6);
+    let err_len = frame_number(fields, 7);
+    if failed > 1 || assertions == frame_not_a_number() || ms == frame_not_a_number() ||
+       out_len == frame_not_a_number() || err_len == frame_not_a_number() {
+        Err("a non-numeric field in the frame for " ++ name)
+    } else {
+        Ok({ name: name, failed: failed == 1, assertions: assertions,
+             duration_ms: ms, stdout_len: out_len, stderr_len: err_len } : FrameHeader)
+    }
+}
+
+/// A sentinel no header writes: the largest Nat. `failed` is also refused by
+/// it, being greater than 1.
+fn frame_not_a_number() -> Nat { 18446744073709551615 }
+
+fn frame_number(fields: List<String>, index: Nat) -> Nat {
+    match parse_nat(frame_field(fields, index)) {
+        Some(n) => n,
+        None() => frame_not_a_number()
+    }
+}
+
+fn frame_field(fields: List<String>, index: Nat) -> String {
+    match list_get(fields, index) {
+        Some(field) => field,
+        None() => ""
+    }
+}
+
+/// `s` split at every tab.
+pub fn frame_split_tabs(s: String) -> List<String> {
+    frame_split_from(s, 0, string_len(s))
+}
+
+#[partial]
+fn frame_split_from(s: String, i: Nat, len: Nat) -> List<String> {
+    let tab = frame_index_of_byte(s, 9, i, len);
+    if tab >= len {
+        Cons(string_copy_range(s, i, len), Nil)
+    } else {
+        Cons(string_copy_range(s, i, tab), frame_split_from(s, tab + 1, len))
+    }
+}
+
+/// The index of the first `byte` at or after `i`, or `len`.
+#[partial]
+fn frame_index_of_byte(s: String, byte: Nat, i: Nat, len: Nat) -> Nat {
+    if i >= len {
+        len
+    } else if string_char_at_internal(s, i) == byte {
+        i
+    } else {
+        frame_index_of_byte(s, byte, i + 1, len)
+    }
+}
+
+fn frame_nat_text(n: Nat) -> String {
+    nat_to_string(n)
+}

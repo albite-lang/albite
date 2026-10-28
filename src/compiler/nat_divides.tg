@@ -1,0 +1,91 @@
+// The Tier 3 divisibility library (ADR 7.10.26j): the family `Divides`
+// (universe_hierarchy.md Q3) and the divisibility lemmas over it.
+//
+// A FLAT sibling of nat_arith.tg and nat_order.tg, imported with
+// `mod nat_divides;` from any file in this directory (7.10.26j D1). It is NOT
+// folded into nat_arith.tg: that file is a row of
+// `make selfcompiled-dependent-signature-check` that both compilers must
+// accept, and `albite1` refuses a family at parse. This file's own row reads
+// bootstrap accept, `albite1` reject. Nor into nat_order.tg: divisibility
+// needs no order, and a library per family keeps each one's census separate.
+//
+// `omega` is NOT the route: its fragment is linear and it refuses a `Divides`
+// goal by shape (E0082). Each proof unpacks its hypotheses' witnesses with
+// `cases`, gives the goal's witness with `exists`, rewrites by the
+// hypotheses' equations and closes by `ring`, citing nat_arith.tg's laws.
+// Each proof is re-checked by the kernel
+// (`albite doctor check proof kernel-census`).
+//
+// `divides_zero`, `one_divides` and `divides_mul_right` are beyond the plan's
+// four because Tier 4 cites them. The multiplier's side matters: `*` computes
+// only on its right operand, so `m * n` and `n * m` are different terms.
+//
+// Deferred (7.10.26j § 3): `mod_def`, which needs `/` and `%` over open
+// terms (7.10.26o designs it), and `divides_antisymm` / `divides_le`, which
+// need order and a refutation.
+//
+// Suite: test_nat_divides.tg, with its must-fail twin mustfail_nat_divides.tg.
+
+// `ring` cites the library's semiring laws.
+mod nat_arith;
+
+pub type Divides(d: Nat, n: Nat): Prop = exists k: Nat. n == d * k
+
+pub theorem divides_refl(n: Nat) -> Divides<n, n> by {
+    exists 1;
+    ring
+}
+
+pub theorem divides_zero(d: Nat) -> Divides<d, 0> by {
+    exists 0;
+    ring
+}
+
+pub theorem one_divides(n: Nat) -> Divides<1, n> by {
+    exists n;
+    ring
+}
+
+pub theorem divides_trans(d: Nat, m: Nat, n: Nat, h1: Divides<d, m>, h2: Divides<m, n>) -> Divides<d, n> by {
+    cases h1 {
+        (k1, e1) => cases h2 {
+            (k2, e2) => {
+                exists k1 * k2;
+                rewrite [e2, e1];
+                ring
+            }
+        }
+    }
+}
+
+pub theorem divides_add(d: Nat, m: Nat, n: Nat, h1: Divides<d, m>, h2: Divides<d, n>) -> Divides<d, m + n> by {
+    cases h1 {
+        (k1, e1) => cases h2 {
+            (k2, e2) => {
+                exists k1 + k2;
+                rewrite [e1, e2];
+                ring
+            }
+        }
+    }
+}
+
+pub theorem divides_mul_left(d: Nat, n: Nat, m: Nat, h: Divides<d, n>) -> Divides<d, m * n> by {
+    cases h {
+        (k, e) => {
+            exists m * k;
+            rewrite [e];
+            ring
+        }
+    }
+}
+
+pub theorem divides_mul_right(d: Nat, n: Nat, m: Nat, h: Divides<d, n>) -> Divides<d, n * m> by {
+    cases h {
+        (k, e) => {
+            exists k * m;
+            rewrite [e];
+            ring
+        }
+    }
+}

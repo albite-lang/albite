@@ -1,0 +1,4 @@
+kernel census: src/compiler/nat_arith.tg
+  population: 23 proof-relevant (+0 total with --include-total), 0 axioms not checked
+  admitted:   23
+  refused:    0   (first refusal per definition)

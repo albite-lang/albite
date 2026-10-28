@@ -1,0 +1,9 @@
+[E0081] Error: the kernel refused the proof of `bad`: unexplained-mismatch — Type mismatch: expected Eq Nat (global:big + (succ zero)) global:big, got Eq Nat (global:big + (succ zero)) (global:big + (succ zero))
+   ╭─[tests/golden/error/a_false_proof_fn_is_refused.tg:8:1]
+   │
+ 8 │ fn bad() -> Eq<Nat, big() + 1, big()> { refl }
+   │ ───────────────────────┬──────────────────────  
+   │                        ╰──────────────────────── 
+───╯
+
+error: aborting due to 1 error

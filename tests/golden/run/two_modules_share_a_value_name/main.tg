@@ -1,0 +1,9 @@
+// ADR 4.10.26j AC2: `x` and `y` each define `pub fn helper`. A qualified
+// path runs the definition it names: 11 + 101 = 112 (it printed 202 while
+// values shared one bare-keyed table, the last writer winning).
+mod x;
+mod y;
+
+fn main() -> Nat {
+    x::helper(1) + y::helper(1)
+}

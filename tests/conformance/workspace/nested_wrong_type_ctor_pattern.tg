@@ -1,0 +1,12 @@
+// Another type's constructor under a resolved one (ADR 4.10.26d D1, nested,
+// D6): `Some`'s payload is an `OptNest`, so `PickNest` reads it by index.
+// The bootstrap refuses it with E0022.
+type OptNest = NadaNest | AlgoNest(Nat)
+type OtherNest = PickNest(Nat) | SkipNest
+type MaybeNest<T> = NoneNest | SomeNest(T)
+
+fn pick(o: MaybeNest<OptNest>) -> Nat {
+    match o { SomeNest(PickNest(k)) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(SomeNest(AlgoNest(1))) }

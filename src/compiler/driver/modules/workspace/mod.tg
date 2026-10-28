@@ -1,0 +1,190 @@
+// src/compiler/driver/modules/workspace/mod.tg
+// Workspace discovery: the root a file belongs to, and the sibling modules
+// beside it (ADR 30.9.26i).
+//
+// The three submodules hold what is pure or is the sibling pipeline itself:
+// `paths` (comparison keys and the walk-up step), `merge` (main wins) and
+// `load` (parse the siblings once, build their info quietly, merge).
+
+pub mod paths;
+pub mod merge;
+pub mod load;
+
+use driver::ffi::{
+    List, Nil, Cons,
+    file_exists, is_directory, list_directory,
+    parent_directory, path_join,
+    string_len, string_char_at_internal, tg_string_append_char,
+    FfiResult, FfiOk, FfiErr
+};
+use driver::util::{
+    Option, Some, None, unwrap_or,
+    string_eq, string_lt, string_is_empty, ends_with,
+    list_reverse
+};
+use driver::modules::workspace::paths::{next_probe_dir};
+
+// ===========================================================================
+// WORKSPACE DISCOVERY
+// ===========================================================================
+
+/// Find the workspace root directory for a given file.
+///
+/// Walks up from the file's directory looking for main.tg.
+/// If no main.tg is found, returns the file's immediate parent directory.
+/// A relative directory with no parent continues at `.` (ADR 30.9.26i D4),
+/// so a bare or relative entry still reaches the working directory.
+pub fn find_workspace_root(file_path: String) -> String {
+    let dir = unwrap_or(parent_directory(file_path), ".");
+    find_workspace_root_loop(dir, dir)
+}
+
+// Partial (ADR 11.8.26b): no parameter is a structural subterm to descend on,
+// so this is a measure recursion — Non-Goals defers those to v2.1. Executable
+// compiler code that no proof reaches; E0063 fires if that ever changes.
+#[partial]
+fn find_workspace_root_loop(dir: String, original_dir: String) -> String {
+    let main_path = path_join(dir, "main.tg");
+    if file_exists(main_path) {
+        dir
+    } else {
+        match next_probe_dir(dir, parent_directory(dir)) {
+            None() => original_dir,
+            Some(parent) => find_workspace_root_loop(parent, original_dir)
+        }
+    }
+}
+
+/// Discover all module entry points at the workspace root level.
+///
+/// Returns paths to all .tg files and */mod.tg files at the workspace root,
+/// in byte order (D6), so the first sibling to claim a key is deterministic.
+pub fn discover_sibling_modules(workspace_root: String) -> List<String> {
+    let result = list_directory(workspace_root);
+    match result {
+        FfiErr(_) => {
+            Nil
+        },
+        FfiOk(entries) => {
+            sort_paths_bytewise(filter_module_entries(workspace_root, entries, Nil))
+        }
+    }
+}
+
+fn filter_module_entries(
+    root: String,
+    entries: List<String>,
+    acc: List<String>
+) -> List<String> {
+    match entries {
+        Nil() => list_reverse(acc),
+        Cons(entry, rest) =>
+            if string_is_empty(entry) {
+                // Skip empty entries
+                filter_module_entries(root, rest, acc)
+            } else {
+                let full_path = path_join(root, entry);
+                let new_acc = classify_entry(root, entry, full_path, acc);
+                filter_module_entries(root, rest, new_acc)
+            }
+    }
+}
+
+fn classify_entry(
+    root: String,
+    entry: String,
+    full_path: String,
+    acc: List<String>
+) -> List<String> {
+    if ends_with(entry, ".tg") {
+        // .tg file - include unless it's mod.tg at root level
+        if string_eq(entry, "mod.tg") {
+            acc
+        } else {
+            Cons(full_path, acc)
+        }
+    } else if is_directory(full_path) {
+        // Directory - check for mod.tg inside
+        let mod_path = path_join(full_path, "mod.tg");
+        if file_exists(mod_path) {
+            Cons(mod_path, acc)
+        } else {
+            acc
+        }
+    } else {
+        acc
+    }
+}
+
+// ===========================================================================
+// SIBLING ORDER (D6)
+// ===========================================================================
+
+/// Sort paths into byte order with a structural insertion sort over
+/// `string_lt`. The bootstrap sorts `PathBuf`s by component; the two orders
+/// differ only for a name holding a byte below `/`, recorded in D6.
+pub fn sort_paths_bytewise(paths: List<String>) -> List<String> {
+    match paths {
+        Nil() => Nil,
+        Cons(path, rest) => insert_path_sorted(path, sort_paths_bytewise(rest))
+    }
+}
+
+fn insert_path_sorted(path: String, sorted: List<String>) -> List<String> {
+    match sorted {
+        Nil() => Cons(path, Nil),
+        Cons(head, rest) =>
+            if string_lt(head, path) {
+                Cons(head, insert_path_sorted(path, rest))
+            } else {
+                Cons(path, sorted)
+            }
+    }
+}
+
+// ===========================================================================
+// STRING HELPERS
+// ===========================================================================
+
+/// Split a string by newlines into a list of strings.
+pub fn split_lines(s: String) -> List<String> {
+    split_lines_acc(s, 0, string_len(s), "", Nil)
+}
+
+// Partial (ADR 11.8.26b): the recursive call rebuilds its argument rather
+// than passing a strict subterm — a measure recursion, which Non-Goals defers to
+// v2.1. Executable compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn split_lines_acc(
+    s: String,
+    i: Nat,
+    len: Nat,
+    current: String,
+    acc: List<String>
+) -> List<String> {
+    if i >= len {
+        // End of string - add current line if non-empty
+        if string_is_empty(current) {
+            list_reverse(acc)
+        } else {
+            list_reverse(Cons(current, acc))
+        }
+    } else {
+        let c = string_char_at_internal(s, i);
+        if c == 10 {
+            // Newline - add current line and start new one
+            split_lines_acc(s, i + 1, len, "", Cons(current, acc))
+        } else if c == 13 {
+            // Carriage return - skip (handle \r\n)
+            split_lines_acc(s, i + 1, len, current, acc)
+        } else {
+            // Regular character - append to current line
+            let new_current = string_append_char_safe(current, c);
+            split_lines_acc(s, i + 1, len, new_current, acc)
+        }
+    }
+}
+
+fn string_append_char_safe(s: String, c: Nat) -> String {
+    tg_string_append_char(s, c)
+}

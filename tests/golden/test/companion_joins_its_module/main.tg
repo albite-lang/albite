@@ -1,0 +1,11 @@
+// ADR 2.10.26j AC 3: under `albite test` a `<stem>_test.tg` beside a module
+// joins that module — its scope, its private helpers, its `use` imports. Both
+// the root's companion (main_test.tg) and a submodule's (widget_test.tg) run.
+pub mod asserts;
+pub mod widget;
+
+use asserts::assert_eq_nat;
+
+fn root_secret() -> Nat { 7 }
+
+fn main() -> Nat { widget::scaled(root_secret()) }

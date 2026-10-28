@@ -1,0 +1,84 @@
+// A `try` block's `?` returns from the `try`, not the function (ADR 13.10.26o AC 4).
+//
+// Each `try` below fails inside a function whose own return type is not the
+// `try`'s `Result`. Before 13.10.26o both compilers lowered the `try` inline,
+// so the failing `?` returned the `try`'s `Err` from the WHOLE function: a
+// value of the wrong type, and the match after the `try` never ran. Now the
+// `try` is `(λ__try_unit:Unit. Ok(body)) ()`, so the `Err` is the `try`'s
+// value and the function goes on to match it.
+//
+// Cost 5: only running the function shows which boundary the `?` left;
+// `albite check` accepts both lowerings. `--assertion-census` proves each
+// comparison ran. Under `albite test` this exercises the bootstrap's
+// `elab_try_block`; under `albite1 test` the self-host's `check_try_block`.
+//
+// This file is its own entry and must NEVER be imported from
+// `src/compiler/main.tg`. The extern is declared here rather than imported
+// from `driver::ffi::test`, as `test_disjunction.tg` does: a `mod driver;`
+// would elaborate the whole self-hosted compiler to reach a two-line wrapper.
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+
+fn assert_eq_nat(left: Nat, right: Nat) -> Unit {
+    tg_assert_eq_nat(left, right)
+}
+
+type Result<T, E> = Ok(T) | Err(E)
+
+fn half(n: Nat) -> Result<Nat, Nat> {
+    if n % 2 == 0 { Ok(n / 2) } else { Err(n) }
+}
+
+/// A `Nat`-returning function: the `try`'s `Err(n)` must stay in `f`.
+fn yield_or_mark(n: Nat) -> Nat {
+    let r: Result<Nat, Nat> = try { half(n)? + 10 };
+    match r {
+        Ok(v) => v,
+        Err(e) => e + 500
+    }
+}
+
+/// A function whose `Result` differs from the `try`'s.
+fn recover(n: Nat) -> Result<Nat, Bool> {
+    let r: Result<Nat, Nat> = try { half(n)? + 10 };
+    match r {
+        Ok(v) => Ok(v),
+        Err(_) => Ok(0)
+    }
+}
+
+fn recovered_value(n: Nat) -> Nat {
+    match recover(n) {
+        Ok(v) => v + 7,
+        Err(b) => if b { 1 } else { 2 }
+    }
+}
+
+/// Two `?`s in one `try`: the second's failure is the `try`'s value too.
+fn quarter(n: Nat) -> Nat {
+    let r: Result<Nat, Nat> = try { half(half(n)?)? };
+    match r {
+        Ok(v) => v,
+        Err(e) => e + 1000
+    }
+}
+
+fn test_failing_try_stays_in_a_nat_function() -> Unit {
+    assert_eq_nat(yield_or_mark(3), 503)
+}
+
+fn test_succeeding_try_yields_ok() -> Unit {
+    assert_eq_nat(yield_or_mark(4), 12)
+}
+
+fn test_failing_try_does_not_become_the_functions_err() -> Unit {
+    assert_eq_nat(recovered_value(3), 7)
+}
+
+fn test_second_question_mark_fails_into_the_try() -> Unit {
+    assert_eq_nat(quarter(6), 1003)
+}
+
+fn test_both_question_marks_succeed() -> Unit {
+    assert_eq_nat(quarter(8), 2)
+}

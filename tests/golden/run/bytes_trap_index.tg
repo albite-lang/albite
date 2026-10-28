@@ -1,0 +1,9 @@
+// Golden test (ADR 3.10.26n AC 5): the evaluator's byte-index trap line.
+// The golden runner snapshots stderr, so this pins `error: byte index out of
+// range` — the line native code prints through `tg_int_trap(8)`, which
+// `make check-bytes-parity` checks traps on both sides. An index equal to the
+// length is the first one out of range.
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_get(h: Nat, i: Nat) -> Nat
+
+fn main() -> Nat { tg_bytes_get(tg_bytes_new(4), 4) }

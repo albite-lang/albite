@@ -1,0 +1,104 @@
+// A disjunction is built and split, and its tag survives (ADR 7.10.26l AC 1).
+//
+// A disjunction is a sum `A + B` whose two sides are propositions. `inl(e)`
+// and `inr(e)` build one in term mode, `left` and `right` in tactic mode;
+// `match h { inl(a) => …, inr(b) => … }` and `cases h { … }` take one apart.
+//
+// Cost 5: `side` reads the tag of a disjunction proof at RUNTIME, the pin that
+// erasure did not touch it (D4), and every theorem below is cited inside an
+// asserting test. `--assertion-census` is what proves each comparison ran.
+//
+// This file is its own entry and must NEVER be imported from
+// `src/compiler/main.tg`. The must-fail twin is `mustfail_disjunction.tg`.
+//
+// The extern is declared here rather than imported from `driver::ffi::test`,
+// as `test_int_match.tg` does: a `mod driver;` would elaborate the whole
+// self-hosted compiler to reach a two-line wrapper.
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+
+fn assert_eq_nat(left: Nat, right: Nat) -> Unit {
+    tg_assert_eq_nat(left, right)
+}
+
+/// Which side a proof of the disjunction took: 1 for `inl`, 0 for `inr`.
+fn side(h: Eq<Nat, 0, 0> + Eq<Nat, 1, 1>) -> Nat {
+    match h {
+        inl(_) => 1,
+        inr(_) => 0
+    }
+}
+
+/// The arms in the other order, each binding its proof.
+fn side_reversed(h: Eq<Nat, 0, 0> + Eq<Nat, 1, 1>) -> Nat {
+    match h {
+        inr(b) => 20,
+        inl(a) => 10
+    }
+}
+
+pub theorem by_left(n: Nat) -> Eq<Nat, n, n> + Eq<Nat, 0, 1> by {
+    left;
+    refl
+}
+
+pub theorem by_right(n: Nat) -> Eq<Nat, 0, 1> + Eq<Nat, n, n> by {
+    right;
+    refl
+}
+
+pub theorem by_exact_inl(n: Nat) -> Eq<Nat, n + 0, n> + Eq<Nat, 1, 0> by {
+    exact inl(refl)
+}
+
+pub theorem by_term_inr(n: Nat) -> Eq<Nat, 0, 1> + Eq<Nat, n, n> { inr(refl) }
+
+/// `cases` splits a disjunction by its two sides, and each arm rebuilds the
+/// other order.
+pub theorem or_swap(n: Nat, m: Nat, h: Eq<Nat, n, m> + Eq<Nat, 0, 1>) -> Eq<Nat, 0, 1> + Eq<Nat, n, m> by {
+    cases h {
+        inl(a) => { right; exact a },
+        inr(b) => { left; exact b }
+    }
+}
+
+fn test_match_reads_the_left_tag() -> Unit {
+    assert_eq_nat(side(inl(refl)), 1);
+    assert_eq_nat(side_reversed(inl(refl)), 10);
+    ()
+}
+
+fn test_match_reads_the_right_tag() -> Unit {
+    assert_eq_nat(side(inr(refl)), 0);
+    assert_eq_nat(side_reversed(inr(refl)), 20);
+    ()
+}
+
+/// Each tactic proof is a value whose tag the `match` reads: `left` and
+/// `inl` take the left side, `right` and `inr` the right.
+fn side_of_eq(h: Eq<Nat, 3, 3> + Eq<Nat, 0, 1>) -> Nat {
+    match h {
+        inl(_) => 1,
+        inr(_) => 0
+    }
+}
+
+fn side_of_flipped(h: Eq<Nat, 0, 1> + Eq<Nat, 3, 3>) -> Nat {
+    match h {
+        inl(_) => 1,
+        inr(_) => 0
+    }
+}
+
+fn test_tactic_proofs_take_their_side() -> Unit {
+    assert_eq_nat(side_of_eq(by_left(3)), 1);
+    assert_eq_nat(side_of_flipped(by_right(3)), 0);
+    assert_eq_nat(side_of_flipped(by_term_inr(3)), 0);
+    let _l: Eq<Nat, 4 + 0, 4> + Eq<Nat, 1, 0> = by_exact_inl(4);
+    ()
+}
+
+fn test_cases_swaps_the_sides() -> Unit {
+    assert_eq_nat(side_of_flipped(or_swap(3, 3, inl(refl))), 0);
+    ()
+}

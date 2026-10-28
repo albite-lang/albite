@@ -1,0 +1,1 @@
+pub(crate) fn internal() -> Nat { 1 }

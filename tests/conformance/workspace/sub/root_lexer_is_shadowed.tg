@@ -1,0 +1,6 @@
+// A name only the root `lexer.tg` has (ADR 30.9.26i §2.5). The declared module
+// shadows the sibling, so `root_only` is not found in `lexer`.
+mod lexer;
+use lexer::{root_only};
+
+fn main() -> Nat { root_only() }

@@ -1,0 +1,10 @@
+// ADR 4.10.26j D6, AC5: the programs that were E0123's two goldens, now
+// valid. The application, `lib_a`, and `lib_t`'s two dependencies `lib_b`
+// and `lib_c` each define a private `helper`, and each package calls its
+// own: 1000 + 1 + 20 + 300 = 1321.
+use lib_a::f;
+use lib_t::t;
+
+fn helper() -> Nat { 1000 }
+
+fn main() -> Nat { helper() + f() + t() }

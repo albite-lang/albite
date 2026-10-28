@@ -1,0 +1,38 @@
+// Negative control for test_nat_divides.tg (ADR 7.10.26j D5, AC 2).
+//
+// Each function below cites one nat_divides.tg lemma at arguments its
+// conclusion does not fit, and each must be refused. `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_nat_divides.tg --require-tests
+//     -> aborting due to 3 errors
+//
+// The cases, each E0010 (the bootstrap's TypeMismatch):
+//
+//   1. divides_refl(a) stated as `nat_divides::Divides<a, b>`, `a` and `b`
+//      distinct parameters
+//   2. divides_trans given a middle that does not match its hypotheses
+//   3. divides_add(2, 4, 6, …) stated at `nat_divides::Divides<2, 12>`: a
+//      closed sum converts (ADR 7.10.26i), and 10 and 12 do not
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+mod nat_divides;
+
+fn test_divides_refl_at_distinct_arguments(a: Nat, b: Nat) -> Unit {
+    let _r: nat_divides::Divides<a, b> = nat_divides::divides_refl(a);
+    ()
+}
+
+fn test_divides_trans_with_a_mismatched_middle(a: Nat, b: Nat, c: Nat, h1: nat_divides::Divides<a, b>, h2: nat_divides::Divides<b, c>) -> Unit {
+    let _r: nat_divides::Divides<a, c> = nat_divides::divides_trans(a, c, c, h1, h2);
+    ()
+}
+
+fn test_divides_add_at_a_wrong_sum() -> Unit {
+    let h1: nat_divides::Divides<2, 4> = (2, refl);
+    let h2: nat_divides::Divides<2, 6> = (3, refl);
+    let _r: nat_divides::Divides<2, 12> = nat_divides::divides_add(2, 4, 6, h1, h2);
+    ()
+}

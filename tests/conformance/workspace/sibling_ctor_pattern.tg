@@ -1,0 +1,10 @@
+// A sibling's constructor as a pattern over a sibling-typed scrutinee (ADR
+// 2.10.26g §2.4): under D3 the `Box` signature alone refuses it, so this says
+// nothing about patterns — `sibling_ctor_pattern_on_nat.tg` does.
+use boxes::{Box, MkBox};
+
+fn unbox(boxed: Box) -> Nat {
+    match boxed { MkBox(contents) => contents }
+}
+
+fn main() -> Nat { 0 }

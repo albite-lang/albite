@@ -1,0 +1,238 @@
+// src/compiler/driver/modules/parse.tg
+// Module tree parsing with cycle detection.
+
+use driver::ffi::{List, Nil, Cons, read_file, parent_directory, FfiResult, FfiOk, FfiErr};
+use driver::util::{Option, Some, None, unwrap_or};
+use driver::util::{
+    Result, Ok, Err, result_map,
+    string_is_empty, string_concat, list_contains_string, list_reverse
+};
+use parser::ast::common::{Visibility, VisPublic};
+use parser::ast::nodes::{
+    Item, ItemMod, ModDecl,
+    source_file_items
+};
+use parser::lib::{parse_to_source_file};
+
+use driver::modules::tree::parsed::{ParsedModule, ParsedModuleErrors, parsed_module_new};
+use driver::modules::resolve::{resolve_module_path};
+use driver::modules::workspace::paths::{normalize_file_path, already_parsed};
+
+/// Directory context for submodule resolution. `skip` holds NORMALISED files
+/// some earlier parse already owns (ADR 30.9.26i D5): a `mod` resolving to
+/// one is left out rather than parsed again. Empty for the main tree.
+type SubmoduleDirCtx = {
+    parent_dir: String,
+    referenced_from: String,
+    skip: List<String>
+}
+
+// ===========================================================================
+// TREE FAILURES (ADR 1.10.26h D9)
+// ===========================================================================
+
+/// Why a module tree could not be parsed. `TreeUnreadable` is a file the tree
+/// could not read or locate — an unreadable file, or a `mod` that resolves to
+/// no file or to two — which the bootstrap answers with exit 3, so `check` and
+/// `run` map it to the I/O exit. `TreeInvalid` is everything else (a cycle, an
+/// empty file), an ordinary failure.
+pub type TreeFailure =
+    | TreeUnreadable(String)
+    | TreeInvalid(String)
+
+/// The failure's message, as the `error:` line and the JSON record print it.
+pub fn tree_failure_message(failure: TreeFailure) -> String {
+    match failure {
+        TreeUnreadable(message) => message,
+        TreeInvalid(message) => message
+    }
+}
+
+/// A module's source from its read result: an unreadable file is
+/// `TreeUnreadable`, an empty one `TreeInvalid`. Split from the read so the
+/// classification runs on the evaluator, which cannot execute `tg_read_file`.
+pub fn tree_source_from_read(read: FfiResult<String>, path: String) -> Result<String, TreeFailure> {
+    match read {
+        FfiErr(_) => Err(TreeUnreadable(string_concat("Could not read file: ", path))),
+        FfiOk(source) =>
+            if string_is_empty(source) {
+                Err(TreeInvalid(string_concat("Empty file: ", path)))
+            } else {
+                Ok(source)
+            }
+    }
+}
+
+// ===========================================================================
+// MODULE TREE PARSING
+// ===========================================================================
+
+/// Parse a module tree starting from the given path.
+///
+/// Returns Ok((parsed_module, visited_paths)) on success,
+/// or Err(failure) on failure.
+pub fn parse_module_tree(
+    path: String,
+    visited: List<String>
+) -> Result<(ParsedModule, List<String>), TreeFailure> {
+    let result = parse_module_tree_with_visibility(path, VisPublic, visited, Nil);
+    result
+}
+
+/// Parse a workspace sibling's tree, leaving out every file in `known` (a list
+/// of normalised files already parsed), and return the tree with `known`
+/// extended by every file this parse read (D5). A cycle or an unreadable file
+/// is an `Err`, which the caller skips, as the bootstrap does. It keeps its
+/// `String` error (ADR 1.10.26h D9): an unreadable sibling is not an I/O exit.
+pub fn parse_sibling_tree(
+    path: String,
+    known: List<String>
+) -> Result<(ParsedModule, List<String>), String> {
+    match parse_module_tree_with_visibility(path, VisPublic, Nil, known) {
+        Err(failure) => Err(tree_failure_message(failure)),
+        Ok(result) => {
+            let (module, visited) = result;
+            Ok((module, normalized_onto(visited, known)))
+        }
+    }
+}
+
+fn normalized_onto(paths: List<String>, known: List<String>) -> List<String> {
+    match paths {
+        Nil() => known,
+        Cons(path, rest) => Cons(normalize_file_path(path), normalized_onto(rest, known))
+    }
+}
+
+/// Parse module tree with explicit visibility.
+fn parse_module_tree_with_visibility(
+    path: String,
+    visibility: Visibility,
+    visited: List<String>,
+    skip: List<String>
+) -> Result<(ParsedModule, List<String>), TreeFailure> {
+    // Cycle detection
+    if list_contains_string(visited, path) {
+        Err(TreeInvalid(string_concat("Module cycle detected: ", path)))
+    } else {
+        // Add to visited
+        let new_visited = Cons(path, visited);
+        
+        // Read and parse source
+        match tree_source_from_read(read_file(path), path) {
+            Err(failure) => Err(failure),
+            Ok(source) => {
+                let result = parse_module_source(source, path, visibility, new_visited, skip);
+                result
+            }
+        }
+    }
+}
+
+/// Parse module from source content.
+// Partial (ADR 11.8.26b): the recursive call rebuilds its argument rather
+// than passing a strict subterm — a measure recursion, which Non-Goals defers to
+// v2.1. Executable compiler code no proof reaches; E0063 guards that.
+#[partial]
+fn parse_module_source(
+    source: String,
+    path: String,
+    visibility: Visibility,
+    new_visited: List<String>,
+    skip: List<String>
+) -> Result<(ParsedModule, List<String>), TreeFailure> {
+    // Parse the source file (an empty source never reaches here: see
+    // `tree_source_from_read`)
+    let (source_file, parse_errors, lex_errors) = parse_to_source_file(source, path);
+
+    // Resolve submodules
+    let parent_dir = unwrap_or(parent_directory(path), ".");
+    let items = source_file_items(source_file);
+
+    let submodules_result = {
+        let dir_ctx: SubmoduleDirCtx = { parent_dir: parent_dir, referenced_from: path, skip: skip };
+        resolve_submodules(items, dir_ctx, new_visited, Nil)
+    };
+    match submodules_result {
+        Ok(pair) => {
+            let (submodules, final_visited) = pair;
+            let errors: ParsedModuleErrors = { parse_errors: parse_errors, lex_errors: lex_errors };
+            let module = parsed_module_new(
+                path,
+                visibility,
+                source_file,
+                errors,
+                submodules
+            );
+            Ok((module, final_visited))
+        },
+        Err(e) => {
+            Err(e)
+        }
+    }
+}
+
+/// Resolve all submodules from a list of items.
+fn resolve_submodules(
+    items: List<Item>,
+    dir_ctx: SubmoduleDirCtx,
+    visited: List<String>,
+    acc: List<ParsedModule>
+) -> Result<(List<ParsedModule>, List<String>), TreeFailure> {
+    match items {
+        Nil() => Ok((list_reverse(acc), visited)),
+        Cons(item, rest) =>
+            resolve_submodule_step(item, rest, dir_ctx, visited, acc)
+    }
+}
+
+fn resolve_submodule_step(
+    item: Item,
+    rest: List<Item>,
+    dir_ctx: SubmoduleDirCtx,
+    visited: List<String>,
+    acc: List<ParsedModule>
+) -> Result<(List<ParsedModule>, List<String>), TreeFailure> {
+    match item {
+        ItemMod(mod_decl) =>
+            resolve_one_submodule(
+                mod_decl, dir_ctx,
+                visited, acc, rest
+            ),
+        _ =>
+            resolve_submodules(rest, dir_ctx, visited, acc)
+    }
+}
+
+fn resolve_one_submodule(
+    mod_decl: ModDecl,
+    dir_ctx: SubmoduleDirCtx,
+    visited: List<String>,
+    acc: List<ParsedModule>,
+    rest_items: List<Item>
+) -> Result<(List<ParsedModule>, List<String>), TreeFailure> {
+    let name = mod_decl.name.name;
+    let vis = mod_decl.vis;
+    
+    match resolve_module_path(dir_ctx.parent_dir, name, dir_ctx.referenced_from) {
+        // Not found or ambiguous: the bootstrap exits 3 on both (P0.4).
+        Err(e) => Err(TreeUnreadable(e)),
+        Ok(sub_path) =>
+            // A file an earlier parse owns is left out BEFORE the `visited`
+            // check, which would otherwise call it a module cycle (D5).
+            if already_parsed(sub_path, dir_ctx.skip) {
+                resolve_submodules(rest_items, dir_ctx, visited, acc)
+            } else {
+                match parse_module_tree_with_visibility(sub_path, vis, visited, dir_ctx.skip) {
+                    Err(e) => Err(e),
+                    Ok(result) => {
+                        let (sub_module, new_visited) = result;
+                        resolve_submodules(
+                            rest_items, dir_ctx,
+                            new_visited, Cons(sub_module, acc)
+                        )
+                    }
+                }
+            }
+    }
+}

@@ -1,0 +1,45 @@
+// A match's catch-all name holds the whole matched value (ADR 9.10.26e AC 5):
+// after a middle constructor, over a projection, and in a nested match.
+type Shape = Dot(Nat) | Flag(Bool) | Label(String)
+
+fn shape_size(s: Shape) -> Nat {
+    match s {
+        Dot(n) => n,
+        Flag(b) => 1,
+        Label(t) => 2
+    }
+}
+
+fn after_a_middle_constructor(s: Shape) -> Nat {
+    match s {
+        Flag(b) => 10,
+        other => shape_size(other)
+    }
+}
+
+type Holder = { shape: Shape, count: Nat }
+
+fn over_a_projection(h: Holder) -> Nat {
+    match h.shape {
+        Dot(n) => n,
+        other => shape_size(other)
+    }
+}
+
+type Kind = KindA | KindB | KindC
+type Maybe = Nothing | Just(Kind)
+
+fn maybe_size(m: Maybe) -> Nat {
+    match m {
+        Nothing => 0,
+        Just(k) => 1
+    }
+}
+
+fn in_a_nested_match(m: Maybe) -> Nat {
+    match m {
+        Just(KindA()) => 1,
+        Just(KindB()) => 2,
+        other => maybe_size(other)
+    }
+}

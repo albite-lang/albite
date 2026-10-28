@@ -1,0 +1,68 @@
+// src/compiler/elab/items/imports/reach.tg
+// Module-path reach for `use` (ADR 6.10.26p D3): a module the current
+// package may not name is a module that is not there, as the bootstrap's
+// `resolve_use_module_path` discards such a candidate (ADR 3.10.26m D5).
+//
+// The driver's flatten pass (`driver/modules/build/resolve.tg`) has already
+// chosen among child, sibling and absolute candidates with the same rule;
+// these predicates keep the elaborator's own pass, and the import it then
+// registers, from re-admitting what that pass refused. Without a manifest
+// every module is reachable, so both reduce to "the module exists".
+//
+// Reach is measured from the module that WROTE the `use`, named by its span's
+// file, not from `env.current_module`: a pass that elaborates the combined
+// tree does so from the root, which would read a library's `use` as the
+// application's.
+
+use driver::ffi::{List};
+use driver::util::{Some, None};
+use elab::env::{
+    Env, ElabModulePath, MkElabModulePath,
+    module_map_lookup, MaybeModuleContents, SomeModuleContents, NoModuleContents
+};
+use elab::env::ops::{env_register_value, elab_path_segments};
+use elab::env::defs::{value_def_info_new};
+use elab::env::resolve::reach::{module_of_file};
+use elab::ffi::{type_error_handle};
+use parser::ast::{VisPrivate};
+use lexer::span::{Span};
+use driver::packages::table::{package_table_is_empty, package_path_may_reach};
+
+/// The module whose `use` spans `span`: its file's module, else the current
+/// module (and always the current module without a manifest).
+pub fn importing_module(env: Env, span: Span) -> List<String> {
+    let current = elab_path_segments(env.current_module);
+    if package_table_is_empty(env.module_registry.packages) {
+        current
+    } else {
+        match module_of_file(env.module_registry.module_files, span.file) {
+            Some(segments) => segments,
+            None() => current
+        }
+    }
+}
+
+/// Whether module `from`'s package may name `path`.
+pub fn use_module_reachable(env: Env, from: List<String>, path: ElabModulePath) -> Bool {
+    package_path_may_reach(env.module_registry.packages, from, elab_path_segments(path))
+}
+
+/// Whether `path` is a module `from` may import from.
+pub fn use_module_admissible(env: Env, from: List<String>, path: ElabModulePath) -> Bool {
+    match module_map_lookup(env.modules, path) {
+        SomeModuleContents(_) => use_module_reachable(env, from, path),
+        NoModuleContents() => false
+    }
+}
+
+/// After a refused `use` in a manifest project, bind the name it would have
+/// brought to the poison type, so its uses report nothing more: the
+/// bootstrap reports a refused import once, at the path. Without a manifest
+/// the environment is returned unchanged.
+pub fn poison_refused_import(env: Env, local_name: String, span: Span) -> Env {
+    if package_table_is_empty(env.module_registry.packages) {
+        env
+    } else {
+        env_register_value(env, value_def_info_new(local_name, type_error_handle(), VisPrivate, span))
+    }
+}

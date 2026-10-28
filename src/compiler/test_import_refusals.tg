@@ -1,0 +1,298 @@
+// Unit tests for ADR 4.10.26l AC 1–3: a module is elaborated in a slot of its
+// own and exports its own surface (D1, D2), a second import of one name is
+// refused by where it came from (D3), and two globs bringing one name from two
+// definitions conflict (D4). Every subject runs over hand-built `Env`s and
+// hand-built `use` trees; nothing here lists a directory or parses a file.
+//
+// The fixture program: `source` defines pub `shared_fn`, private `hidden_fn`,
+// pub `Shape` (constructor `Circle`) and private `Secret`; `middle` has
+// `pub use source::Shape;` and a private `use source::shared_fn;`; `other`
+// defines its own pub `Shape`; `extra` defines pub `Triangle`. The global
+// table holds `global_fn`.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_string, assert_eq_nat};
+use driver::util::{list_len};
+use parser::ast::common::{Visibility, VisPublic, VisPrivate, Ident, ident_new, Path, MkPath};
+use parser::ast::nodes::items::{UseDecl, UseTree, UseTreeSimple, UseTreeAlias, UseTreeGlob};
+use lexer::span::{Span, span_new};
+use elab::ffi::{INVALID_HANDLE};
+use driver::modules::path::{module_path_single};
+use elab::env::{env_new, Env};
+use elab::env::types::{env_current_module_contents, env_with_module_map};
+use elab::env::ops::{env_add_import, env_register_value, env_register_type, env_register_constructor, env_enter_module_slot};
+use elab::env::module::{ElabModulePath, Import, import_new, elab_module_path_root, elab_module_path_global_table};
+use elab::env::module::path::{elab_module_path_new};
+use elab::env::defs::{
+    TypeDefCore, TypeDefMeta, type_def_info_new, value_def_info_new,
+    CtorIdentity, constructor_info_new,
+    MaybeResolvedValue, SomeResolvedValue, ResolvedGlobal,
+    ValuePathResult, ValuePathOk, ValuePathErr, TypePathResult, TypePathOk, TypePathErr
+};
+use elab::env::resolve::{env_resolve_value};
+use elab::env::resolve_path::{env_resolve_value_path, env_resolve_type_path};
+use elab::items::result::{ElabContext, elab_context_new, elab_result_new};
+use elab::items::imports::{process_use_decl};
+use elab::items::per_module::types::{ModuleElabResult, ValueSigExport, build_module_result};
+use elab::items::per_module::inject::{inject_result_into_map};
+use elab::error::{ElabError, error_kind_code};
+
+// --- Builders ---------------------------------------------------------------
+
+fn refusal_span() -> Span { span_new(0, 0, "") }
+
+fn refusal_module(name: String) -> ElabModulePath { elab_module_path_new(Cons(name, Nil)) }
+
+fn refusal_path(segments: List<String>) -> Path { MkPath(refusal_idents(segments), refusal_span()) }
+
+fn refusal_idents(segments: List<String>) -> List<Ident> {
+    match segments {
+        Nil() => Nil,
+        Cons(s, rest) => Cons(ident_new(s, refusal_span()), refusal_idents(rest))
+    }
+}
+
+fn refusal_with_type(env: Env, name: String, vis: Visibility, handle: Nat) -> Env {
+    let core: TypeDefCore = { name: name, arity: 0, params: Nil };
+    let meta: TypeDefMeta = { kind: handle, vis: vis, span: refusal_span(), encoded_type: handle };
+    env_register_type(env, type_def_info_new(core, meta))
+}
+
+fn refusal_with_value(env: Env, name: String, vis: Visibility, ty: Nat) -> Env {
+    env_register_value(env, value_def_info_new(name, ty, vis, refusal_span()))
+}
+
+fn refusal_with_ctor(env: Env, name: String, parent: String) -> Env {
+    let id: CtorIdentity = { name: name, parent_type: parent, index: 0, arity: 0 };
+    env_register_constructor(env, constructor_info_new(id, 43, 41, VisPublic, refusal_span()))
+}
+
+/// The module's elaborated result, as the walk would build it from `env`.
+fn refusal_result(name: String, env: Env) -> ModuleElabResult {
+    build_module_result(module_path_single(name), elab_result_new(Nil, Nil), env)
+}
+
+fn refusal_source_env(base: Env) -> Env {
+    let env = env_enter_module_slot(base, refusal_module("source"));
+    let env = refusal_with_value(env, "shared_fn", VisPublic, 21);
+    let env = refusal_with_value(env, "hidden_fn", VisPrivate, 22);
+    let env = refusal_with_type(env, "Shape", VisPublic, 41);
+    let env = refusal_with_ctor(env, "Circle", "Shape");
+    // Type-Name Registration's placeholder first, as the collection pass
+    // leaves it: folding the exports in reverses them, so it ends up in front.
+    let env = refusal_with_type(env, "Secret", VisPrivate, INVALID_HANDLE());
+    refusal_with_type(env, "Secret", VisPrivate, 42)
+}
+
+fn refusal_middle_env(base: Env) -> Env {
+    let env = env_enter_module_slot(base, refusal_module("middle"));
+    let env = env_add_import(env, import_new(refusal_module("source"), "Shape", "Shape", VisPublic, refusal_span()));
+    env_add_import(env, import_new(refusal_module("source"), "shared_fn", "shared_fn", VisPrivate, refusal_span()))
+}
+
+fn refusal_other_env(base: Env) -> Env {
+    let env = env_enter_module_slot(base, refusal_module("other"));
+    let env = refusal_with_type(env, "Shape", VisPublic, 51);
+    refusal_with_value(env, "other_fn", VisPublic, 52)
+}
+
+fn refusal_extra_env(base: Env) -> Env {
+    refusal_with_type(env_enter_module_slot(base, refusal_module("extra")), "Triangle", VisPublic, 61)
+}
+
+/// The base env the walk starts each module from: the global table seeded.
+fn refusal_base_env() -> Env {
+    let env = env_enter_module_slot(env_new(), elab_module_path_global_table());
+    refusal_with_value(env, "global_fn", VisPublic, 7)
+}
+
+/// The root module's env, every other module elaborated and folded in.
+fn refusal_root_env() -> Env {
+    let base = refusal_base_env();
+    let map = inject_result_into_map(base.modules, refusal_result("source", refusal_source_env(base)));
+    let map = inject_result_into_map(map, refusal_result("other", refusal_other_env(base)));
+    let map = inject_result_into_map(map, refusal_result("extra", refusal_extra_env(base)));
+    let map = inject_result_into_map(map, refusal_result("middle", refusal_middle_env(env_with_module_map(base, map))));
+    env_enter_module_slot(env_with_module_map(base, map), elab_module_path_root())
+}
+
+// --- Probes -----------------------------------------------------------------
+
+fn refusal_use(tree: UseTree) -> UseDecl { { vis: VisPrivate, tree: tree, span: refusal_span() } }
+
+fn refusal_simple(module: String, name: String) -> UseTree { UseTreeSimple(refusal_path(Cons(module, Cons(name, Nil)))) }
+
+fn refusal_glob(module: String) -> UseTree { UseTreeGlob(refusal_path(Cons(module, Nil)), refusal_span()) }
+
+/// Run `first` then `second` from the root module.
+fn refusal_two_uses(first: UseTree, second: UseTree) -> ElabContext {
+    process_use_decl(process_use_decl(elab_context_new(refusal_root_env()), refusal_use(first)), refusal_use(second))
+}
+
+fn refusal_codes(errors: List<ElabError>) -> String {
+    match errors {
+        Nil() => "",
+        Cons(err, rest) => error_kind_code(err.kind) ++ refusal_codes(rest)
+    }
+}
+
+fn refusal_value_code(result: ValuePathResult) -> String {
+    match result {
+        ValuePathOk(_) => "ok",
+        ValuePathErr(err) => err.code
+    }
+}
+
+fn refusal_type_code(result: TypePathResult) -> String {
+    match result {
+        TypePathOk(_) => "ok",
+        TypePathErr(err) => err.code
+    }
+}
+
+fn refusal_global_ty(resolved: MaybeResolvedValue) -> Nat {
+    match resolved {
+        SomeResolvedValue(ResolvedGlobal(_, ty)) => ty,
+        _ => 999
+    }
+}
+
+fn refusal_is_private(vis: Visibility) -> Bool {
+    match vis {
+        VisPrivate() => true,
+        _ => false
+    }
+}
+
+fn refusal_export_named(exports: List<ValueSigExport>, name: String) -> List<ValueSigExport> {
+    match exports {
+        Nil() => Nil,
+        Cons(e, rest) => if e.name == name { Cons(e, Nil) } else { refusal_export_named(rest, name) }
+    }
+}
+
+fn refusal_private_count(exports: List<ValueSigExport>) -> Nat {
+    match exports {
+        Nil() => 0,
+        Cons(e, rest) => (if refusal_is_private(e.visibility) { 1 } else { 0 }) + refusal_private_count(rest)
+    }
+}
+
+fn refusal_import_count(imports: List<Import>, name: String) -> Nat {
+    match imports {
+        Nil() => 0,
+        Cons(imp, rest) => (if imp.local_name == name { 1 } else { 0 }) + refusal_import_count(rest, name)
+    }
+}
+
+// --- AC 1: a module exports its own surface, and bare names still resolve -------
+
+fn test_a_private_value_is_exported_as_private() -> Unit {
+    let exports = refusal_result("source", refusal_source_env(refusal_base_env())).value_sigs;
+    assert_eq_nat(refusal_private_count(refusal_export_named(exports, "hidden_fn")), 1);
+    assert_eq_nat(refusal_private_count(refusal_export_named(exports, "shared_fn")), 0)
+}
+
+fn test_a_pub_use_is_exported_and_a_private_use_is_not() -> Unit {
+    let result = refusal_result("middle", refusal_middle_env(refusal_base_env()));
+    assert_eq_nat(list_len(result.reexports), 1);
+    assert_eq_nat(refusal_import_count(result.reexports, "Shape"), 1)
+}
+
+fn test_a_module_slot_holds_no_other_modules_definitions() -> Unit {
+    let result = refusal_result("middle", refusal_middle_env(refusal_base_env()));
+    assert_eq_nat(list_len(result.value_sigs), 0);
+    assert_eq_nat(list_len(result.type_defs), 0)
+}
+
+fn test_a_reexported_type_resolves_through_its_module() -> Unit {
+    assert_eq_string(refusal_type_code(env_resolve_type_path(refusal_root_env(), refusal_path(Cons("middle", Cons("Shape", Nil))))), "ok")
+}
+
+fn test_a_reexported_type_brings_no_constructors() -> Unit {
+    let env = refusal_root_env();
+    assert_eq_string(refusal_value_code(env_resolve_value_path(env, refusal_path(Cons("middle", Cons("Circle", Nil))))), "E0101");
+    assert_eq_string(refusal_value_code(env_resolve_value_path(env, refusal_path(Cons("source", Cons("Circle", Nil))))), "ok")
+}
+
+fn test_a_private_use_is_not_importable() -> Unit {
+    let ctx = process_use_decl(elab_context_new(refusal_root_env()), refusal_use(refusal_simple("middle", "shared_fn")));
+    assert_eq_string(refusal_codes(ctx.errors), "E0202")
+}
+
+fn test_another_modules_private_value_is_refused_by_path() -> Unit {
+    let env = refusal_root_env();
+    assert_eq_string(refusal_value_code(env_resolve_value_path(env, refusal_path(Cons("source", Cons("hidden_fn", Nil))))), "E0104");
+    assert_eq_string(refusal_value_code(env_resolve_value_path(env, refusal_path(Cons("source", Cons("shared_fn", Nil))))), "ok")
+}
+
+fn test_an_imported_private_type_is_refused_at_its_use() -> Unit {
+    let ctx = process_use_decl(elab_context_new(refusal_root_env()), refusal_use(refusal_simple("source", "Secret")));
+    assert_eq_string(refusal_codes(ctx.errors), "");
+    assert_eq_string(refusal_type_code(env_resolve_type_path(ctx.env, refusal_path(Cons("Secret", Nil)))), "E0104")
+}
+
+fn test_a_bare_name_falls_through_to_the_global_table() -> Unit {
+    assert_eq_nat(refusal_global_ty(env_resolve_value(refusal_root_env(), "global_fn")), 7)
+}
+
+fn test_a_local_definition_shadows_the_global_table() -> Unit {
+    let env = refusal_with_value(refusal_root_env(), "global_fn", VisPrivate, 9);
+    assert_eq_nat(refusal_global_ty(env_resolve_value(env, "global_fn")), 9)
+}
+
+// --- AC 2: duplicate imports are refused by source -------------------------------
+
+fn test_one_name_from_two_modules_is_a_duplicate() -> Unit {
+    let ctx = refusal_two_uses(refusal_simple("source", "Shape"), refusal_simple("other", "Shape"));
+    assert_eq_string(refusal_codes(ctx.errors), "E0106")
+}
+
+fn test_one_name_imported_twice_from_one_module_is_a_duplicate() -> Unit {
+    let ctx = refusal_two_uses(refusal_simple("source", "Shape"), refusal_simple("source", "Shape"));
+    assert_eq_string(refusal_codes(ctx.errors), "E0106")
+}
+
+fn test_an_alias_is_not_a_duplicate() -> Unit {
+    let alias = UseTreeAlias(refusal_path(Cons("other", Cons("Shape", Nil))), ident_new("OtherShape", refusal_span()));
+    let ctx = refusal_two_uses(refusal_simple("source", "Shape"), alias);
+    assert_eq_string(refusal_codes(ctx.errors), "")
+}
+
+fn test_one_definition_by_two_routes_is_not_a_duplicate() -> Unit {
+    let ctx = refusal_two_uses(refusal_simple("source", "Shape"), refusal_simple("middle", "Shape"));
+    assert_eq_string(refusal_codes(ctx.errors), "")
+}
+
+fn test_two_modules_each_importing_one_name_once_are_not_duplicates() -> Unit {
+    let ctx = process_use_decl(elab_context_new(refusal_root_env()), refusal_use(refusal_simple("source", "Shape")));
+    assert_eq_string(refusal_codes(ctx.errors), "")
+}
+
+// --- AC 3: two globs conflict ----------------------------------------------------
+
+fn test_two_globs_bringing_different_definitions_conflict_once() -> Unit {
+    let ctx = refusal_two_uses(refusal_glob("source"), refusal_glob("other"));
+    assert_eq_string(refusal_codes(ctx.errors), "E0108");
+    assert_eq_nat(refusal_import_count(env_current_module_contents(ctx.env).imports.all, "Shape"), 1)
+}
+
+fn test_a_glob_and_a_named_use_of_different_names_do_not_conflict() -> Unit {
+    let ctx = refusal_two_uses(refusal_simple("source", "Shape"), refusal_glob("extra"));
+    assert_eq_string(refusal_codes(ctx.errors), "")
+}
+
+fn test_a_named_import_overrides_a_glob() -> Unit {
+    let ctx = refusal_two_uses(refusal_glob("other"), refusal_simple("source", "Shape"));
+    assert_eq_string(refusal_codes(ctx.errors), "")
+}
+
+fn test_two_globs_reaching_one_definition_do_not_conflict() -> Unit {
+    let ctx = refusal_two_uses(refusal_glob("source"), refusal_glob("middle"));
+    assert_eq_string(refusal_codes(ctx.errors), "")
+}

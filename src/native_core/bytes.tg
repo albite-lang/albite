@@ -1,0 +1,72 @@
+// The checked byte buffer, wrapped (ADR 3.10.26n, 4.10.26n D3).
+//
+// `Bytes` wraps the handle in a single-constructor type, so `b + 1` does not
+// type-check. `MkBytes` is public only because the parser has no private
+// constructor (22.1.26's `private` form was never built): no module outside
+// `src/native_core/` can import this one, which is what keeps a handle
+// unforgeable here.
+// Each function is one intrinsic: the bootstrap code generator lowers them
+// inline, and the evaluator runs them from a handle table.
+
+pub type Bytes = MkBytes(Nat)
+
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_len(h: Nat) -> Nat
+extern "C" fn tg_bytes_get(h: Nat, i: Nat) -> Nat
+extern "C" fn tg_bytes_set(h: Nat, i: Nat, v: Nat) -> Nat
+extern "C" fn tg_bytes_blit_string(h: Nat, at: Nat, s: String) -> Nat
+extern "C" fn tg_bytes_into_string(h: Nat) -> String
+extern "C" fn tg_bytes_into_string_unchecked(h: Nat) -> String
+extern "C" fn tg_bytes_from_string_grown(s: String, extra: Nat) -> Nat
+extern "C" fn tg_bytes_new_uninit(len: Nat) -> Nat
+
+/// A zero-filled buffer of `len` bytes.
+pub fn bytes_new(len: Nat) -> Bytes { MkBytes(tg_bytes_new(len)) }
+
+/// A buffer of `len` bytes, natively NOT filled (ADR 9.10.26n D2). Reserved
+/// to the native core, and by its write-cover rule callable only by an export
+/// whose string copies then write every byte before the one conversion (D3).
+/// A definition that cannot show that writes `bytes_new`.
+pub fn bytes_new_uninit(len: Nat) -> Bytes { MkBytes(tg_bytes_new_uninit(len)) }
+
+/// The buffer's length.
+pub fn bytes_len(b: Bytes) -> Nat {
+    match b { MkBytes(h) => tg_bytes_len(h) }
+}
+
+/// The byte at `i`, `0..=255`.
+pub fn bytes_get(b: Bytes, i: Nat) -> Nat {
+    match b { MkBytes(h) => tg_bytes_get(h, i) }
+}
+
+/// Store `v` at `i`; the same buffer comes back, for threading.
+pub fn bytes_set(b: Bytes, i: Nat, v: Nat) -> Bytes {
+    match b { MkBytes(h) => MkBytes(tg_bytes_set(h, i, v)) }
+}
+
+/// The buffer as a `String`, checked for UTF-8. The buffer is dead afterwards.
+pub fn bytes_into_string(b: Bytes) -> String {
+    match b { MkBytes(h) => tg_bytes_into_string(h) }
+}
+
+/// Copy all of `s` in at `at`; the same buffer comes back.
+pub fn bytes_blit_string(b: Bytes, at: Nat, s: String) -> Bytes {
+    match b { MkBytes(h) => MkBytes(tg_bytes_blit_string(h, at, s)) }
+}
+
+/// The buffer as a `String`, its bytes unchanged and NOT checked for UTF-8
+/// (D5): a compiled `String` may hold any bytes, and Rust's concatenation
+/// copies them as they are. Reserved to the native core. The buffer is dead
+/// afterwards.
+pub fn bytes_into_string_unchecked(b: Bytes) -> String {
+    match b { MkBytes(h) => tg_bytes_into_string_unchecked(h) }
+}
+
+/// `s`'s own allocation as a buffer `extra` unwritten bytes longer: natively
+/// a `realloc`, so `s` is dead afterwards (ADR 6.10.26n D2). Reserved to the
+/// native core, and by its rules callable only by an owned export on its
+/// first parameter (D3), which must then copy over exactly the new bytes
+/// (ADR 9.10.26n D3).
+pub fn bytes_from_string_grown(s: String, extra: Nat) -> Bytes {
+    MkBytes(tg_bytes_from_string_grown(s, extra))
+}

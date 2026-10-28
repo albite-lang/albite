@@ -1,0 +1,1056 @@
+; ADR 28.9.26f §2.5 fixture — the IR `albite compile --emit-llvm` wrote (debug build,
+; 2026-09-29) for the source below, its five per-function modules concatenated in
+; name order. Re-capture: emit the source, then concatenate the .ll files again.
+;
+; type Color = Red | Green | Blue
+; type MaybeN = NoN | SomeN(Nat)
+; type Flag = Off | On(Bool)
+; type Lst = LNil | LCons(Nat, Lst)
+; type Hold = Empty | Held(Lst)
+; type Tr = TLeaf(Nat) | TMid | TNode(Tr, Tr)
+;
+; fn mk(n: Nat) -> Tr {
+;     TNode(TLeaf(n), TMid())
+; }
+;
+; #[partial]
+; fn pick(c: Color, n: Nat) -> Color {
+;     match c {
+;         Red() => if n == 0 { Red() } else { pick(Green(), n - 1) },
+;         Green() => Blue(),
+;         Blue() => Red(),
+;     }
+; }
+;
+; fn find(l: Lst, k: Nat) -> MaybeN {
+;     match l {
+;         LNil() => NoN(),
+;         LCons(x, rest) => if x == k { SomeN(x) } else { find(rest, k) },
+;     }
+; }
+;
+; #[partial]
+; fn flip(f: Flag, n: Nat) -> Flag {
+;     match f {
+;         Off() => if n == 0 { Off() } else { flip(On(true), n - 1) },
+;         On(b) => if n == 0 { On(b) } else { flip(Off(), n - 1) },
+;     }
+; }
+;
+; fn main() -> Nat {
+;     let l = LCons(1, LCons(2, LNil()));
+;     let r = find(l, 2);
+;     let c = pick(Red(), 3);
+;     let f = flip(Off(), 4);
+;     let h = Held(l);
+;     let t = mk(1);
+;     match r {
+;         NoN() => 0,
+;         SomeN(v) => v,
+;     }
+; }
+;
+; ===== find.ll =====
+; ModuleID = 'fixture__find'
+source_filename = "fixture__find"
+target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
+target triple = "arm64-apple-darwin23.6.0"
+
+@__albite_arena_mode = external hidden global i32
+
+declare i32 @printf(ptr, ...)
+
+declare ptr @__albite_alloc(i64, i32)
+
+declare ptr @malloc(i64)
+
+declare void @__albite_arena_init()
+
+declare ptr @memcpy(ptr, ptr, i64)
+
+declare i32 @memcmp(ptr, ptr, i64)
+
+declare { ptr, i64 } @tg_string_concat({ ptr, i64 }, { ptr, i64 })
+
+declare { ptr, i64 } @tg_string_concat_owned({ ptr, i64 }, { ptr, i64 })
+
+define { ptr, ptr } @find(ptr %0, ptr %1) {
+entry:
+  %arena.mode = load i32, ptr @__albite_arena_mode, align 4
+  %arena.off = icmp eq i32 %arena.mode, 0
+  br i1 %arena.off, label %alloc.malloc, label %alloc.arena, !prof !0
+
+alloc.malloc:                                     ; preds = %entry
+  %env_alloc.malloc = call ptr @malloc(i64 8)
+  br label %alloc.join
+
+alloc.arena:                                      ; preds = %entry
+  %env_alloc.arena = call ptr @__albite_alloc(i64 8, i32 1)
+  br label %alloc.join
+
+alloc.join:                                       ; preds = %alloc.arena, %alloc.malloc
+  %env_alloc = phi ptr [ %env_alloc.malloc, %alloc.malloc ], [ %env_alloc.arena, %alloc.arena ]
+  %l_store = getelementptr inbounds { ptr }, ptr %env_alloc, i32 0, i32 0
+  store ptr %1, ptr %l_store, align 16
+  %closure_env = insertvalue { ptr, ptr } { ptr @__fixture__find_lambda_1, ptr null }, ptr %env_alloc, 1
+  ret { ptr, ptr } %closure_env
+}
+
+define { i32, [8 x i8] } @"find$direct"(ptr %0, ptr %1, i64 %2) {
+entry:
+  %sret_buf = alloca { i32, [8 x i8] }, align 8
+  call void @llvm.lifetime.start.p0(i64 12, ptr %sret_buf)
+  call void @"find$direct_mt"(ptr noalias nonnull sret({ i32, [8 x i8] }) align 4 dereferenceable(12) %sret_buf, ptr %0, ptr %1, i64 %2)
+  %sret_load = load { i32, [8 x i8] }, ptr %sret_buf, align 4
+  call void @llvm.lifetime.end.p0(i64 12, ptr %sret_buf)
+  ret { i32, [8 x i8] } %sret_load
+}
+
+define void @"find$direct_mt"(ptr noalias nonnull sret({ i32, [8 x i8] }) align 4 dereferenceable(12) %0, ptr %1, ptr %2, i64 %3) {
+entry:
+  %unfolded = load { i32, [16 x i8] }, ptr %2, align 16
+  %case_sum_ptr = alloca { i32, [16 x i8] }, align 16
+  store { i32, [16 x i8] } %unfolded, ptr %case_sum_ptr, align 16
+  %tag_ptr = getelementptr inbounds { i32, [16 x i8] }, ptr %case_sum_ptr, i32 0, i32 0
+  %tag = load i32, ptr %tag_ptr, align 4
+  %data_ptr = getelementptr inbounds { i32, [16 x i8] }, ptr %case_sum_ptr, i32 0, i32 1
+  %is_left = icmp eq i32 %tag, 0
+  br i1 %is_left, label %case_left, label %case_right
+
+case_left:                                        ; preds = %entry
+  %__ctor_LNil_payload = load {}, ptr %data_ptr, align 4
+  %sum_alloca = alloca { i32, [8 x i8] }, align 16
+  %tag_ptr1 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca, i32 0, i32 0
+  store i32 0, ptr %tag_ptr1, align 4
+  %data_ptr2 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr2, align 4
+  %sum_val = load { i32, [8 x i8] }, ptr %sum_alloca, align 16
+  br label %case_merge
+
+case_right:                                       ; preds = %entry
+  %__rest0_payload = load { i64, ptr }, ptr %data_ptr, align 4
+  %pair_alloca = alloca { i64, ptr }, align 16
+  store { i64, ptr } %__rest0_payload, ptr %pair_alloca, align 16
+  %fst_ptr = getelementptr inbounds { i64, ptr }, ptr %pair_alloca, i32 0, i32 0
+  %fst = load i64, ptr %fst_ptr, align 16
+  %pair_alloca3 = alloca { i64, ptr }, align 16
+  store { i64, ptr } %__rest0_payload, ptr %pair_alloca3, align 16
+  %snd_ptr = getelementptr inbounds { i64, ptr }, ptr %pair_alloca3, i32 0, i32 1
+  %snd = load ptr, ptr %snd_ptr, align 16
+  %nat_le = icmp ule i64 %fst, %3
+  br i1 %nat_le, label %then, label %else
+
+case_merge:                                       ; preds = %merge7, %case_left
+  %case_result = phi { i32, [8 x i8] } [ %sum_val, %case_left ], [ %if_result12, %merge7 ]
+  store { i32, [8 x i8] } %case_result, ptr %0, align 4
+  ret void
+
+then:                                             ; preds = %case_right
+  %nat_le4 = icmp ule i64 %3, %fst
+  br label %merge
+
+else:                                             ; preds = %case_right
+  br label %merge
+
+merge:                                            ; preds = %else, %then
+  %if_result = phi i1 [ %nat_le4, %then ], [ false, %else ]
+  br i1 %if_result, label %then5, label %else6
+
+then5:                                            ; preds = %merge
+  %sum_alloca8 = alloca { i32, [8 x i8] }, align 16
+  %tag_ptr9 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca8, i32 0, i32 0
+  store i32 1, ptr %tag_ptr9, align 4
+  %data_ptr10 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca8, i32 0, i32 1
+  store i64 %fst, ptr %data_ptr10, align 4
+  %sum_val11 = load { i32, [8 x i8] }, ptr %sum_alloca8, align 16
+  br label %merge7
+
+else6:                                            ; preds = %merge
+  musttail call void @"find$direct_mt"(ptr noalias nonnull sret({ i32, [8 x i8] }) align 4 dereferenceable(12) %0, ptr null, ptr %snd, i64 %3)
+  ret void
+
+merge7:                                           ; preds = %then5
+  %if_result12 = phi { i32, [8 x i8] } [ %sum_val11, %then5 ]
+  br label %case_merge
+
+musttail_decomposed_dead:                         ; No predecessors!
+  unreachable
+}
+
+define { i32, [8 x i8] } @__fixture__find_lambda_1(ptr %0, i64 %1) {
+entry:
+  %l_ptr = getelementptr inbounds { ptr }, ptr %0, i32 0, i32 0
+  %l = load ptr, ptr %l_ptr, align 16
+  %unfolded = load { i32, [16 x i8] }, ptr %l, align 16
+  %case_sum_ptr = alloca { i32, [16 x i8] }, align 16
+  store { i32, [16 x i8] } %unfolded, ptr %case_sum_ptr, align 16
+  %tag_ptr = getelementptr inbounds { i32, [16 x i8] }, ptr %case_sum_ptr, i32 0, i32 0
+  %tag = load i32, ptr %tag_ptr, align 4
+  %data_ptr = getelementptr inbounds { i32, [16 x i8] }, ptr %case_sum_ptr, i32 0, i32 1
+  %is_left = icmp eq i32 %tag, 0
+  br i1 %is_left, label %case_left, label %case_right
+
+case_left:                                        ; preds = %entry
+  %__ctor_LNil_payload = load {}, ptr %data_ptr, align 4
+  %sum_alloca = alloca { i32, [8 x i8] }, align 16
+  %tag_ptr1 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca, i32 0, i32 0
+  store i32 0, ptr %tag_ptr1, align 4
+  %data_ptr2 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr2, align 4
+  %sum_val = load { i32, [8 x i8] }, ptr %sum_alloca, align 16
+  br label %case_merge
+
+case_right:                                       ; preds = %entry
+  %__rest0_payload = load { i64, ptr }, ptr %data_ptr, align 4
+  %pair_alloca = alloca { i64, ptr }, align 16
+  store { i64, ptr } %__rest0_payload, ptr %pair_alloca, align 16
+  %fst_ptr = getelementptr inbounds { i64, ptr }, ptr %pair_alloca, i32 0, i32 0
+  %fst = load i64, ptr %fst_ptr, align 16
+  %pair_alloca3 = alloca { i64, ptr }, align 16
+  store { i64, ptr } %__rest0_payload, ptr %pair_alloca3, align 16
+  %snd_ptr = getelementptr inbounds { i64, ptr }, ptr %pair_alloca3, i32 0, i32 1
+  %snd = load ptr, ptr %snd_ptr, align 16
+  %nat_le = icmp ule i64 %fst, %1
+  br i1 %nat_le, label %then, label %else
+
+case_merge:                                       ; preds = %merge7, %case_left
+  %case_result = phi { i32, [8 x i8] } [ %sum_val, %case_left ], [ %if_result12, %merge7 ]
+  ret { i32, [8 x i8] } %case_result
+
+then:                                             ; preds = %case_right
+  %nat_le4 = icmp ule i64 %1, %fst
+  br label %merge
+
+else:                                             ; preds = %case_right
+  br label %merge
+
+merge:                                            ; preds = %else, %then
+  %if_result = phi i1 [ %nat_le4, %then ], [ false, %else ]
+  br i1 %if_result, label %then5, label %else6
+
+then5:                                            ; preds = %merge
+  %sum_alloca8 = alloca { i32, [8 x i8] }, align 16
+  %tag_ptr9 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca8, i32 0, i32 0
+  store i32 1, ptr %tag_ptr9, align 4
+  %data_ptr10 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca8, i32 0, i32 1
+  store i64 %fst, ptr %data_ptr10, align 4
+  %sum_val11 = load { i32, [8 x i8] }, ptr %sum_alloca8, align 16
+  br label %merge7
+
+else6:                                            ; preds = %merge
+  %direct_call = call { i32, [8 x i8] } @"find$direct"(ptr null, ptr %snd, i64 %1)
+  br label %merge7
+
+merge7:                                           ; preds = %else6, %then5
+  %if_result12 = phi { i32, [8 x i8] } [ %sum_val11, %then5 ], [ %direct_call, %else6 ]
+  br label %case_merge
+}
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #0
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #0
+
+attributes #0 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+
+!0 = !{!"branch_weights", i32 2000, i32 1}
+; ===== flip.ll =====
+; ModuleID = 'fixture__flip'
+source_filename = "fixture__flip"
+target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
+target triple = "arm64-apple-darwin23.6.0"
+
+@__albite_arena_mode = external hidden global i32
+
+declare i32 @printf(ptr, ...)
+
+declare ptr @__albite_alloc(i64, i32)
+
+declare ptr @malloc(i64)
+
+declare void @__albite_arena_init()
+
+declare ptr @memcpy(ptr, ptr, i64)
+
+declare i32 @memcmp(ptr, ptr, i64)
+
+declare { ptr, i64 } @tg_string_concat({ ptr, i64 }, { ptr, i64 })
+
+declare { ptr, i64 } @tg_string_concat_owned({ ptr, i64 }, { ptr, i64 })
+
+define { ptr, ptr } @flip(ptr %0, { i32, [1 x i8] } %1) {
+entry:
+  %arena.mode = load i32, ptr @__albite_arena_mode, align 4
+  %arena.off = icmp eq i32 %arena.mode, 0
+  br i1 %arena.off, label %alloc.malloc, label %alloc.arena, !prof !0
+
+alloc.malloc:                                     ; preds = %entry
+  %env_alloc.malloc = call ptr @malloc(i64 8)
+  br label %alloc.join
+
+alloc.arena:                                      ; preds = %entry
+  %env_alloc.arena = call ptr @__albite_alloc(i64 8, i32 1)
+  br label %alloc.join
+
+alloc.join:                                       ; preds = %alloc.arena, %alloc.malloc
+  %env_alloc = phi ptr [ %env_alloc.malloc, %alloc.malloc ], [ %env_alloc.arena, %alloc.arena ]
+  %f_store = getelementptr inbounds { { i32, [1 x i8] } }, ptr %env_alloc, i32 0, i32 0
+  store { i32, [1 x i8] } %1, ptr %f_store, align 16
+  %closure_env = insertvalue { ptr, ptr } { ptr @__fixture__flip_lambda_1, ptr null }, ptr %env_alloc, 1
+  ret { ptr, ptr } %closure_env
+}
+
+define { i32, [1 x i8] } @"flip$direct"(ptr %0, { i32, [1 x i8] } %1, i64 %2) {
+entry:
+  %sret_buf = alloca { i32, [1 x i8] }, align 8
+  call void @llvm.lifetime.start.p0(i64 8, ptr %sret_buf)
+  %indirect_buf.0 = alloca { i32, [1 x i8] }, align 8
+  call void @llvm.lifetime.start.p0(i64 8, ptr %indirect_buf.0)
+  store { i32, [1 x i8] } %1, ptr %indirect_buf.0, align 4
+  call void @"flip$direct_mt"(ptr noalias nonnull sret({ i32, [1 x i8] }) align 4 dereferenceable(8) %sret_buf, ptr noalias nonnull align 4 dereferenceable(8) %indirect_buf.0, ptr %0, i64 %2)
+  call void @llvm.lifetime.end.p0(i64 8, ptr %indirect_buf.0)
+  %sret_load = load { i32, [1 x i8] }, ptr %sret_buf, align 4
+  call void @llvm.lifetime.end.p0(i64 8, ptr %sret_buf)
+  ret { i32, [1 x i8] } %sret_load
+}
+
+define void @"flip$direct_mt"(ptr noalias nonnull sret({ i32, [1 x i8] }) align 4 dereferenceable(8) %0, ptr noalias nonnull align 4 dereferenceable(8) %1, ptr %2, i64 %3) {
+entry:
+  %f.indirect.load = load { i32, [1 x i8] }, ptr %1, align 4
+  %case_sum_ptr = alloca { i32, [1 x i8] }, align 16
+  store { i32, [1 x i8] } %f.indirect.load, ptr %case_sum_ptr, align 16
+  %tag_ptr = getelementptr inbounds { i32, [1 x i8] }, ptr %case_sum_ptr, i32 0, i32 0
+  %tag = load i32, ptr %tag_ptr, align 4
+  %data_ptr = getelementptr inbounds { i32, [1 x i8] }, ptr %case_sum_ptr, i32 0, i32 1
+  %is_left = icmp eq i32 %tag, 0
+  br i1 %is_left, label %case_left, label %case_right
+
+case_left:                                        ; preds = %entry
+  %__ctor_Off_payload = load {}, ptr %data_ptr, align 4
+  %nat_le = icmp ule i64 %3, 0
+  br i1 %nat_le, label %then, label %else
+
+case_right:                                       ; preds = %entry
+  %__rest0_payload = load i1, ptr %data_ptr, align 4
+  %nat_le12 = icmp ule i64 %3, 0
+  br i1 %nat_le12, label %then13, label %else14
+
+case_merge:                                       ; preds = %merge20, %merge4
+  %case_result = phi { i32, [1 x i8] } [ %if_result11, %merge4 ], [ %if_result33, %merge20 ]
+  store { i32, [1 x i8] } %case_result, ptr %0, align 4
+  ret void
+
+then:                                             ; preds = %case_left
+  %nat_le1 = icmp ule i64 0, %3
+  br label %merge
+
+else:                                             ; preds = %case_left
+  br label %merge
+
+merge:                                            ; preds = %else, %then
+  %if_result = phi i1 [ %nat_le1, %then ], [ false, %else ]
+  br i1 %if_result, label %then2, label %else3
+
+then2:                                            ; preds = %merge
+  %sum_alloca = alloca { i32, [1 x i8] }, align 16
+  %tag_ptr5 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca, i32 0, i32 0
+  store i32 0, ptr %tag_ptr5, align 4
+  %data_ptr6 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr6, align 4
+  %sum_val = load { i32, [1 x i8] }, ptr %sum_alloca, align 16
+  br label %merge4
+
+else3:                                            ; preds = %merge
+  %sum_alloca7 = alloca { i32, [1 x i8] }, align 16
+  %tag_ptr8 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca7, i32 0, i32 0
+  store i32 1, ptr %tag_ptr8, align 4
+  %data_ptr9 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca7, i32 0, i32 1
+  store i1 true, ptr %data_ptr9, align 4
+  %sum_val10 = load { i32, [1 x i8] }, ptr %sum_alloca7, align 16
+  %nat_sub_raw = sub i64 %3, 1
+  %underflow = icmp ugt i64 1, %3
+  %nat_sub = select i1 %underflow, i64 0, i64 %nat_sub_raw
+  store { i32, [1 x i8] } %sum_val10, ptr %1, align 4
+  musttail call void @"flip$direct_mt"(ptr noalias nonnull sret({ i32, [1 x i8] }) align 4 dereferenceable(8) %0, ptr noalias nonnull align 4 dereferenceable(8) %1, ptr null, i64 %nat_sub)
+  ret void
+
+merge4:                                           ; preds = %then2
+  %if_result11 = phi { i32, [1 x i8] } [ %sum_val, %then2 ]
+  br label %case_merge
+
+musttail_decomposed_dead:                         ; No predecessors!
+  unreachable
+
+then13:                                           ; preds = %case_right
+  %nat_le16 = icmp ule i64 0, %3
+  br label %merge15
+
+else14:                                           ; preds = %case_right
+  br label %merge15
+
+merge15:                                          ; preds = %else14, %then13
+  %if_result17 = phi i1 [ %nat_le16, %then13 ], [ false, %else14 ]
+  br i1 %if_result17, label %then18, label %else19
+
+then18:                                           ; preds = %merge15
+  %sum_alloca21 = alloca { i32, [1 x i8] }, align 16
+  %tag_ptr22 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca21, i32 0, i32 0
+  store i32 1, ptr %tag_ptr22, align 4
+  %data_ptr23 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca21, i32 0, i32 1
+  store i1 %__rest0_payload, ptr %data_ptr23, align 4
+  %sum_val24 = load { i32, [1 x i8] }, ptr %sum_alloca21, align 16
+  br label %merge20
+
+else19:                                           ; preds = %merge15
+  %sum_alloca25 = alloca { i32, [1 x i8] }, align 16
+  %tag_ptr26 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca25, i32 0, i32 0
+  store i32 0, ptr %tag_ptr26, align 4
+  %data_ptr27 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca25, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr27, align 4
+  %sum_val28 = load { i32, [1 x i8] }, ptr %sum_alloca25, align 16
+  %nat_sub_raw29 = sub i64 %3, 1
+  %underflow30 = icmp ugt i64 1, %3
+  %nat_sub31 = select i1 %underflow30, i64 0, i64 %nat_sub_raw29
+  store { i32, [1 x i8] } %sum_val28, ptr %1, align 4
+  musttail call void @"flip$direct_mt"(ptr noalias nonnull sret({ i32, [1 x i8] }) align 4 dereferenceable(8) %0, ptr noalias nonnull align 4 dereferenceable(8) %1, ptr null, i64 %nat_sub31)
+  ret void
+
+merge20:                                          ; preds = %then18
+  %if_result33 = phi { i32, [1 x i8] } [ %sum_val24, %then18 ]
+  br label %case_merge
+
+musttail_decomposed_dead32:                       ; No predecessors!
+  unreachable
+}
+
+define { i32, [1 x i8] } @__fixture__flip_lambda_1(ptr %0, i64 %1) {
+entry:
+  %f_ptr = getelementptr inbounds { { i32, [1 x i8] } }, ptr %0, i32 0, i32 0
+  %f = load { i32, [1 x i8] }, ptr %f_ptr, align 16
+  %case_sum_ptr = alloca { i32, [1 x i8] }, align 16
+  store { i32, [1 x i8] } %f, ptr %case_sum_ptr, align 16
+  %tag_ptr = getelementptr inbounds { i32, [1 x i8] }, ptr %case_sum_ptr, i32 0, i32 0
+  %tag = load i32, ptr %tag_ptr, align 4
+  %data_ptr = getelementptr inbounds { i32, [1 x i8] }, ptr %case_sum_ptr, i32 0, i32 1
+  %is_left = icmp eq i32 %tag, 0
+  br i1 %is_left, label %case_left, label %case_right
+
+case_left:                                        ; preds = %entry
+  %__ctor_Off_payload = load {}, ptr %data_ptr, align 4
+  %nat_le = icmp ule i64 %1, 0
+  br i1 %nat_le, label %then, label %else
+
+case_right:                                       ; preds = %entry
+  %__rest0_payload = load i1, ptr %data_ptr, align 4
+  %nat_le12 = icmp ule i64 %1, 0
+  br i1 %nat_le12, label %then13, label %else14
+
+case_merge:                                       ; preds = %merge20, %merge4
+  %case_result = phi { i32, [1 x i8] } [ %if_result11, %merge4 ], [ %if_result33, %merge20 ]
+  ret { i32, [1 x i8] } %case_result
+
+then:                                             ; preds = %case_left
+  %nat_le1 = icmp ule i64 0, %1
+  br label %merge
+
+else:                                             ; preds = %case_left
+  br label %merge
+
+merge:                                            ; preds = %else, %then
+  %if_result = phi i1 [ %nat_le1, %then ], [ false, %else ]
+  br i1 %if_result, label %then2, label %else3
+
+then2:                                            ; preds = %merge
+  %sum_alloca = alloca { i32, [1 x i8] }, align 16
+  %tag_ptr5 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca, i32 0, i32 0
+  store i32 0, ptr %tag_ptr5, align 4
+  %data_ptr6 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr6, align 4
+  %sum_val = load { i32, [1 x i8] }, ptr %sum_alloca, align 16
+  br label %merge4
+
+else3:                                            ; preds = %merge
+  %sum_alloca7 = alloca { i32, [1 x i8] }, align 16
+  %tag_ptr8 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca7, i32 0, i32 0
+  store i32 1, ptr %tag_ptr8, align 4
+  %data_ptr9 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca7, i32 0, i32 1
+  store i1 true, ptr %data_ptr9, align 4
+  %sum_val10 = load { i32, [1 x i8] }, ptr %sum_alloca7, align 16
+  %nat_sub_raw = sub i64 %1, 1
+  %underflow = icmp ugt i64 1, %1
+  %nat_sub = select i1 %underflow, i64 0, i64 %nat_sub_raw
+  %direct_call = call { i32, [1 x i8] } @"flip$direct"(ptr null, { i32, [1 x i8] } %sum_val10, i64 %nat_sub)
+  br label %merge4
+
+merge4:                                           ; preds = %else3, %then2
+  %if_result11 = phi { i32, [1 x i8] } [ %sum_val, %then2 ], [ %direct_call, %else3 ]
+  br label %case_merge
+
+then13:                                           ; preds = %case_right
+  %nat_le16 = icmp ule i64 0, %1
+  br label %merge15
+
+else14:                                           ; preds = %case_right
+  br label %merge15
+
+merge15:                                          ; preds = %else14, %then13
+  %if_result17 = phi i1 [ %nat_le16, %then13 ], [ false, %else14 ]
+  br i1 %if_result17, label %then18, label %else19
+
+then18:                                           ; preds = %merge15
+  %sum_alloca21 = alloca { i32, [1 x i8] }, align 16
+  %tag_ptr22 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca21, i32 0, i32 0
+  store i32 1, ptr %tag_ptr22, align 4
+  %data_ptr23 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca21, i32 0, i32 1
+  store i1 %__rest0_payload, ptr %data_ptr23, align 4
+  %sum_val24 = load { i32, [1 x i8] }, ptr %sum_alloca21, align 16
+  br label %merge20
+
+else19:                                           ; preds = %merge15
+  %sum_alloca25 = alloca { i32, [1 x i8] }, align 16
+  %tag_ptr26 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca25, i32 0, i32 0
+  store i32 0, ptr %tag_ptr26, align 4
+  %data_ptr27 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca25, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr27, align 4
+  %sum_val28 = load { i32, [1 x i8] }, ptr %sum_alloca25, align 16
+  %nat_sub_raw29 = sub i64 %1, 1
+  %underflow30 = icmp ugt i64 1, %1
+  %nat_sub31 = select i1 %underflow30, i64 0, i64 %nat_sub_raw29
+  %direct_call32 = call { i32, [1 x i8] } @"flip$direct"(ptr null, { i32, [1 x i8] } %sum_val28, i64 %nat_sub31)
+  br label %merge20
+
+merge20:                                          ; preds = %else19, %then18
+  %if_result33 = phi { i32, [1 x i8] } [ %sum_val24, %then18 ], [ %direct_call32, %else19 ]
+  br label %case_merge
+}
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #0
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #0
+
+attributes #0 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+
+!0 = !{!"branch_weights", i32 2000, i32 1}
+; ===== mk.ll =====
+; ModuleID = 'fixture__mk'
+source_filename = "fixture__mk"
+target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
+target triple = "arm64-apple-darwin23.6.0"
+
+@__albite_arena_mode = external hidden global i32
+
+declare i32 @printf(ptr, ...)
+
+declare ptr @__albite_alloc(i64, i32)
+
+declare ptr @malloc(i64)
+
+declare void @__albite_arena_init()
+
+declare ptr @memcpy(ptr, ptr, i64)
+
+declare i32 @memcmp(ptr, ptr, i64)
+
+declare { ptr, i64 } @tg_string_concat({ ptr, i64 }, { ptr, i64 })
+
+declare { ptr, i64 } @tg_string_concat_owned({ ptr, i64 }, { ptr, i64 })
+
+define ptr @mk(ptr %0, i64 %1) {
+entry:
+  %adt_alloca = alloca { i32, [16 x i8] }, align 16
+  %tag_ptr = getelementptr inbounds { i32, [16 x i8] }, ptr %adt_alloca, i32 0, i32 0
+  store i32 0, ptr %tag_ptr, align 4
+  %data_ptr = getelementptr inbounds { i32, [16 x i8] }, ptr %adt_alloca, i32 0, i32 1
+  store i64 %1, ptr %data_ptr, align 4
+  %adt_val = load { i32, [16 x i8] }, ptr %adt_alloca, align 16
+  %arena.mode = load i32, ptr @__albite_arena_mode, align 4
+  %arena.off = icmp eq i32 %arena.mode, 0
+  br i1 %arena.off, label %alloc.malloc, label %alloc.arena, !prof !0
+
+alloc.malloc:                                     ; preds = %entry
+  %mu_alloc.malloc = call ptr @malloc(i64 20)
+  br label %alloc.join
+
+alloc.arena:                                      ; preds = %entry
+  %mu_alloc.arena = call ptr @__albite_alloc(i64 20, i32 0)
+  br label %alloc.join
+
+alloc.join:                                       ; preds = %alloc.arena, %alloc.malloc
+  %mu_alloc = phi ptr [ %mu_alloc.malloc, %alloc.malloc ], [ %mu_alloc.arena, %alloc.arena ]
+  store { i32, [16 x i8] } %adt_val, ptr %mu_alloc, align 16
+  %adt_alloca1 = alloca { i32, [16 x i8] }, align 16
+  %tag_ptr2 = getelementptr inbounds { i32, [16 x i8] }, ptr %adt_alloca1, i32 0, i32 0
+  store i32 1, ptr %tag_ptr2, align 4
+  %data_ptr3 = getelementptr inbounds { i32, [16 x i8] }, ptr %adt_alloca1, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr3, align 4
+  %adt_val4 = load { i32, [16 x i8] }, ptr %adt_alloca1, align 16
+  %arena.mode5 = load i32, ptr @__albite_arena_mode, align 4
+  %arena.off6 = icmp eq i32 %arena.mode5, 0
+  br i1 %arena.off6, label %alloc.malloc7, label %alloc.arena8, !prof !0
+
+alloc.malloc7:                                    ; preds = %alloc.join
+  %mu_alloc.malloc10 = call ptr @malloc(i64 20)
+  br label %alloc.join9
+
+alloc.arena8:                                     ; preds = %alloc.join
+  %mu_alloc.arena11 = call ptr @__albite_alloc(i64 20, i32 0)
+  br label %alloc.join9
+
+alloc.join9:                                      ; preds = %alloc.arena8, %alloc.malloc7
+  %mu_alloc12 = phi ptr [ %mu_alloc.malloc10, %alloc.malloc7 ], [ %mu_alloc.arena11, %alloc.arena8 ]
+  store { i32, [16 x i8] } %adt_val4, ptr %mu_alloc12, align 16
+  %pair_fst = insertvalue { ptr, ptr } zeroinitializer, ptr %mu_alloc, 0
+  %pair_snd = insertvalue { ptr, ptr } %pair_fst, ptr %mu_alloc12, 1
+  %adt_alloca13 = alloca { i32, [16 x i8] }, align 16
+  %tag_ptr14 = getelementptr inbounds { i32, [16 x i8] }, ptr %adt_alloca13, i32 0, i32 0
+  store i32 2, ptr %tag_ptr14, align 4
+  %data_ptr15 = getelementptr inbounds { i32, [16 x i8] }, ptr %adt_alloca13, i32 0, i32 1
+  store { ptr, ptr } %pair_snd, ptr %data_ptr15, align 4
+  %adt_val16 = load { i32, [16 x i8] }, ptr %adt_alloca13, align 16
+  %arena.mode17 = load i32, ptr @__albite_arena_mode, align 4
+  %arena.off18 = icmp eq i32 %arena.mode17, 0
+  br i1 %arena.off18, label %alloc.malloc19, label %alloc.arena20, !prof !0
+
+alloc.malloc19:                                   ; preds = %alloc.join9
+  %mu_alloc.malloc22 = call ptr @malloc(i64 20)
+  br label %alloc.join21
+
+alloc.arena20:                                    ; preds = %alloc.join9
+  %mu_alloc.arena23 = call ptr @__albite_alloc(i64 20, i32 0)
+  br label %alloc.join21
+
+alloc.join21:                                     ; preds = %alloc.arena20, %alloc.malloc19
+  %mu_alloc24 = phi ptr [ %mu_alloc.malloc22, %alloc.malloc19 ], [ %mu_alloc.arena23, %alloc.arena20 ]
+  store { i32, [16 x i8] } %adt_val16, ptr %mu_alloc24, align 16
+  ret ptr %mu_alloc24
+}
+
+!0 = !{!"branch_weights", i32 2000, i32 1}
+; ===== pick.ll =====
+; ModuleID = 'fixture__pick'
+source_filename = "fixture__pick"
+target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
+target triple = "arm64-apple-darwin23.6.0"
+
+@__albite_arena_mode = external hidden global i32
+
+declare i32 @printf(ptr, ...)
+
+declare ptr @__albite_alloc(i64, i32)
+
+declare ptr @malloc(i64)
+
+declare void @__albite_arena_init()
+
+declare ptr @memcpy(ptr, ptr, i64)
+
+declare i32 @memcmp(ptr, ptr, i64)
+
+declare { ptr, i64 } @tg_string_concat({ ptr, i64 }, { ptr, i64 })
+
+declare { ptr, i64 } @tg_string_concat_owned({ ptr, i64 }, { ptr, i64 })
+
+define { ptr, ptr } @pick(ptr %0, { i32, [0 x i8] } %1) {
+entry:
+  %arena.mode = load i32, ptr @__albite_arena_mode, align 4
+  %arena.off = icmp eq i32 %arena.mode, 0
+  br i1 %arena.off, label %alloc.malloc, label %alloc.arena, !prof !0
+
+alloc.malloc:                                     ; preds = %entry
+  %env_alloc.malloc = call ptr @malloc(i64 4)
+  br label %alloc.join
+
+alloc.arena:                                      ; preds = %entry
+  %env_alloc.arena = call ptr @__albite_alloc(i64 4, i32 1)
+  br label %alloc.join
+
+alloc.join:                                       ; preds = %alloc.arena, %alloc.malloc
+  %env_alloc = phi ptr [ %env_alloc.malloc, %alloc.malloc ], [ %env_alloc.arena, %alloc.arena ]
+  %c_store = getelementptr inbounds { { i32, [0 x i8] } }, ptr %env_alloc, i32 0, i32 0
+  store { i32, [0 x i8] } %1, ptr %c_store, align 16
+  %closure_env = insertvalue { ptr, ptr } { ptr @__fixture__pick_lambda_1, ptr null }, ptr %env_alloc, 1
+  ret { ptr, ptr } %closure_env
+}
+
+define { i32, [0 x i8] } @"pick$direct"(ptr %0, { i32, [0 x i8] } %1, i64 %2) {
+entry:
+  %sret_buf = alloca { i32, [0 x i8] }, align 8
+  call void @llvm.lifetime.start.p0(i64 4, ptr %sret_buf)
+  %indirect_buf.0 = alloca { i32, [0 x i8] }, align 8
+  call void @llvm.lifetime.start.p0(i64 4, ptr %indirect_buf.0)
+  store { i32, [0 x i8] } %1, ptr %indirect_buf.0, align 4
+  call void @"pick$direct_mt"(ptr noalias nonnull sret({ i32, [0 x i8] }) align 4 dereferenceable(4) %sret_buf, ptr noalias nonnull align 4 dereferenceable(4) %indirect_buf.0, ptr %0, i64 %2)
+  call void @llvm.lifetime.end.p0(i64 4, ptr %indirect_buf.0)
+  %sret_load = load { i32, [0 x i8] }, ptr %sret_buf, align 4
+  call void @llvm.lifetime.end.p0(i64 4, ptr %sret_buf)
+  ret { i32, [0 x i8] } %sret_load
+}
+
+define void @"pick$direct_mt"(ptr noalias nonnull sret({ i32, [0 x i8] }) align 4 dereferenceable(4) %0, ptr noalias nonnull align 4 dereferenceable(4) %1, ptr %2, i64 %3) {
+entry:
+  %c.indirect.load = load { i32, [0 x i8] }, ptr %1, align 4
+  %adt_scrut_ptr = alloca { i32, [0 x i8] }, align 16
+  store { i32, [0 x i8] } %c.indirect.load, ptr %adt_scrut_ptr, align 16
+  %tag_ptr = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_scrut_ptr, i32 0, i32 0
+  %tag = load i32, ptr %tag_ptr, align 4
+  %data_ptr = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_scrut_ptr, i32 0, i32 1
+  switch i32 %tag, label %adt_unreachable [
+    i32 0, label %adt_case_0
+    i32 1, label %adt_case_1
+    i32 2, label %adt_case_2
+  ]
+
+adt_merge:                                        ; preds = %adt_case_2, %adt_case_1, %merge4
+  %adt_result = phi { i32, [0 x i8] } [ %if_result11, %merge4 ], [ %adt_val15, %adt_case_1 ], [ %adt_val19, %adt_case_2 ]
+  store { i32, [0 x i8] } %adt_result, ptr %0, align 4
+  ret void
+
+adt_unreachable:                                  ; preds = %entry
+  unreachable
+
+adt_case_0:                                       ; preds = %entry
+  %payload_0 = load {}, ptr %data_ptr, align 4
+  %nat_le = icmp ule i64 %3, 0
+  br i1 %nat_le, label %then, label %else
+
+adt_case_1:                                       ; preds = %entry
+  %payload_1 = load {}, ptr %data_ptr, align 4
+  %adt_alloca12 = alloca { i32, [0 x i8] }, align 16
+  %tag_ptr13 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca12, i32 0, i32 0
+  store i32 2, ptr %tag_ptr13, align 4
+  %data_ptr14 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca12, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr14, align 4
+  %adt_val15 = load { i32, [0 x i8] }, ptr %adt_alloca12, align 16
+  br label %adt_merge
+
+adt_case_2:                                       ; preds = %entry
+  %payload_2 = load {}, ptr %data_ptr, align 4
+  %adt_alloca16 = alloca { i32, [0 x i8] }, align 16
+  %tag_ptr17 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca16, i32 0, i32 0
+  store i32 0, ptr %tag_ptr17, align 4
+  %data_ptr18 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca16, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr18, align 4
+  %adt_val19 = load { i32, [0 x i8] }, ptr %adt_alloca16, align 16
+  br label %adt_merge
+
+then:                                             ; preds = %adt_case_0
+  %nat_le1 = icmp ule i64 0, %3
+  br label %merge
+
+else:                                             ; preds = %adt_case_0
+  br label %merge
+
+merge:                                            ; preds = %else, %then
+  %if_result = phi i1 [ %nat_le1, %then ], [ false, %else ]
+  br i1 %if_result, label %then2, label %else3
+
+then2:                                            ; preds = %merge
+  %adt_alloca = alloca { i32, [0 x i8] }, align 16
+  %tag_ptr5 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca, i32 0, i32 0
+  store i32 0, ptr %tag_ptr5, align 4
+  %data_ptr6 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr6, align 4
+  %adt_val = load { i32, [0 x i8] }, ptr %adt_alloca, align 16
+  br label %merge4
+
+else3:                                            ; preds = %merge
+  %adt_alloca7 = alloca { i32, [0 x i8] }, align 16
+  %tag_ptr8 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca7, i32 0, i32 0
+  store i32 1, ptr %tag_ptr8, align 4
+  %data_ptr9 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca7, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr9, align 4
+  %adt_val10 = load { i32, [0 x i8] }, ptr %adt_alloca7, align 16
+  %nat_sub_raw = sub i64 %3, 1
+  %underflow = icmp ugt i64 1, %3
+  %nat_sub = select i1 %underflow, i64 0, i64 %nat_sub_raw
+  store { i32, [0 x i8] } %adt_val10, ptr %1, align 4
+  musttail call void @"pick$direct_mt"(ptr noalias nonnull sret({ i32, [0 x i8] }) align 4 dereferenceable(4) %0, ptr noalias nonnull align 4 dereferenceable(4) %1, ptr null, i64 %nat_sub)
+  ret void
+
+merge4:                                           ; preds = %then2
+  %if_result11 = phi { i32, [0 x i8] } [ %adt_val, %then2 ]
+  br label %adt_merge
+
+musttail_decomposed_dead:                         ; No predecessors!
+  unreachable
+}
+
+define { i32, [0 x i8] } @__fixture__pick_lambda_1(ptr %0, i64 %1) {
+entry:
+  %c_ptr = getelementptr inbounds { { i32, [0 x i8] } }, ptr %0, i32 0, i32 0
+  %c = load { i32, [0 x i8] }, ptr %c_ptr, align 16
+  %adt_scrut_ptr = alloca { i32, [0 x i8] }, align 16
+  store { i32, [0 x i8] } %c, ptr %adt_scrut_ptr, align 16
+  %tag_ptr = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_scrut_ptr, i32 0, i32 0
+  %tag = load i32, ptr %tag_ptr, align 4
+  %data_ptr = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_scrut_ptr, i32 0, i32 1
+  switch i32 %tag, label %adt_unreachable [
+    i32 0, label %adt_case_0
+    i32 1, label %adt_case_1
+    i32 2, label %adt_case_2
+  ]
+
+adt_merge:                                        ; preds = %adt_case_2, %adt_case_1, %merge4
+  %adt_result = phi { i32, [0 x i8] } [ %if_result11, %merge4 ], [ %adt_val15, %adt_case_1 ], [ %adt_val19, %adt_case_2 ]
+  ret { i32, [0 x i8] } %adt_result
+
+adt_unreachable:                                  ; preds = %entry
+  unreachable
+
+adt_case_0:                                       ; preds = %entry
+  %payload_0 = load {}, ptr %data_ptr, align 4
+  %nat_le = icmp ule i64 %1, 0
+  br i1 %nat_le, label %then, label %else
+
+adt_case_1:                                       ; preds = %entry
+  %payload_1 = load {}, ptr %data_ptr, align 4
+  %adt_alloca12 = alloca { i32, [0 x i8] }, align 16
+  %tag_ptr13 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca12, i32 0, i32 0
+  store i32 2, ptr %tag_ptr13, align 4
+  %data_ptr14 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca12, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr14, align 4
+  %adt_val15 = load { i32, [0 x i8] }, ptr %adt_alloca12, align 16
+  br label %adt_merge
+
+adt_case_2:                                       ; preds = %entry
+  %payload_2 = load {}, ptr %data_ptr, align 4
+  %adt_alloca16 = alloca { i32, [0 x i8] }, align 16
+  %tag_ptr17 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca16, i32 0, i32 0
+  store i32 0, ptr %tag_ptr17, align 4
+  %data_ptr18 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca16, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr18, align 4
+  %adt_val19 = load { i32, [0 x i8] }, ptr %adt_alloca16, align 16
+  br label %adt_merge
+
+then:                                             ; preds = %adt_case_0
+  %nat_le1 = icmp ule i64 0, %1
+  br label %merge
+
+else:                                             ; preds = %adt_case_0
+  br label %merge
+
+merge:                                            ; preds = %else, %then
+  %if_result = phi i1 [ %nat_le1, %then ], [ false, %else ]
+  br i1 %if_result, label %then2, label %else3
+
+then2:                                            ; preds = %merge
+  %adt_alloca = alloca { i32, [0 x i8] }, align 16
+  %tag_ptr5 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca, i32 0, i32 0
+  store i32 0, ptr %tag_ptr5, align 4
+  %data_ptr6 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr6, align 4
+  %adt_val = load { i32, [0 x i8] }, ptr %adt_alloca, align 16
+  br label %merge4
+
+else3:                                            ; preds = %merge
+  %adt_alloca7 = alloca { i32, [0 x i8] }, align 16
+  %tag_ptr8 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca7, i32 0, i32 0
+  store i32 1, ptr %tag_ptr8, align 4
+  %data_ptr9 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca7, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr9, align 4
+  %adt_val10 = load { i32, [0 x i8] }, ptr %adt_alloca7, align 16
+  %nat_sub_raw = sub i64 %1, 1
+  %underflow = icmp ugt i64 1, %1
+  %nat_sub = select i1 %underflow, i64 0, i64 %nat_sub_raw
+  %direct_call = call { i32, [0 x i8] } @"pick$direct"(ptr null, { i32, [0 x i8] } %adt_val10, i64 %nat_sub)
+  br label %merge4
+
+merge4:                                           ; preds = %else3, %then2
+  %if_result11 = phi { i32, [0 x i8] } [ %adt_val, %then2 ], [ %direct_call, %else3 ]
+  br label %adt_merge
+}
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #0
+
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
+declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #0
+
+attributes #0 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
+
+!0 = !{!"branch_weights", i32 2000, i32 1}
+; ===== albite_main.ll =====
+; ModuleID = 'fixture__albite_main'
+source_filename = "fixture__albite_main"
+target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
+target triple = "arm64-apple-darwin23.6.0"
+
+@__albite_arena_mode = external hidden global i32
+@__albite_argc = global i32 0
+@__albite_argv = global ptr null
+@nat_fmt = private unnamed_addr constant [6 x i8] c"%lld\0A\00", align 1
+
+declare i32 @printf(ptr, ...)
+
+declare ptr @__albite_alloc(i64, i32)
+
+declare ptr @malloc(i64)
+
+declare void @__albite_arena_init()
+
+declare ptr @memcpy(ptr, ptr, i64)
+
+declare i32 @memcmp(ptr, ptr, i64)
+
+declare { ptr, i64 } @tg_string_concat({ ptr, i64 }, { ptr, i64 })
+
+declare { ptr, i64 } @tg_string_concat_owned({ ptr, i64 }, { ptr, i64 })
+
+define i64 @albite_main(ptr %0) {
+entry:
+  %sum_alloca = alloca { i32, [16 x i8] }, align 16
+  %tag_ptr = getelementptr inbounds { i32, [16 x i8] }, ptr %sum_alloca, i32 0, i32 0
+  store i32 0, ptr %tag_ptr, align 4
+  %data_ptr = getelementptr inbounds { i32, [16 x i8] }, ptr %sum_alloca, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr, align 4
+  %sum_val = load { i32, [16 x i8] }, ptr %sum_alloca, align 16
+  %arena.mode = load i32, ptr @__albite_arena_mode, align 4
+  %arena.off = icmp eq i32 %arena.mode, 0
+  br i1 %arena.off, label %alloc.malloc, label %alloc.arena, !prof !0
+
+alloc.malloc:                                     ; preds = %entry
+  %mu_alloc.malloc = call ptr @malloc(i64 20)
+  br label %alloc.join
+
+alloc.arena:                                      ; preds = %entry
+  %mu_alloc.arena = call ptr @__albite_alloc(i64 20, i32 0)
+  br label %alloc.join
+
+alloc.join:                                       ; preds = %alloc.arena, %alloc.malloc
+  %mu_alloc = phi ptr [ %mu_alloc.malloc, %alloc.malloc ], [ %mu_alloc.arena, %alloc.arena ]
+  store { i32, [16 x i8] } %sum_val, ptr %mu_alloc, align 16
+  %pair_snd = insertvalue { i64, ptr } { i64 2, ptr null }, ptr %mu_alloc, 1
+  %sum_alloca1 = alloca { i32, [16 x i8] }, align 16
+  %tag_ptr2 = getelementptr inbounds { i32, [16 x i8] }, ptr %sum_alloca1, i32 0, i32 0
+  store i32 1, ptr %tag_ptr2, align 4
+  %data_ptr3 = getelementptr inbounds { i32, [16 x i8] }, ptr %sum_alloca1, i32 0, i32 1
+  store { i64, ptr } %pair_snd, ptr %data_ptr3, align 4
+  %sum_val4 = load { i32, [16 x i8] }, ptr %sum_alloca1, align 16
+  %arena.mode5 = load i32, ptr @__albite_arena_mode, align 4
+  %arena.off6 = icmp eq i32 %arena.mode5, 0
+  br i1 %arena.off6, label %alloc.malloc7, label %alloc.arena8, !prof !0
+
+alloc.malloc7:                                    ; preds = %alloc.join
+  %mu_alloc.malloc10 = call ptr @malloc(i64 20)
+  br label %alloc.join9
+
+alloc.arena8:                                     ; preds = %alloc.join
+  %mu_alloc.arena11 = call ptr @__albite_alloc(i64 20, i32 0)
+  br label %alloc.join9
+
+alloc.join9:                                      ; preds = %alloc.arena8, %alloc.malloc7
+  %mu_alloc12 = phi ptr [ %mu_alloc.malloc10, %alloc.malloc7 ], [ %mu_alloc.arena11, %alloc.arena8 ]
+  store { i32, [16 x i8] } %sum_val4, ptr %mu_alloc12, align 16
+  %pair_snd13 = insertvalue { i64, ptr } { i64 1, ptr null }, ptr %mu_alloc12, 1
+  %sum_alloca14 = alloca { i32, [16 x i8] }, align 16
+  %tag_ptr15 = getelementptr inbounds { i32, [16 x i8] }, ptr %sum_alloca14, i32 0, i32 0
+  store i32 1, ptr %tag_ptr15, align 4
+  %data_ptr16 = getelementptr inbounds { i32, [16 x i8] }, ptr %sum_alloca14, i32 0, i32 1
+  store { i64, ptr } %pair_snd13, ptr %data_ptr16, align 4
+  %sum_val17 = load { i32, [16 x i8] }, ptr %sum_alloca14, align 16
+  %arena.mode18 = load i32, ptr @__albite_arena_mode, align 4
+  %arena.off19 = icmp eq i32 %arena.mode18, 0
+  br i1 %arena.off19, label %alloc.malloc20, label %alloc.arena21, !prof !0
+
+alloc.malloc20:                                   ; preds = %alloc.join9
+  %mu_alloc.malloc23 = call ptr @malloc(i64 20)
+  br label %alloc.join22
+
+alloc.arena21:                                    ; preds = %alloc.join9
+  %mu_alloc.arena24 = call ptr @__albite_alloc(i64 20, i32 0)
+  br label %alloc.join22
+
+alloc.join22:                                     ; preds = %alloc.arena21, %alloc.malloc20
+  %mu_alloc25 = phi ptr [ %mu_alloc.malloc23, %alloc.malloc20 ], [ %mu_alloc.arena24, %alloc.arena21 ]
+  store { i32, [16 x i8] } %sum_val17, ptr %mu_alloc25, align 16
+  %direct_call = call { i32, [8 x i8] } @"find$direct"(ptr null, ptr %mu_alloc25, i64 2)
+  %adt_alloca = alloca { i32, [0 x i8] }, align 16
+  %tag_ptr26 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca, i32 0, i32 0
+  store i32 0, ptr %tag_ptr26, align 4
+  %data_ptr27 = getelementptr inbounds { i32, [0 x i8] }, ptr %adt_alloca, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr27, align 4
+  %adt_val = load { i32, [0 x i8] }, ptr %adt_alloca, align 16
+  %direct_call28 = call { i32, [0 x i8] } @"pick$direct"(ptr null, { i32, [0 x i8] } %adt_val, i64 3)
+  %sum_alloca29 = alloca { i32, [1 x i8] }, align 16
+  %tag_ptr30 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca29, i32 0, i32 0
+  store i32 0, ptr %tag_ptr30, align 4
+  %data_ptr31 = getelementptr inbounds { i32, [1 x i8] }, ptr %sum_alloca29, i32 0, i32 1
+  store {} zeroinitializer, ptr %data_ptr31, align 4
+  %sum_val32 = load { i32, [1 x i8] }, ptr %sum_alloca29, align 16
+  %direct_call33 = call { i32, [1 x i8] } @"flip$direct"(ptr null, { i32, [1 x i8] } %sum_val32, i64 4)
+  %sum_alloca34 = alloca { i32, [8 x i8] }, align 16
+  %tag_ptr35 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca34, i32 0, i32 0
+  store i32 1, ptr %tag_ptr35, align 4
+  %data_ptr36 = getelementptr inbounds { i32, [8 x i8] }, ptr %sum_alloca34, i32 0, i32 1
+  store ptr %mu_alloc25, ptr %data_ptr36, align 4
+  %sum_val37 = load { i32, [8 x i8] }, ptr %sum_alloca34, align 16
+  %call = call ptr @mk(ptr null, i64 1)
+  %case_sum_ptr = alloca { i32, [8 x i8] }, align 16
+  store { i32, [8 x i8] } %direct_call, ptr %case_sum_ptr, align 16
+  %tag_ptr38 = getelementptr inbounds { i32, [8 x i8] }, ptr %case_sum_ptr, i32 0, i32 0
+  %tag = load i32, ptr %tag_ptr38, align 4
+  %data_ptr39 = getelementptr inbounds { i32, [8 x i8] }, ptr %case_sum_ptr, i32 0, i32 1
+  %is_left = icmp eq i32 %tag, 0
+  br i1 %is_left, label %case_left, label %case_right
+
+case_left:                                        ; preds = %alloc.join22
+  %__ctor_NoN_payload = load {}, ptr %data_ptr39, align 4
+  br label %case_merge
+
+case_right:                                       ; preds = %alloc.join22
+  %__rest0_payload = load i64, ptr %data_ptr39, align 4
+  br label %case_merge
+
+case_merge:                                       ; preds = %case_right, %case_left
+  %case_result = phi i64 [ 0, %case_left ], [ %__rest0_payload, %case_right ]
+  ret i64 %case_result
+}
+
+declare { ptr, ptr } @find(ptr, ptr)
+
+declare { i32, [8 x i8] } @"find$direct"(ptr, ptr, i64)
+
+declare void @"find$direct_mt"(ptr noalias nonnull sret({ i32, [8 x i8] }) align 4 dereferenceable(12), ptr, ptr, i64)
+
+declare { ptr, ptr } @flip(ptr, { i32, [1 x i8] })
+
+declare { i32, [1 x i8] } @"flip$direct"(ptr, { i32, [1 x i8] }, i64)
+
+declare void @"flip$direct_mt"(ptr noalias nonnull sret({ i32, [1 x i8] }) align 4 dereferenceable(8), ptr noalias nonnull align 4 dereferenceable(8), ptr, i64)
+
+declare ptr @mk(ptr, i64)
+
+declare { ptr, ptr } @pick(ptr, { i32, [0 x i8] })
+
+declare { i32, [0 x i8] } @"pick$direct"(ptr, { i32, [0 x i8] }, i64)
+
+declare void @"pick$direct_mt"(ptr noalias nonnull sret({ i32, [0 x i8] }) align 4 dereferenceable(4), ptr noalias nonnull align 4 dereferenceable(4), ptr, i64)
+
+define i32 @__albite_inner_main() {
+entry:
+  call void @__albite_install_signal_handlers()
+  call void @__albite_arena_init()
+  %argc = load i32, ptr @__albite_argc, align 4
+  %argv = load ptr, ptr @__albite_argv, align 8
+  call void @tg_init_args_c(i32 %argc, ptr %argv)
+  %main_result = call i64 @albite_main(ptr null)
+  %0 = call i32 (ptr, ...) @printf(ptr @nat_fmt, i64 %main_result)
+  ret i32 0
+}
+
+declare void @__albite_install_signal_handlers()
+
+declare void @tg_init_args_c(i32, ptr)
+
+define i32 @main(i32 %0, ptr %1) {
+entry:
+  store i32 %0, ptr @__albite_argc, align 4
+  store ptr %1, ptr @__albite_argv, align 8
+  %exit_code = call i32 @__albite_inner_main()
+  ret i32 %exit_code
+}
+
+!0 = !{!"branch_weights", i32 2000, i32 1}

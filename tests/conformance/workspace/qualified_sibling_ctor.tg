@@ -1,0 +1,7 @@
+// A qualified use of an undeclared sibling's constructor, with no `use` (ADR
+// 2.10.26g §2.4, D2): `boxes::MkBox` names a names-only stub, so the self-host
+// must refuse it as the bootstrap does.
+fn main() -> Nat {
+    let _boxed = boxes::MkBox(1);
+    0
+}

@@ -1,0 +1,41 @@
+// Negative control for test_nat_binom_theorem.tg (ADR 9.10.26m D4, AC 3).
+//
+// Each item below cites `binomial_theorem` at a statement its conclusion does
+// not fit, and each must be refused. `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_nat_binom_theorem.tg --require-tests
+//     -> aborting due to 3 errors
+//
+// The cases, each E0010 (the bootstrap's TypeMismatch):
+//
+//   1. the sum stated to `n`, one term short
+//   2. the powers swapped, `pow(a, nat_sub(n, k)) * pow(b, k)`: a true
+//      identity, so the citation is refused for its statement, not its truth
+//   3. `binomial_theorem(2, 3, 2)` stated as `pow(2 + 3, 2) == 24`
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+mod nat_binom_theorem;
+
+theorem binomial_theorem_one_term_short(a: Nat, b: Nat, n: Nat)
+    -> Eq<Nat, nat_binom_theorem::nat_pow::pow(a + b, n),
+               nat_binom_theorem::nat_sum::sum_below(|k: Nat| nat_binom_theorem::nat_binom::binom(n, k)
+                   * nat_binom_theorem::nat_pow::pow(a, k)
+                   * nat_binom_theorem::nat_pow::pow(b, nat_binom_theorem::nat_pow::nat_sub(n, k)), n)> {
+    nat_binom_theorem::binomial_theorem(a, b, n)
+}
+
+theorem binomial_theorem_powers_swapped(a: Nat, b: Nat, n: Nat)
+    -> Eq<Nat, nat_binom_theorem::nat_pow::pow(a + b, n),
+               nat_binom_theorem::nat_sum::sum_below(|k: Nat| nat_binom_theorem::nat_binom::binom(n, k)
+                   * nat_binom_theorem::nat_pow::pow(a, nat_binom_theorem::nat_pow::nat_sub(n, k))
+                   * nat_binom_theorem::nat_pow::pow(b, k), n + 1)> {
+    nat_binom_theorem::binomial_theorem(a, b, n)
+}
+
+fn test_binomial_theorem_wrong_closed_value() -> Unit {
+    let _r: Eq<Nat, nat_binom_theorem::nat_pow::pow(2 + 3, 2), 24> = nat_binom_theorem::binomial_theorem(2, 3, 2);
+    ()
+}

@@ -1,0 +1,3 @@
+// E0087 (ADR 4.10.26g D6): the two sides normalise to different polynomials,
+// so `ring` refuses before it cites any lemma, printing both normal forms.
+theorem false_ring(n: Nat, m: Nat) -> Eq<Nat, m * 2 + n, n + m + 1> by { ring }

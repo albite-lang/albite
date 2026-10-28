@@ -1,0 +1,15 @@
+[E0004] Error: the name `one` is defined multiple times
+   ╭─[tests/golden/error/duplicate_fn_in_file.tg:6:4]
+   │
+ 4 │ fn one() -> Nat { 2 }
+   │    ─┬─  
+   │     ╰─── `one` is first defined here
+   │ 
+ 6 │ fn one() -> Nat { 1 }
+   │    ─┬─  
+   │     ╰─── 
+   │ 
+   │ Help: a name is defined once per file; rename or remove one of them
+───╯
+
+error: aborting due to 1 error

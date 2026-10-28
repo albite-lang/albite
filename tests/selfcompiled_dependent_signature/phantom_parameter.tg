@@ -1,0 +1,7 @@
+// ADR 2.10.26f D3's fifth site: a phantom type parameter `T` occurs in no
+// domain, so neither compiler can infer it at a citation, and neither may
+// accept one by leaving the codomain's `n` free.
+
+fn p<T>(n: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+fn main() -> Nat { let _l: Eq<Nat, 3 + 0, 3> = p(3); 0 }

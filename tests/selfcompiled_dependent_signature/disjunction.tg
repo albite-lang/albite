@@ -1,0 +1,18 @@
+// A disjunction built and split in term mode (ADR 7.10.26l D6): `inl`/`inr`
+// against a sum of equations, and a `match` on one by its two sides. No
+// family and no tactic block, so the self-host reaches the injection itself.
+//
+// The bootstrap accepts this file; `tungsten1` refuses it, which is the
+// battery row's recorded refusal (Q7: a refusal, never an acceptance) until
+// the self-host mirrors the surface.
+
+pub theorem left_side(n: Nat) -> Eq<Nat, n, n> + Eq<Nat, 0, 1> { inl(refl) }
+
+pub theorem right_side(n: Nat) -> Eq<Nat, 0, 1> + Eq<Nat, n, n> { inr(refl) }
+
+fn side(h: Eq<Nat, 0, 0> + Eq<Nat, 1, 1>) -> Nat {
+    match h {
+        inl(_) => 1,
+        inr(_) => 0
+    }
+}

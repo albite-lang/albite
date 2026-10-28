@@ -1,0 +1,110 @@
+// src/compiler/elab/items/termination/type_graph.tg
+// The declared type graph the termination mirror names roots from (ADR 3.9.26f).
+//
+// Descent picks a decreasing root by looking for a named inductive type or a
+// μ-encoding. This compiler μ-wraps a type only when a field names it
+// DIRECTLY, so a member of a recursive cluster reached through another type
+// (`MaybeExpr` -> `Expr` -> `MaybeExpr`) or through a generic argument
+// (`List<UseTree>`) reaches the engine as a bare structural sum, which it
+// refuses. The bootstrap μ-wraps every cluster member, so it does not.
+//
+// The seam decides which names the bootstrap would have encoded nominally by
+// running an SCC over the graph noted here, and the graph is built from the
+// names the SOURCE spells rather than from elaborated field types: an
+// elaborated field has already inlined a structural encoding and lost the
+// name, which made three of the cluster's edges depend on declaration order.
+
+use parser::ast::{
+    Variant, RecordField, TypeExpr,
+    TyPath, TyArrow, TyProduct, TySum, TyApp, TyForall, TyPtr, TyRef, TyParen,
+    TyEqExplicit,
+    ident_name, path_item_name
+};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::list_len;
+use elab::ffi::{
+    tg_string_to_cstr, tg_termination_note_type, tg_termination_note_type_ref,
+    POSITIVITY_KIND_ADT, POSITIVITY_KIND_RECORD, POSITIVITY_KIND_ALIAS
+};
+
+/// Note a sum type: its constructor count, then every name its fields spell.
+pub fn termination_note_sum_type(type_name: String, variants: List<Variant>) -> Bool {
+    let noted = tg_termination_note_type(
+        tg_string_to_cstr(type_name), POSITIVITY_KIND_ADT(), list_len(variants)
+    );
+    termination_note_variant_refs(type_name, variants, noted)
+}
+
+/// Note a record type: one implicit constructor, then its fields' names.
+pub fn termination_note_record_type(type_name: String, fields: List<RecordField>) -> Bool {
+    let noted = tg_termination_note_type(
+        tg_string_to_cstr(type_name), POSITIVITY_KIND_RECORD(), 1
+    );
+    termination_note_record_field_refs(type_name, fields, noted)
+}
+
+/// Note a type alias. It is a node so a cycle through it is still a cycle, and
+/// the seam never names a parameter back to it.
+pub fn termination_note_alias_type(type_name: String, body: TypeExpr) -> Bool {
+    let noted = tg_termination_note_type(
+        tg_string_to_cstr(type_name), POSITIVITY_KIND_ALIAS(), 0
+    );
+    termination_note_type_refs(type_name, body, noted)
+}
+
+fn termination_note_variant_refs(owner: String, variants: List<Variant>, ok: Bool) -> Bool {
+    match variants {
+        Nil() => ok,
+        Cons(variant, rest) => {
+            let noted = termination_note_type_list_refs(owner, variant.fields, ok);
+            termination_note_variant_refs(owner, rest, noted)
+        }
+    }
+}
+
+fn termination_note_record_field_refs(owner: String, fields: List<RecordField>, ok: Bool) -> Bool {
+    match fields {
+        Nil() => ok,
+        Cons(field, rest) => {
+            let noted = termination_note_type_refs(owner, field.ty, ok);
+            termination_note_record_field_refs(owner, rest, noted)
+        }
+    }
+}
+
+fn termination_note_type_list_refs(owner: String, types: List<TypeExpr>, ok: Bool) -> Bool {
+    match types {
+        Nil() => ok,
+        Cons(ty, rest) => {
+            let noted = termination_note_type_refs(owner, ty, ok);
+            termination_note_type_list_refs(owner, rest, noted)
+        }
+    }
+}
+
+/// Note every type name `ty` spells, in every position — arguments included,
+/// since `List<UseTree>` is exactly the edge the encoder misses.
+///
+/// A `false` from any note survives the fold, like the definition streams'.
+pub fn termination_note_type_refs(owner: String, ty: TypeExpr, ok: Bool) -> Bool {
+    match ty {
+        TyPath(path) => termination_note_one_ref(owner, ident_name(path_item_name(path)), ok),
+        TyArrow(a, b, _) => termination_note_type_refs(owner, b, termination_note_type_refs(owner, a, ok)),
+        TyProduct(a, b, _) => termination_note_type_refs(owner, b, termination_note_type_refs(owner, a, ok)),
+        TySum(a, b, _) => termination_note_type_refs(owner, b, termination_note_type_refs(owner, a, ok)),
+        TyApp(base, args, _) => termination_note_type_list_refs(owner, args, termination_note_type_refs(owner, base, ok)),
+        TyForall(_, body, _) => termination_note_type_refs(owner, body, ok),
+        TyPtr(inner, _) => termination_note_type_refs(owner, inner, ok),
+        TyRef(inner, _) => termination_note_type_refs(owner, inner, ok),
+        TyParen(inner, _) => termination_note_type_refs(owner, inner, ok),
+        TyEqExplicit(inner, _, _, _) => termination_note_type_refs(owner, inner, ok),
+        _ => ok
+    }
+}
+
+fn termination_note_one_ref(owner: String, referenced: String, ok: Bool) -> Bool {
+    let noted = tg_termination_note_type_ref(
+        tg_string_to_cstr(owner), tg_string_to_cstr(referenced)
+    );
+    ok && noted
+}

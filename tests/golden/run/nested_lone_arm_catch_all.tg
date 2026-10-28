@@ -1,0 +1,22 @@
+// Golden test: a lone nested arm leaves its other inner cases to the catch-all
+// (ADR 13.10.26u). `B` has exactly one arm, `B(Som(n))`, so `B(Non())` must
+// run `_ => 7`. Before the fix it ran a synthesised hole: the evaluator stopped
+// at `sorry` and the native binary returned 0.
+//
+// One digit per call: f(A) f(B(Som)) f(B(Non)) f(C) = 1 2 7 3.
+
+type M = Som(Nat) | Non
+type P = A(Nat) | B(M) | C(Nat)
+
+fn f(q: P) -> Nat {
+    match q {
+        A(n) => 1,
+        B(Som(n)) => 2,
+        C(n) => 3,
+        _ => 7
+    }
+}
+
+fn main() -> Nat {
+    f(A(0)) * 1000 + f(B(Som(0))) * 100 + f(B(Non())) * 10 + f(C(0))
+}

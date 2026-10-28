@@ -1,0 +1,15 @@
+warning: Signature Collection global collection failed with 1 error; cross-module imports may not resolve.
+  first error: error[E0068]: type parameter `F` takes no arguments: a type parameter stands for a type, not for a type constructor (at 164..168)
+  note: higher-kinded type parameters are not supported
+  hint: run `albite doctor check module signature-collection <file>` for details
+[E0068] Error: type parameter `F` takes no arguments: a type parameter stands for a type, not for a type constructor
+   ╭─[tests/golden/error/type_parameter_applied_to_arguments.tg:3:20]
+   │
+ 3 │ type Ap<F, T> = Mk(F<T>)
+   │                    ──┬─  
+   │                      ╰─── 
+   │ 
+   │ Note: higher-kinded type parameters are not supported
+───╯
+
+error: aborting due to 1 error

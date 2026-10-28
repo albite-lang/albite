@@ -1,0 +1,7 @@
+// Golden test (ADR 13.10.26r AC 5): an assignment to a plain `let` is E0104
+// (not `mut`). The self-host raises E0740 at the same assignment.
+fn main() -> Nat {
+    let x = 1;
+    x = 2;
+    x
+}

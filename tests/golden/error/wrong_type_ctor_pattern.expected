@@ -1,0 +1,9 @@
+[E0022] Error: match arms use constructors of `JarKind`, but the scrutinee has type `(Unit + Nat)`
+   ╭─[tests/golden/error/wrong_type_ctor_pattern.tg:9:15]
+   │
+ 9 │     match c { PickJar(k) => k, _ => 0 }
+   │               ───┬───  
+   │                  ╰───── 
+───╯
+
+error: aborting due to 1 error

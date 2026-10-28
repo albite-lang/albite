@@ -1,0 +1,14 @@
+// Golden test (ADR 9.10.26f AC 4): a program's `write` and `abort` cannot
+// capture the runtime's. Both are spelled apart (`_tg_5write`, `_tg_5abort`),
+// so when the add overflows the trap's `write` still reaches libc and its
+// `abort` still ends the program: the stderr line below is the evidence.
+// Before 9.10.26f the link joined them to these bodies, and the program
+// exited 134 having printed nothing (7.10.26q P0.8).
+fn write(fd: Int, buf: Int, len: Int) -> Int { len }
+fn abort() -> Int { 0 }
+
+fn signed_max() -> Int { 9223372036854775807 }
+
+fn main() -> Int {
+    signed_max() + write(2, 0, 1) + abort()
+}

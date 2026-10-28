@@ -1,0 +1,99 @@
+// `induction` re-proves the library's induction lemmas in tactic mode (ADR
+// 3.10.26e D7, AC 6).
+//
+// `induction x` replaces the goal `G` by `G[x := 0]` and then
+// `Π x:Nat. G → G[x := x + 1]`; `intro j; intro ih` names the step's index
+// and hypothesis. Each step below is the library's own reasoning from
+// nat_arith.tg, with its citations qualified.
+//
+// `ind_mul_comm` is the S2/S3 composition pin: its step closes by `rewrite`
+// only because the successor is spelled `j + 1`, as the library's lemmas
+// state it (D2).
+//
+// Every proof below also goes through the kernel's `check_proof` at the
+// admission boundary — a refusal is E0081 and would fail this file.
+// Each theorem is cited by a typed `let`, at a literal and at swapped
+// arguments.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_tactic_induction.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+// Cited by qualified path, as test_tactic_rewrite.tg does.
+mod nat_arith;
+
+// ── Addition ────────────────────────────────────────────────────────────────
+
+pub theorem ind_add_zero_left(n: Nat) -> Eq<Nat, 0 + n, n> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact cong(|x: Nat| x + 1, ih)
+}
+
+pub theorem ind_add_assoc(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n + m) + k, n + (m + k)> by {
+    induction k;
+    refl;
+    intro j;
+    intro ih;
+    exact cong(|x: Nat| x + 1, ih)
+}
+
+// ── Multiplication ──────────────────────────────────────────────────────────
+
+pub theorem ind_mul_succ_left(m: Nat, n: Nat) -> Eq<Nat, (m + 1) * n, m * n + n> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact cong(|x: Nat| x + 1,
+               trans(cong(|x: Nat| x + m, ih),
+                 trans(nat_arith::add_assoc(m * j, j, m),
+                   trans(cong(|x: Nat| m * j + x, nat_arith::add_comm(j, m)),
+                         sym(nat_arith::add_assoc(m * j, m, j))))))
+}
+
+pub theorem ind_mul_comm(n: Nat, m: Nat) -> Eq<Nat, n * m, m * n> by {
+    induction m;
+    exact sym(nat_arith::mul_zero_left(n));
+    intro j;
+    intro ih;
+    rewrite [nat_arith::mul_succ_left(j, n), <- ih];
+    refl
+}
+
+pub theorem ind_mul_add(n: Nat, m: Nat, k: Nat) -> Eq<Nat, n * (m + k), n * m + n * k> by {
+    induction k;
+    refl;
+    intro j;
+    intro ih;
+    exact trans(cong(|x: Nat| x + n, ih), nat_arith::add_assoc(n * m, n * j, n))
+}
+
+pub theorem ind_mul_assoc(n: Nat, m: Nat, k: Nat) -> Eq<Nat, (n * m) * k, n * (m * k)> by {
+    induction k;
+    refl;
+    intro j;
+    intro ih;
+    exact trans(cong(|x: Nat| x + n * m, ih), sym(nat_arith::mul_add(n, m * j, m)))
+}
+
+// ── Each one cited ──────────────────────────────────────────────────────────
+
+fn test_addition_by_induction_is_cited() -> Unit {
+    let _zero_left: Eq<Nat, 0 + 7, 7> = ind_add_zero_left(7);
+    let _assoc: Eq<Nat, (1 + 2) + 3, 1 + (2 + 3)> = ind_add_assoc(1, 2, 3);
+    let _swapped: Eq<Nat, (3 + 2) + 1, 3 + (2 + 1)> = ind_add_assoc(3, 2, 1);
+    ()
+}
+
+fn test_multiplication_by_induction_is_cited() -> Unit {
+    let _succ_left: Eq<Nat, (2 + 1) * 4, 2 * 4 + 4> = ind_mul_succ_left(2, 4);
+    let _comm: Eq<Nat, 2 * 5, 5 * 2> = ind_mul_comm(2, 5);
+    let _comm_swapped: Eq<Nat, 5 * 2, 2 * 5> = ind_mul_comm(5, 2);
+    let _add: Eq<Nat, 2 * (3 + 4), 2 * 3 + 2 * 4> = ind_mul_add(2, 3, 4);
+    let _mul_assoc: Eq<Nat, (2 * 3) * 4, 2 * (3 * 4)> = ind_mul_assoc(2, 3, 4);
+    let _mul_assoc_swapped: Eq<Nat, (4 * 3) * 2, 4 * (3 * 2)> = ind_mul_assoc(4, 3, 2);
+    ()
+}

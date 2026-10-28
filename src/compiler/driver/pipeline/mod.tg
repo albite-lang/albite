@@ -1,0 +1,132 @@
+// src/compiler/driver/pipeline/mod.tg
+// Pipeline orchestration for the self-hosted compiler.
+//
+// Orchestrates: lexer → parser → elaborator → codegen
+//
+// ## Module Structure
+//
+// - check.tg:   Check pipeline (lex → parse → elaborate)
+// - run.tg:     Run pipeline (check + evaluate main)
+// - compile.tg: Compile pipeline (check + codegen)
+// - bootstrap_lookup.tg: Which bootstrap binary, and what to say when it fails
+// - errors.tg:  Error rendering helpers
+
+pub mod check;
+pub mod run;
+pub mod compile;
+pub mod bootstrap_lookup;
+pub mod test;
+pub mod errors;
+pub mod info;
+pub mod explain;
+
+use driver::pipeline::check::run_check;
+use driver::pipeline::run::run_run;
+use driver::pipeline::compile::run_compile;
+use driver::pipeline::test::run_test;
+use driver::pipeline::test::exit::test_exit_code;
+use driver::pipeline::info::run_info;
+use driver::pipeline::explain::run_explain;
+use driver::modules::{TreeFailure, TreeUnreadable, TreeInvalid};
+
+use driver::cli::{
+    Command, CmdCheck, CmdRun, CmdCompile, CmdTest, CmdInfo, CmdExplain, CmdHelp, CmdVersion, CmdError,
+    CheckOpts, RunOpts, CompileOpts, TestOpts, InfoOpts, ExplainOpts,
+    print_help, print_version, print_error
+};
+
+// ===========================================================================
+// PIPELINE RESULT TYPE
+// ===========================================================================
+
+/// Result of running a pipeline command.
+pub type PipelineResult =
+    | PipelineOk(Nat)       // Success with count (defs checked, etc.)
+    | PipelineErr(Nat)      // Failure with error count
+    | PipelineIoErr(Nat)    // A file the module tree could not read (ADR 1.10.26h D9)
+
+/// Check if pipeline succeeded.
+pub fn pipeline_ok(result: PipelineResult) -> Bool {
+    match result {
+        PipelineOk(_) => true,
+        PipelineErr(_) => false,
+        PipelineIoErr(_) => false
+    }
+}
+
+/// Get exit code from pipeline result.
+pub fn pipeline_exit_code(result: PipelineResult) -> Nat {
+    match result {
+        PipelineOk(_) => 0,
+        PipelineErr(_) => exit_error(),
+        PipelineIoErr(_) => exit_io_error()
+    }
+}
+
+/// The pipeline result for a module tree that failed to parse: an unreadable
+/// file is the I/O exit, as on the bootstrap; anything else is one error.
+pub fn pipeline_tree_failure(failure: TreeFailure) -> PipelineResult {
+    match failure {
+        TreeUnreadable(_) => PipelineIoErr(1),
+        TreeInvalid(_) => PipelineErr(1)
+    }
+}
+
+// ===========================================================================
+// EXIT CODES (matching bootstrap)
+// ===========================================================================
+
+/// Success exit code.
+pub fn exit_success() -> Nat { 0 }
+
+/// Compilation error exit code.
+pub fn exit_error() -> Nat { 1 }
+
+/// I/O error exit code.
+pub fn exit_io_error() -> Nat { 3 }
+
+// ===========================================================================
+// MAIN DISPATCH
+// ===========================================================================
+
+/// Dispatch a command and return exit code.
+pub fn dispatch_command(cmd: Command) -> Nat {
+    match cmd {
+        CmdCheck(opts) => {
+            let result = run_check(opts);
+            pipeline_exit_code(result)
+        },
+        CmdRun(opts) => {
+            let result = run_run(opts);
+            pipeline_exit_code(result)
+        },
+        CmdCompile(opts) => {
+            let result = run_compile(opts);
+            pipeline_exit_code(result)
+        },
+        // `test` alone has three exits — passed, failed, runner error — so it
+        // maps its own result type (ADR 29.9.26i D5); the other verbs keep
+        // `pipeline_exit_code`.
+        CmdTest(opts) => test_exit_code(run_test(opts)),
+        CmdInfo(opts) => {
+            run_info(opts);
+            exit_success()
+        },
+        CmdExplain(opts) => {
+            run_explain(opts);
+            exit_success()
+        },
+        CmdHelp() => {
+            print_help();
+            exit_success()
+        },
+        CmdVersion() => {
+            print_version();
+            exit_success()
+        },
+        CmdError(err) => {
+            print_error(err);
+            exit_error()
+        }
+    }
+}

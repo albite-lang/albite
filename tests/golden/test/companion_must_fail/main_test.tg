@@ -1,0 +1,2 @@
+// Deliberately false: root_secret() is 7.
+pub fn test_root_secret_is_eight() -> Unit { assert_eq_nat(root_secret(), 8) }

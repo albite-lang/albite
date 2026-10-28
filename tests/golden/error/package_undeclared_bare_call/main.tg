@@ -1,0 +1,4 @@
+// E0001: `lib_a` calls `lib_b`'s `g` bare, with no declaration and no `use`.
+// To `lib_a` the name does not exist (ADR 3.10.26m D5, §1.3).
+use lib_a::f;
+fn main() -> Nat { f() }

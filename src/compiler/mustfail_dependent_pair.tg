@@ -1,0 +1,40 @@
+// Negative control for test_dependent_pair.tg (ADR 4.10.26h AC 3).
+//
+// It holds P0.4's wrong-witness refusal (E0071) and the positive suite's
+// citations with EVERY expectation wrong: each accepted citation is wrapped
+// in an `expect_error` it cannot satisfy, and each E0010 becomes E0071.
+// `check-mustfail-fixtures` (make/quality/tg-tests.mk) requires it to fail
+// with exactly
+//
+//   albite test src/compiler/mustfail_dependent_pair.tg --require-tests
+//     -> aborting due to 4 errors
+//
+// A case that stops being checked lowers the count, and the gate goes red.
+// P0.4's other two refusals — a binder used as a type (E0002) and a binder
+// ranging over a proof (E0065) — reject a SIGNATURE, which stops collection
+// for the whole file and would hide every case below, so they are pinned in
+// `bootstrap/src/elaborate/tests/items/sorts/` instead.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+pub theorem dep_pair_zero_witness(n: Nat) -> exists k: Nat. n + k == n {
+    (0, refl)
+}
+
+// E0071: `n + 1` is not `n`.
+pub theorem dep_pair_wrong_witness(n: Nat) -> exists k: Nat. n + k == n {
+    (1, refl)
+}
+
+fn test_a_zero_witness_is_cited() -> Unit {
+    expect_error({ let _p: exists k: Nat. Eq<Nat, 3 + k, 3> = dep_pair_zero_witness(3); 0 }, "E0071")
+}
+
+fn test_a_citation_at_the_wrong_argument_is_refused() -> Unit {
+    expect_error({ let _p: exists k: Nat. Eq<Nat, 4 + k, 4> = dep_pair_zero_witness(3); 0 }, "E0071")
+}
+
+fn test_an_exists_is_not_a_tuple_of_the_same_parts() -> Unit {
+    expect_error({ let _p: (Nat, Eq<Nat, 3 + 0, 3>) = dep_pair_zero_witness(3); 0 }, "E0071")
+}

@@ -1,0 +1,11 @@
+[E0020] Error: non-exhaustive match patterns
+    ╭─[tests/golden/error/nested_group_misses_an_inner_constructor.tg:12:9]
+    │
+ 12 │         B(X()) => 1,
+    │         ─────┬─────  
+    │              ╰─────── 
+    │ 
+    │ Note: expected 3 arms for 3 constructors, or use a catch-all `_` pattern
+────╯
+
+error: aborting due to 1 error

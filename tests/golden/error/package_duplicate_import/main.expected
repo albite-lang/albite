@@ -1,0 +1,19 @@
+warning: Signature Collection global collection failed with 1 error; cross-module imports may not resolve.
+  first error: error[E0007]: the name `helper` is imported from both `lib_a` and `lib_b` (at 178..184)
+  note: first imported from `lib_a` (at 159..165)
+  help: use `as` to rename one import: `use lib_b::helper as helper_alias;`
+  hint: run `albite doctor check module signature-collection <file>` for details
+[E0007] Error: the name `helper` is imported from both `lib_a` and `lib_b`
+   ╭─[tests/golden/error/package_duplicate_import/main.tg:4:12]
+   │
+ 3 │ use lib_a::helper;
+   │            ───┬──  
+   │               ╰──── first imported from `lib_a`
+ 4 │ use lib_b::helper;
+   │            ───┬──  
+   │               ╰──── 
+   │ 
+   │ Help: use `as` to rename one import: `use lib_b::helper as helper_alias;`
+───╯
+
+error: aborting due to 1 error

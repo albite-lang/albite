@@ -1,0 +1,190 @@
+// src/compiler/elab/items/imports/dedup.tg
+// Import deduplication: when a second import brings a name already imported,
+// is it the same definition again, or a conflict? (ADR 4.10.26l D3, D4)
+
+use lexer::span::Span;
+use parser::ast::{Visibility};
+use driver::ffi::{List, Nil, Cons};
+use elab::env::{
+    Env, env_add_import, env_current_module_contents,
+    ElabModulePath, elab_module_path_to_string, elab_module_path_eq,
+    Import, import_new, import_glob_new, import_is_reexport, module_contents_lookup_import, MaybeImport, NoImport, SomeImport,
+    ModuleContents, module_map_lookup, SomeModuleContents, NoModuleContents,
+    type_def_list_lookup, value_def_list_lookup, constructor_list_lookup,
+    NoTypeDef, NoValueDef, NoConstructor
+};
+use elab::items::result::{
+    ElabContext, elab_context_with_env, elab_context_add_error
+};
+use elab::error::{
+    ElabError, DuplicateImportSites, elab_error_duplicate_import, elab_error_glob_conflict
+};
+use elab::items::imports::{UseScope, ImportNames};
+
+// ===========================================================================
+// WHERE A NAME IS DEFINED
+// ===========================================================================
+
+/// The module and name that `name` in `path`'s slot finally refers to,
+/// following `pub use`s. Two imports that reach the same pair are one item by
+/// two routes, never a duplicate. A module not yet elaborated is its stub,
+/// which lists its re-exported names as its own, so it answers itself.
+// Partial: the walk follows re-export edges, a measure recursion bounded by
+// `hops` rather than a structural one; executable code no proof reaches.
+#[partial]
+pub fn import_defining_site(env: Env, path: ElabModulePath, name: String, hops: Nat) -> (ElabModulePath, String) {
+    let SomeModuleContents(contents) = module_map_lookup(env.modules, path) else { return (path, name) };
+    if hops == 0 || contents_defines(contents, name) {
+        (path, name)
+    } else {
+        match module_contents_lookup_import(contents, name) {
+            SomeImport(imp) => import_defining_site(env, imp.source_path, imp.source_name, hops - 1),
+            NoImport() => (path, name)
+        }
+    }
+}
+
+/// Whether the slot holds `name` as one of its own types, values or constructors.
+fn contents_defines(contents: ModuleContents, name: String) -> Bool {
+    let NoTypeDef() = type_def_list_lookup(contents.types, name) else { return true };
+    let NoValueDef() = value_def_list_lookup(contents.values, name) else { return true };
+    let NoConstructor() = constructor_list_lookup(contents.constructors.all, name) else { return true };
+    false
+}
+
+/// Whether two imports reach the same definition. Re-export chains in the
+/// self-host are a few hops deep; eight bounds a cycle without cutting one.
+pub fn imports_reach_same_definition(
+    env: Env,
+    first_path: ElabModulePath, first_name: String,
+    second_path: ElabModulePath, second_name: String
+) -> Bool {
+    let (first_site, first_item) = import_defining_site(env, first_path, first_name, 8);
+    let (second_site, second_item) = import_defining_site(env, second_path, second_name, 8);
+    first_item == second_item && elab_module_path_eq(first_site, second_site)
+}
+
+// ===========================================================================
+// NAMED IMPORT DEDUP
+// ===========================================================================
+
+/// Add a named import, refusing a second `use` of one local name (D3).
+///
+/// - Over a glob's entry: added. A named import overrides a glob, as in the
+///   bootstrap, which keeps glob imports in a table of their own.
+/// - The same module and name again: `ErrDuplicateImport`, "imported multiple
+///   times" (the bootstrap's E0007).
+/// - Another route to the same definition: not a duplicate. It is added only
+///   when it widens a private import to a re-export, so a `pub use` after a
+///   private `use` of the same item still exports it.
+/// - A different definition: `ErrDuplicateImport`, "imported from both".
+///
+/// `name_span` is the imported name's, where the bootstrap anchors E0007 (D5).
+pub fn check_duplicate_and_add(
+    ctx: ElabContext,
+    full_path: ElabModulePath,
+    names: ImportNames,
+    scope: UseScope,
+    name_span: Span
+) -> ElabContext {
+    let contents = env_current_module_contents(ctx.env);
+    let imp = import_new(full_path, names.source, names.local, scope.vis, scope.span);
+    let SomeImport(existing) = module_contents_lookup_import(contents, names.local) else {
+        return add_import(ctx, imp)
+    };
+    if existing.from_glob {
+        add_import(ctx, imp)
+    } else if is_same_route(existing, full_path, names.source) {
+        duplicate_import_error(ctx, existing, full_path, names, name_span)
+    } else if imports_reach_same_definition(ctx.env, existing.source_path, existing.source_name, full_path, names.source) {
+        widen_if_reexported(ctx, existing, imp)
+    } else {
+        duplicate_import_error(ctx, existing, full_path, names, name_span)
+    }
+}
+
+fn is_same_route(existing: Import, path: ElabModulePath, source_name: String) -> Bool {
+    existing.source_name == source_name && elab_module_path_eq(existing.source_path, path)
+}
+
+fn add_import(ctx: ElabContext, imp: Import) -> ElabContext {
+    elab_context_with_env(ctx, env_add_import(ctx.env, imp))
+}
+
+/// Record the second import only when it re-exports what the first kept private.
+fn widen_if_reexported(ctx: ElabContext, existing: Import, imp: Import) -> ElabContext {
+    if !import_is_reexport(existing) && import_is_reexport(imp) {
+        add_import(ctx, imp)
+    } else {
+        ctx
+    }
+}
+
+fn duplicate_import_error(
+    ctx: ElabContext,
+    existing: Import,
+    full_path: ElabModulePath,
+    names: ImportNames,
+    name_span: Span
+) -> ElabContext {
+    let sites: DuplicateImportSites = {
+        name: names.local,
+        source_name: names.source,
+        first_span: existing.import_span,
+        second_span: name_span,
+        first_module: elab_module_path_to_string(existing.source_path),
+        second_module: elab_module_path_to_string(full_path)
+    };
+    elab_context_add_error(ctx, elab_error_duplicate_import(sites))
+}
+
+// ===========================================================================
+// GLOB IMPORT DEDUP
+// ===========================================================================
+
+/// Add imports for all items from a glob (D4).
+pub fn add_glob_imports(
+    ctx: ElabContext,
+    source_path: ElabModulePath,
+    items: List<String>,
+    vis: Visibility,
+    span: Span
+) -> ElabContext {
+    match items {
+        Nil() => ctx,
+        Cons(name, rest) =>
+            let ctx2 = try_add_glob_import(ctx, source_path, name, vis, span);
+            add_glob_imports(ctx2, source_path, rest, vis, span)
+    }
+}
+
+/// Add one glob-brought name.
+///
+/// A named import already holding the name wins, silently, as in the
+/// bootstrap. An earlier glob's entry for the same definition is kept (widened
+/// to a re-export if this glob is `pub`). An earlier glob's entry for a
+/// DIFFERENT definition is `ErrGlobConflict` at this glob's path, and no
+/// second entry is inserted: the import walks in `env/resolve/mod.tg` rely on
+/// a local name appearing once.
+fn try_add_glob_import(
+    ctx: ElabContext,
+    source_path: ElabModulePath,
+    name: String,
+    vis: Visibility,
+    span: Span
+) -> ElabContext {
+    let contents = env_current_module_contents(ctx.env);
+    let imp = import_glob_new(source_path, name, vis, span);
+    let SomeImport(existing) = module_contents_lookup_import(contents, name) else {
+        return add_import(ctx, imp)
+    };
+    if !existing.from_glob {
+        ctx
+    } else if imports_reach_same_definition(ctx.env, existing.source_path, existing.source_name, source_path, name) {
+        widen_if_reexported(ctx, existing, imp)
+    } else {
+        let first = elab_module_path_to_string(existing.source_path);
+        let second = elab_module_path_to_string(source_path);
+        elab_context_add_error(ctx, elab_error_glob_conflict(name, first, second, span))
+    }
+}

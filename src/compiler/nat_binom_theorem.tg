@@ -1,0 +1,224 @@
+// The binomial theorem (ADR 9.10.26m), Tier 4's last lemma:
+//
+//   pow(a + b, n) == sum_below(|k| binom(n, k) * pow(a, k) * pow(b, nat_sub(n, k)), n + 1)
+//
+// A FLAT sibling of nat_binom.tg, nat_pow.tg and nat_sum.tg, imported with
+// `mod nat_binom_theorem;` (9.10.26m D1). It is apart from them so the
+// largest Tier 4 proof keeps its own census and battery row.
+//
+// IMPORTS. The theorem-only libraries are imported directly: each reaches
+// nat_arith.tg, and 9.10.26p checks a library reached by two paths once.
+// `Lt` is reached through nat_sum.tg's `pub mod nat_order;`, never a second
+// `mod nat_order;`, because a family-declaring file reached by two paths
+// loses its families (E0023; nat_prime.tg's finding). The three subject
+// libraries are re-exported, `pub mod`, so a dependent imports this file
+// alone and spells `nat_binom_theorem::nat_pow::pow`: a second
+// `mod nat_sum;` beside it would reach nat_order.tg by two paths.
+//
+// THE PROOF is induction on `n`; the step is `binomial_step`. Write
+// `f_n(k) = binom(n, k) * pow(a, k) * pow(b, nat_sub(n, k))`. The left side
+// is `a * S(n) + b * S(n)` by `pow`'s recurrence and the hypothesis. The
+// right side's `k = 0` term is peeled by `sum_shift`, every other term split
+// by Pascal's rule (`binom_split`), and the two sums matched against
+// `a * S(n)` (`binom_left_half`) and `b * S(n)` (`binom_right_half`). The
+// second half folds the peeled term back as index 0 and drops the top term,
+// `binom(n, n + 1) == 0`; under `sum_congr`'s `Lt<k, n + 1>`,
+// `nat_sub(n + 1, k) == nat_sub(n, k) + 1` (`nat_sub_succ_lt`).
+//
+// THE SUMMAND IS A REDEX (nat_sum.tg's finding), so every step citing a
+// lambda's application is term mode, where conversion meets it, and every
+// rearrangement is a variable-only lemma (`term_*`) whose operands the
+// citation instantiates: `binom(n, k)` and `pow(a, k)` are never `ring`
+// atoms (H8). Those lemmas are hand proofs over nat_arith.tg's laws: the
+// `ring` variant was measured against them (ADR 9.10.26m D5, its Outcome).
+//
+// Suite: test_nat_binom_theorem.tg, with its must-fail twin
+// mustfail_nat_binom_theorem.tg.
+
+// `mul_assoc`, `mul_comm`, `mul_add`, `add_mul`, `add_succ_left`, `add_zero_left`.
+mod nat_arith;
+// `binom`, `binom_zero_right`, `binom_zero_above`.
+pub mod nat_binom;
+// `pow`, `nat_sub`, `nat_sub_succ_succ`.
+pub mod nat_pow;
+// `sum_below` and its lemmas; `Lt` through its `pub mod nat_order;`.
+pub mod nat_sum;
+
+// ── Truncated subtraction ───────────────────────────────────────────────────
+
+// `(i + 1) + d` is stuck on an open `d`, so `add_succ_left` turns it into a
+// successor before `nat_sub_succ_succ` peels it.
+pub theorem nat_sub_add_self(k: Nat, d: Nat) -> Eq<Nat, nat_pow::nat_sub(k + d, k), d> by {
+    induction k;
+    exact nat_arith::add_zero_left(d);
+    intro i;
+    intro ih;
+    exact trans(cong(|x: Nat| nat_pow::nat_sub(x, i + 1), nat_arith::add_succ_left(i, d)),
+                trans(nat_pow::nat_sub_succ_succ(i + d, i), ih))
+}
+
+pub theorem lt_succ_witness(k: Nat, n: Nat, d: Nat) -> Eq<Nat, (k + 1) + d, n + 1> -> Eq<Nat, k + d, n> by {
+    intro e;
+    omega
+}
+
+// `k + d + 1` is `k + (d + 1)` by conversion, so the witness form is
+// `nat_sub_add_self` at `d + 1`; `subst` carries it to `n`.
+pub theorem nat_sub_succ_lt(n: Nat, k: Nat, h: nat_sum::nat_order::Lt<k, n + 1>)
+    -> Eq<Nat, nat_pow::nat_sub(n + 1, k), nat_pow::nat_sub(n, k) + 1> by {
+    cases h { (d, e) => exact subst(lt_succ_witness(k, n, d)(e),
+        |x: Nat| Eq<Nat, nat_pow::nat_sub(x + 1, k), nat_pow::nat_sub(x, k) + 1>,
+        trans(nat_sub_add_self(k, d + 1), sym(cong(|x: Nat| x + 1, nat_sub_add_self(k, d))))) }
+}
+
+// ── Rearrangements, over variables ──────────────────────────────────────────
+
+// `s * (a + b)`, the hypothesis times the new factor.
+pub theorem term_distribute(s: Nat, a: Nat, b: Nat) -> Eq<Nat, s * (a + b), a * s + b * s> {
+    trans(nat_arith::mul_add(s, a, b),
+          trans(cong(|x: Nat| x + s * b, nat_arith::mul_comm(s, a)),
+                cong(|x: Nat| a * s + x, nat_arith::mul_comm(s, b))))
+}
+
+// Pascal's rule's two halves, one term each.
+pub theorem term_split(x: Nat, y: Nat, p: Nat, q: Nat) -> Eq<Nat, (x + y) * p * q, x * p * q + y * p * q> {
+    trans(cong(|z: Nat| z * q, nat_arith::add_mul(x, y, p)), nat_arith::add_mul(x * p, y * p, q))
+}
+
+// `x * (p * c) * q == c * (x * p * q)`: the left half's `pow(a, j + 1)`.
+pub theorem term_factor_middle(x: Nat, p: Nat, c: Nat, q: Nat) -> Eq<Nat, x * (p * c) * q, c * (x * p * q)> {
+    trans(cong(|z: Nat| z * q, sym(nat_arith::mul_assoc(x, p, c))),
+          trans(nat_arith::mul_assoc(x * p, c, q),
+                trans(cong(|z: Nat| x * p * z, nat_arith::mul_comm(c, q)),
+                      trans(sym(nat_arith::mul_assoc(x * p, q, c)), nat_arith::mul_comm(x * p * q, c)))))
+}
+
+// `x * p * (q * c) == c * (x * p * q)`: the right half's `pow(b, m + 1)`.
+pub theorem term_factor_last(x: Nat, p: Nat, q: Nat, c: Nat) -> Eq<Nat, x * p * (q * c), c * (x * p * q)> {
+    trans(sym(nat_arith::mul_assoc(x * p, q, c)), nat_arith::mul_comm(x * p * q, c))
+}
+
+pub theorem term_zero(p: Nat, q: Nat) -> Eq<Nat, 0 * p * q, 0> {
+    trans(cong(|z: Nat| z * q, nat_arith::mul_zero_left(p)), nat_arith::mul_zero_left(q))
+}
+
+pub theorem term_one(x: Nat, q: Nat, h: Eq<Nat, x, 1>) -> Eq<Nat, x * 1 * q, q> {
+    trans(cong(|z: Nat| z * 1 * q, h), nat_arith::mul_one_left(q))
+}
+
+// ── The step's pieces ───────────────────────────────────────────────────────
+
+// Each term of `S(n + 1)` above index 0, split by Pascal's rule (`binom_succ`
+// is `refl`, so the split's left side meets `binom(n + 1, j + 1)` by conversion).
+pub theorem binom_split(a: Nat, b: Nat, n: Nat, j: Nat)
+    -> Eq<Nat, nat_binom::binom(n + 1, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, j + 1)),
+               nat_binom::binom(n, j) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j))
+             + nat_binom::binom(n, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j))> {
+    trans(cong(|z: Nat| nat_binom::binom(n + 1, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, z),
+               nat_pow::nat_sub_succ_succ(n, j)),
+          term_split(nat_binom::binom(n, j), nat_binom::binom(n, j + 1), nat_pow::pow(a, j + 1),
+                     nat_pow::pow(b, nat_pow::nat_sub(n, j))))
+}
+
+// `S(n + 1)` with its `k = 0` term peeled and the rest split in two sums.
+pub theorem binom_peel_split(a: Nat, b: Nat, n: Nat)
+    -> Eq<Nat, nat_sum::sum_below(|k: Nat| nat_binom::binom(n + 1, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, k)), n + 2),
+               nat_pow::pow(b, n + 1)
+             + (nat_sum::sum_below(|j: Nat| nat_binom::binom(n, j) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)), n + 1)
+              + nat_sum::sum_below(|j: Nat| nat_binom::binom(n, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)), n + 1))> {
+    trans(nat_sum::sum_shift(|k: Nat| nat_binom::binom(n + 1, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, k)), n + 1),
+    trans(cong(|x: Nat| x + nat_sum::sum_below(|j: Nat| nat_binom::binom(n + 1, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, j + 1)), n + 1),
+               term_one(nat_binom::binom(n + 1, 0), nat_pow::pow(b, n + 1), nat_binom::binom_zero_right(n + 1))),
+          cong(|x: Nat| nat_pow::pow(b, n + 1) + x,
+               trans(nat_sum::sum_congr(
+                         |j: Nat| nat_binom::binom(n + 1, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, j + 1)),
+                         |j: Nat| nat_binom::binom(n, j) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j))
+                                + nat_binom::binom(n, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)),
+                         n + 1,
+                         fn(k: Nat, hk: nat_sum::nat_order::Lt<k, n + 1>) => binom_split(a, b, n, k)),
+                     nat_sum::sum_add(
+                         |j: Nat| nat_binom::binom(n, j) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)),
+                         |j: Nat| nat_binom::binom(n, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)),
+                         n + 1)))))
+}
+
+// The `binom(n, j)` half is `a * S(n)`: `pow(a, j + 1)` is `pow(a, j) * a`.
+pub theorem binom_left_half(a: Nat, b: Nat, n: Nat)
+    -> Eq<Nat, nat_sum::sum_below(|j: Nat| nat_binom::binom(n, j) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)), n + 1),
+               a * nat_sum::sum_below(|k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k)), n + 1)> {
+    trans(nat_sum::sum_congr(
+              |j: Nat| nat_binom::binom(n, j) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)),
+              |j: Nat| a * (nat_binom::binom(n, j) * nat_pow::pow(a, j) * nat_pow::pow(b, nat_pow::nat_sub(n, j))),
+              n + 1,
+              fn(k: Nat, hk: nat_sum::nat_order::Lt<k, n + 1>) =>
+                  term_factor_middle(nat_binom::binom(n, k), nat_pow::pow(a, k), a, nat_pow::pow(b, nat_pow::nat_sub(n, k)))),
+          nat_sum::sum_mul_left(a, |k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k)), n + 1))
+}
+
+// Each term of the right half's folded sum, under `sum_congr`'s bound.
+pub theorem binom_right_term(a: Nat, b: Nat, n: Nat, k: Nat, hk: nat_sum::nat_order::Lt<k, n + 1>)
+    -> Eq<Nat, nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, k)),
+               b * (nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k)))> {
+    trans(cong(|z: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, z), nat_sub_succ_lt(n, k, hk)),
+          term_factor_last(nat_binom::binom(n, k), nat_pow::pow(a, k), nat_pow::pow(b, nat_pow::nat_sub(n, k)), b))
+}
+
+// The `binom(n, j + 1)` half, with the peeled term, is `b * S(n)`. Folded
+// back by `sum_shift` (right to left) into a sum to `n + 2` whose top term
+// is `binom(n, n + 1) == 0`; `sum_succ` is `refl`, so it drops by conversion.
+pub theorem binom_right_half(a: Nat, b: Nat, n: Nat)
+    -> Eq<Nat, nat_pow::pow(b, n + 1)
+             + nat_sum::sum_below(|j: Nat| nat_binom::binom(n, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)), n + 1),
+               b * nat_sum::sum_below(|k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k)), n + 1)> {
+    trans(cong(|x: Nat| x + nat_sum::sum_below(|j: Nat| nat_binom::binom(n, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)), n + 1),
+               sym(term_one(nat_binom::binom(n, 0), nat_pow::pow(b, n + 1), nat_binom::binom_zero_right(n)))),
+    trans(cong(|x: Nat| nat_binom::binom(n, 0) * 1 * nat_pow::pow(b, n + 1) + x,
+               nat_sum::sum_congr(
+                   |j: Nat| nat_binom::binom(n, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)),
+                   |j: Nat| nat_binom::binom(n, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, j + 1)),
+                   n + 1,
+                   fn(k: Nat, hk: nat_sum::nat_order::Lt<k, n + 1>) =>
+                       sym(cong(|z: Nat| nat_binom::binom(n, k + 1) * nat_pow::pow(a, k + 1) * nat_pow::pow(b, z),
+                                nat_pow::nat_sub_succ_succ(n, k))))),
+    trans(sym(nat_sum::sum_shift(|k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, k)), n + 1)),
+    trans(cong(|x: Nat| nat_sum::sum_below(|k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, k)), n + 1) + x,
+               trans(cong(|z: Nat| z * nat_pow::pow(a, n + 1) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, n + 1)), nat_binom::binom_zero_above(n, 0)),
+                     term_zero(nat_pow::pow(a, n + 1), nat_pow::pow(b, nat_pow::nat_sub(n + 1, n + 1))))),
+    trans(nat_sum::sum_congr(
+              |k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, k)),
+              |k: Nat| b * (nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k))),
+              n + 1,
+              fn(k: Nat, hk: nat_sum::nat_order::Lt<k, n + 1>) => binom_right_term(a, b, n, k, hk)),
+          nat_sum::sum_mul_left(b, |k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k)), n + 1))))))
+}
+
+// ── The theorem ─────────────────────────────────────────────────────────────
+
+pub theorem binomial_step(a: Nat, b: Nat, n: Nat,
+    ih: Eq<Nat, nat_pow::pow(a + b, n),
+               nat_sum::sum_below(|k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k)), n + 1)>)
+    -> Eq<Nat, nat_pow::pow(a + b, n + 1),
+               nat_sum::sum_below(|k: Nat| nat_binom::binom(n + 1, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n + 1, k)), n + 2)> {
+    trans(cong(|x: Nat| x * (a + b), ih),
+    trans(term_distribute(nat_sum::sum_below(|k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k)), n + 1), a, b),
+    trans(cong(|x: Nat| x + b * nat_sum::sum_below(|k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k)), n + 1),
+               sym(binom_left_half(a, b, n))),
+    trans(cong(|x: Nat| nat_sum::sum_below(|j: Nat| nat_binom::binom(n, j) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)), n + 1) + x,
+               sym(binom_right_half(a, b, n))),
+    trans(nat_arith::add_left_comm(
+              nat_sum::sum_below(|j: Nat| nat_binom::binom(n, j) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)), n + 1),
+              nat_pow::pow(b, n + 1),
+              nat_sum::sum_below(|j: Nat| nat_binom::binom(n, j + 1) * nat_pow::pow(a, j + 1) * nat_pow::pow(b, nat_pow::nat_sub(n, j)), n + 1)),
+          sym(binom_peel_split(a, b, n)))))))
+}
+
+// The base is `1 == 0 + 1 * 1 * 1` at literals, which computes.
+pub theorem binomial_theorem(a: Nat, b: Nat, n: Nat)
+    -> Eq<Nat, nat_pow::pow(a + b, n),
+               nat_sum::sum_below(|k: Nat| nat_binom::binom(n, k) * nat_pow::pow(a, k) * nat_pow::pow(b, nat_pow::nat_sub(n, k)), n + 1)> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact binomial_step(a, b, j, ih)
+}

@@ -1,0 +1,14 @@
+// A `sorry` beside a δ step leaves only the hole (ADR 2.10.26c D8, 2.10.26l).
+//
+// `apply both` leaves two premise goals. The second is `exact sorry`, which
+// the kernel boundary abstracts as a hypothesis; the first is a `refl` that
+// holds only by unfolding `two`. Until K-δ the δ-free kernel refused that
+// step, and this was `error/tactic_sorry_does_not_hide_a_fault`; the kernel
+// now unfolds `two`, so the proof's one remaining defect is its hole. That a
+// hole does not hide a genuinely faulty step is pinned by the kernel's own
+// drill, `a_sorry_does_not_hide_a_faulty_step`.
+fn two() -> Nat { 2 }
+
+theorem both(n: Nat, first: Eq<Nat, two(), 2>, second: Eq<Nat, n, n>) -> Eq<Nat, n, n> { second }
+
+theorem uses_both(m: Nat) -> Eq<Nat, m, m> by { apply both; refl; exact sorry }

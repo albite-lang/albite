@@ -1,0 +1,2 @@
+// E0121: the dependency directory holds no lib.tg (D3).
+fn main() -> Nat { 0 }

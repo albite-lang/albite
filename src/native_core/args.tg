@@ -1,0 +1,22 @@
+// The program-argument init, written in Tungsten (ADR 7.10.26r D2).
+//
+// `init_args_c` is exported as the C symbol `tg_native_init_args_c`
+// (`NATIVE_CORE_EXPORTS`), which the main wrapper calls with `argc` and
+// `argv` when the switch enables its row. Tungsten has no mutable global, so
+// the store is two C data symbols `albite_core` defines,
+// `tg_core_args_count` and `tg_core_args_vector`, which Rust's
+// `tg_init_args_c` writes too and Rust's `tg_argc`/`tg_argv` read (D1).
+//
+// The one extern is a core-reserved runtime intrinsic
+// (`CORE_RUNTIME_INTRINSICS`): the code generator lowers it inline to the
+// publish protocol — an acquire load of the vector, and if it is still null
+// a store of the count and a `cmpxchg` of the vector from null. `argv`
+// crosses as a `Nat` and is stored, never dereferenced. Nothing is copied:
+// C keeps `argv`'s strings alive until the program ends.
+
+extern "C" fn tg_core_publish_args(argc: Nat, argv: Nat) -> Unit
+
+/// Publish the program's arguments once; a second call is a no-op.
+pub fn init_args_c(argc: Nat, argv: Nat) -> Unit {
+    tg_core_publish_args(argc, argv)
+}

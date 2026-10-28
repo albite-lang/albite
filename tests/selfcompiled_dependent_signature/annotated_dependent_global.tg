@@ -1,0 +1,8 @@
+// ADR 2.10.26f D13: an arrow annotation does not split a dependent global.
+// The annotation's `n` is h's parameter; the `Pi`'s is its own binder.
+
+fn add_zero_right(n: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+fn h(n: Nat) -> Nat { let g: Nat -> Eq<Nat, n + 0, n> = add_zero_right; 0 }
+
+fn main() -> Nat { h(0) }

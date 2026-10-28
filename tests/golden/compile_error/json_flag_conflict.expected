@@ -1,0 +1,1 @@
+{"schema":1,"kind":"diagnostic","level":"error","code":"E0140","message":"--no-codegen and --emit-llvm are incompatible.","primary_span":null,"notes":[{"message":"--no-codegen stops before LLVM IR emission.","span":null},{"message":"Use --no-codegen alone, or --emit-llvm alone.","span":null}],"help":[],"diagnostic_hints":[]}

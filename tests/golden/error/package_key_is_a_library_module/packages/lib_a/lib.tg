@@ -1,0 +1,2 @@
+pub mod lib_c;
+pub fn f() -> Nat { lib_c::g() }

@@ -1,0 +1,61 @@
+// The Tier 4 power library (ADR 9.10.26j): `pow` and truncated subtraction
+// `nat_sub` as definitions the kernel unfolds, with their lemmas.
+//
+// A FLAT sibling of nat_arith.tg, imported with `mod nat_pow;` from any file
+// in this directory (9.10.26j D1). `ring` unfolds `nat_pow::pow(x, k)` at a
+// numeral `k` by citing `pow_succ` and `pow_zero` from this file, so a goal
+// that uses it must import it under this name. `nat_sub` lives here because
+// the binomial theorem needs both, and arithmetic_library.md's H4 asks them
+// as one question. The sums are nat_sum.tg: `ring` has nothing to take from
+// them.
+//
+// WHY `natrec` (arithmetic_library.md § H4): a self-call through `n - 1` is
+// refused by termination, and the primitive `-` computes on literals only.
+// Each definition is a `natrec` with no self-call, admitted `Total` and
+// unfolded by the kernel's δ, so `pow_succ` and `nat_sub_zero_right` are
+// `refl`. `nat_sub` names the inline predecessor form nat_arith.tg spells;
+// that file keeps its inline form, because `albite1` never unfolds a named
+// function and nat_arith.tg is a row both compilers must accept.
+//
+// `pow` is a linear fold at run time: a proof-visible definition, not a
+// fast power for programs.
+//
+// Suite: test_nat_pow_sum.tg, with its must-fail twin mustfail_nat_pow_sum.tg.
+
+// `pow_one` cites `mul_one_left`; `nat_sub_succ_succ` cites `nat_pred_sub_succ`.
+mod nat_arith;
+
+pub fn pow(a: Nat, n: Nat) -> Nat {
+    natrec(Nat, 1, fn(j: Nat, acc: Nat) => acc * a, n)
+}
+
+pub fn nat_sub(n: Nat, k: Nat) -> Nat {
+    natrec(Nat, n, fn(j: Nat, acc: Nat) => natrec(Nat, 0, fn(p: Nat, a: Nat) => p, acc), k)
+}
+
+// ── Powers ──────────────────────────────────────────────────────────────────
+
+pub theorem pow_zero(a: Nat) -> Eq<Nat, pow(a, 0), 1> { refl }
+
+// `n + 1` is a successor, so `natrec` takes its step.
+pub theorem pow_succ(a: Nat, n: Nat) -> Eq<Nat, pow(a, n + 1), pow(a, n) * a> { refl }
+
+// `pow(a, 1)` is `1 * a` by δ and ι, stuck at an open `a`.
+pub theorem pow_one(a: Nat) -> Eq<Nat, pow(a, 1), a> { nat_arith::mul_one_left(a) }
+
+// ── Truncated subtraction ───────────────────────────────────────────────────
+
+pub theorem nat_sub_zero_right(n: Nat) -> Eq<Nat, nat_sub(n, 0), n> { refl }
+
+// `nat_sub(n + 1, k + 1)` is the predecessor of `nat_sub(n + 1, k)` by δ and ι.
+pub theorem nat_sub_succ_succ(n: Nat, k: Nat) -> Eq<Nat, nat_sub(n + 1, k + 1), nat_sub(n, k)> {
+    nat_arith::nat_pred_sub_succ(n, k)
+}
+
+pub theorem nat_sub_self(n: Nat) -> Eq<Nat, nat_sub(n, n), 0> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact trans(nat_sub_succ_succ(j, j), ih)
+}

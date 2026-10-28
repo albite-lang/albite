@@ -1,0 +1,13 @@
+// Golden test (ADR 16.10.26c): a lone arm with a constructor nested in a
+// multi-field constructor is refused by both compilers (13.10.26u D1, D4).
+// Before this ADR the self-host accepted it and printed `110` where the
+// source says `100`. E0021 (self-host E0308).
+type L = Cons(Nat, L) | Nil
+
+fn f(l: L) -> Nat {
+    match l { Cons(x, Nil()) => 1, _ => 0 }
+}
+
+fn main() -> Nat {
+    f(Cons(1, Nil())) * 100 + f(Cons(1, Cons(2, Nil()))) * 10 + f(Nil())
+}

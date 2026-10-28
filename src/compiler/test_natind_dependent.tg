@@ -1,0 +1,116 @@
+// Induction sees the case it proves (ADR 29.9.26d AC 1–3).
+//
+// A dependent `natind` motive `|k: Nat| P` is instantiated at every case:
+// the base is checked against P[k := 0], the step `fn(j: Nat, ih) => b`
+// binds `ih : P[k := j]` and checks `b` against P[k := succ j], and the whole
+// term has type P[k := n]. Each typed `let` below would be an E0010 or an
+// E0071 if a case were checked against the motive as written.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// A signature cannot name its parameters (ADR 29.9.26d D10), so each proof
+// lives in the body of a function over its `Nat`, and each `test_*` calls one.
+// The must-fail twin is `mustfail_natind_dependent.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+fn natind_dependent_succ_of(n: Nat) -> Nat {
+    n + 1
+}
+
+// ── AC 1: the motive is instantiated at every case ──────────────────────────
+
+fn natind_dependent_refl_at_a_variable(n: Nat) -> Unit {
+    let _p: Eq<Nat, n, n> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih: Eq<Nat, k, k>) => refl, n);
+    ()
+}
+
+fn natind_dependent_refl_at_a_literal() -> Unit {
+    let _p: Eq<Nat, 3, 3> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih: Eq<Nat, k, k>) => refl, 3);
+    ()
+}
+
+fn natind_dependent_ih_annotation_omitted(n: Nat) -> Unit {
+    let _p: Eq<Nat, n, n> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih) => refl, n);
+    ()
+}
+
+fn natind_dependent_constant_motive(n: Nat) -> Nat {
+    natind(|k: Nat| Nat, 0, fn(k: Nat, ih: Nat) => ih, n)
+}
+
+fn natind_dependent_restated_call(n: Nat) -> Unit {
+    let p: Eq<Nat, natind_dependent_succ_of(n), natind_dependent_succ_of(n)> = refl;
+    let _q: Eq<Nat, natind_dependent_succ_of(n), natind_dependent_succ_of(n)> = p;
+    ()
+}
+
+fn test_the_motive_is_instantiated_at_a_variable_target() -> Unit {
+    natind_dependent_refl_at_a_variable(4)
+}
+
+fn test_the_motive_is_instantiated_at_a_literal_target() -> Unit {
+    natind_dependent_refl_at_a_literal()
+}
+
+fn test_an_omitted_ih_annotation_is_supplied() -> Unit {
+    natind_dependent_ih_annotation_omitted(4)
+}
+
+fn test_a_constant_motive_keeps_its_type() -> Unit {
+    expect_type(natind_dependent_constant_motive(4), "Nat")
+}
+
+fn test_an_eq_type_restated_elsewhere_is_the_same_type() -> Unit {
+    natind_dependent_restated_call(4)
+}
+
+// ── AC 2: wrong cases are refused ───────────────────────────────────────────
+
+fn test_a_step_that_returns_its_ih_is_refused() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, n, n> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih) => ih, n); 0 }, "E0010")
+}
+
+fn test_a_base_that_does_not_hold_at_zero_is_refused() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, n, 1> = natind(|k: Nat| Eq<Nat, k, 1>, refl, fn(k: Nat, ih) => refl, n); 0 }, "E0071")
+}
+
+fn test_the_result_is_the_motive_at_the_target_not_at_zero() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, 0, 0> = natind(|k: Nat| Eq<Nat, k, k>, refl, fn(k: Nat, ih) => refl, n); 0 }, "E0010")
+}
+
+fn test_a_dependent_step_must_be_a_two_parameter_lambda() -> Unit {
+    expect_error(|n: Nat, s: Nat| { let _p: Eq<Nat, n, n> = natind(|k: Nat| Eq<Nat, k, k>, refl, s, n); 0 }, "E0010")
+}
+
+fn test_a_step_parameter_that_shadows_the_motive_is_refused() -> Unit {
+    expect_error(|m: Nat, n: Nat| { let _p: Eq<Nat, (m + 1) + n, (m + n) + 1> = natind(|k: Nat| Eq<Nat, (m + 1) + k, (m + k) + 1>, refl, fn(m: Nat, ih) => cong(|x: Nat| x + 1, ih), n); 0 }, "E0010")
+}
+
+// ── AC 3: two facts proved by induction ─────────────────────────────────────
+
+fn natind_dependent_zero_add(n: Nat) -> Unit {
+    let _p: Eq<Nat, 0 + n, n> = natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n);
+    ()
+}
+
+fn natind_dependent_succ_add(m: Nat, n: Nat) -> Unit {
+    let _p: Eq<Nat, (m + 1) + n, (m + n) + 1> = natind(|k: Nat| Eq<Nat, (m + 1) + k, (m + k) + 1>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n);
+    ()
+}
+
+fn test_zero_add_is_proved_by_induction() -> Unit {
+    natind_dependent_zero_add(4)
+}
+
+fn test_succ_add_is_proved_by_induction() -> Unit {
+    natind_dependent_succ_add(2, 4)
+}
+
+// Non-vacuity: neither fact is definitional, so the proofs above are carried
+// by induction, not by conversion.
+fn test_zero_add_is_not_refl() -> Unit {
+    expect_error(|n: Nat| { let _p: Eq<Nat, 0 + n, n> = refl; 0 }, "E0071")
+}
+
+fn test_succ_add_is_not_refl() -> Unit {
+    expect_error(|m: Nat, n: Nat| { let _p: Eq<Nat, (m + 1) + n, (m + n) + 1> = refl; 0 }, "E0071")
+}

@@ -1,0 +1,15 @@
+// Golden test (ADR 13.10.26n AC 3): a `return` under a `let`-bound `if`, in
+// either branch, exits the function there rather than binding the value.
+fn first(c: Bool) -> Nat {
+    let x: Nat = if c { return 99 } else { 1 };
+    x + 1
+}
+
+fn second(c: Bool) -> Nat {
+    let x = if c { 1 } else { return 99 };
+    x + 1
+}
+
+fn main() -> Nat {
+    first(true) + first(false) * 1000 + second(false) * 10000 + second(true) * 1000000
+}

@@ -1,0 +1,169 @@
+// src/compiler/elab/exprs/matches/patterns/bare.tg
+// A bare constructor name in a match arm is read by name (ADR 6.10.26k D3).
+//
+// The parser reads a bare `Red` as a variable pattern, and `is_catch_all_pattern`
+// treats every variable as a catch-all, so `match c { Red => …, Blue => … }`
+// bound `Red` to every value. Before the ADT route sorts its arms, a bare name
+// that resolves to a nullary constructor becomes that constructor's pattern
+// with no arguments, as the bootstrap's constructor matcher files it. A bare
+// name for one of the scrutinee type's constructors WITH fields is `Wb()`'s
+// arity error (D2 c). Any other bare name stays a binder. Inside a
+// constructor pattern, a bare nullary name is rewritten the same way
+// (ADR 13.10.26h D3).
+
+use parser::ast::{
+    Pattern, PatVar, PatConstructor, PatTuple, PatOr, MatchArm,
+    Ident, ident_span, Path, MkPath
+};
+use lexer::span::Span;
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::TypeHandle;
+use elab::env::Env;
+use elab::env::defs::{
+    MaybeResolvedValue, NoResolvedValue, SomeResolvedValue,
+    ResolvedValue, ResolvedConstructor
+};
+use elab::error::{ErrArityMismatch, error_kind_message};
+use elab::exprs::forms::result::{ElabExprResult, ElabExprErr, ElabExprError, elab_expr_error_coded};
+use elab::exprs::records::deep_types_equal;
+use elab::exprs::matches::patterns::resolve::resolve_pattern_constructor;
+use elab::exprs::matches::adt_match::{elab_adt_match, elab_adt_match_checked};
+use elab::exprs::matches::{ScrutInfo};
+
+/// The arms with every bare constructor name read by name, or the refusal.
+pub type BareArmsResult =
+    | BareArmsOk(List<MatchArm>)
+    | BareArmsErr(ElabExprError)
+
+type BareArm =
+    | BareArmOk(MatchArm)
+    | BareArmErr(ElabExprError)
+
+/// The ADT route, after its arms are read by name (synth mode).
+pub fn elab_adt_match_by_name(env: Env, scrut: ScrutInfo, arms: List<MatchArm>, span: Span) -> ElabExprResult {
+    match normalize_bare_nullary_arms(env, arms, scrut.ty) {
+        BareArmsErr(e) => ElabExprErr(e),
+        BareArmsOk(named) => elab_adt_match(env, scrut, named, span)
+    }
+}
+
+/// The ADT route, after its arms are read by name (check mode).
+pub fn elab_adt_match_by_name_checked(
+    env: Env,
+    scrut: ScrutInfo,
+    arms: List<MatchArm>,
+    expected: TypeHandle,
+    span: Span
+) -> ElabExprResult {
+    match normalize_bare_nullary_arms(env, arms, scrut.ty) {
+        BareArmsErr(e) => ElabExprErr(e),
+        BareArmsOk(named) => elab_adt_match_checked(env, scrut, named, expected, span)
+    }
+}
+
+/// Rewrite each bare constructor name to its constructor pattern; the first
+/// refusal, in arm order, wins.
+pub fn normalize_bare_nullary_arms(env: Env, arms: List<MatchArm>, scrut_ty: TypeHandle) -> BareArmsResult {
+    match arms {
+        Nil() => BareArmsOk(Nil),
+        Cons(arm, rest) =>
+            prepend_bare_arm(normalize_bare_arm(env, arm, scrut_ty), normalize_bare_nullary_arms(env, rest, scrut_ty))
+    }
+}
+
+fn prepend_bare_arm(head: BareArm, tail: BareArmsResult) -> BareArmsResult {
+    match head {
+        BareArmErr(e) => BareArmsErr(e),
+        BareArmOk(arm) => prepend_to_arms(arm, tail)
+    }
+}
+
+fn prepend_to_arms(arm: MatchArm, tail: BareArmsResult) -> BareArmsResult {
+    match tail {
+        BareArmsErr(e) => BareArmsErr(e),
+        BareArmsOk(rest) => BareArmsOk(Cons(arm, rest))
+    }
+}
+
+fn normalize_bare_arm(env: Env, arm: MatchArm, scrut_ty: TypeHandle) -> BareArm {
+    match arm.pattern {
+        PatVar(id) => normalize_bare_name(env, arm, id, scrut_ty),
+        PatConstructor(path, subs, span) =>
+            BareArmOk(with_pattern(arm, PatConstructor(path, name_bare_subpatterns(env, subs), span))),
+        _ => BareArmOk(arm)
+    }
+}
+
+/// One level down, at any depth, a bare nullary name is that constructor's
+/// pattern too (ADR 13.10.26h D3): `Som(A)` is `Som(A())`. A name for a
+/// constructor with fields stays a binder here: the refusal above needs the
+/// scrutinee's type, and a sub-pattern's field type is not at hand.
+fn name_bare_subpatterns(env: Env, subs: List<Pattern>) -> List<Pattern> {
+    match subs {
+        Nil() => Nil,
+        Cons(subpattern, rest) =>
+            Cons(name_bare_subpattern(env, subpattern), name_bare_subpatterns(env, rest))
+    }
+}
+
+fn name_bare_subpattern(env: Env, subpattern: Pattern) -> Pattern {
+    match subpattern {
+        PatVar(id) => name_bare_inner_name(env, subpattern, id),
+        PatConstructor(path, subs, span) => PatConstructor(path, name_bare_subpatterns(env, subs), span),
+        PatTuple(subs, span) => PatTuple(name_bare_subpatterns(env, subs), span),
+        PatOr(left, right, span) =>
+            PatOr(name_bare_subpattern(env, left), name_bare_subpattern(env, right), span),
+        _ => subpattern
+    }
+}
+
+fn name_bare_inner_name(env: Env, subpattern: Pattern, id: Ident) -> Pattern {
+    match resolve_pattern_constructor(env, bare_path(id)) {
+        NoResolvedValue() => subpattern,
+        SomeResolvedValue(resolved) => nullary_pattern_or_binder(subpattern, id, resolved)
+    }
+}
+
+fn nullary_pattern_or_binder(subpattern: Pattern, id: Ident, resolved: ResolvedValue) -> Pattern {
+    match resolved {
+        ResolvedConstructor(info) =>
+            if info.arity == 0 { PatConstructor(bare_path(id), Nil, ident_span(id)) } else { subpattern },
+        _ => subpattern
+    }
+}
+
+/// A bare name that resolves to nothing, or to a value that is not a
+/// constructor, stays a binder (3.10.26l `bare_capital_pattern_is_a_binding`).
+fn normalize_bare_name(env: Env, arm: MatchArm, id: Ident, scrut_ty: TypeHandle) -> BareArm {
+    match resolve_pattern_constructor(env, bare_path(id)) {
+        NoResolvedValue() => BareArmOk(arm),
+        SomeResolvedValue(resolved) => bare_constructor_arm(env, arm, id, resolved, scrut_ty)
+    }
+}
+
+fn bare_constructor_arm(env: Env, arm: MatchArm, id: Ident, resolved: ResolvedValue, scrut_ty: TypeHandle) -> BareArm {
+    match resolved {
+        ResolvedConstructor(info) =>
+            if info.arity == 0 {
+                BareArmOk(with_pattern(arm, PatConstructor(bare_path(id), Nil, ident_span(id))))
+            } else if deep_types_equal(env, scrut_ty, info.result_type) {
+                BareArmErr(bare_arity_refusal(info.arity, ident_span(id)))
+            } else {
+                BareArmOk(arm)
+            },
+        _ => BareArmOk(arm)
+    }
+}
+
+/// `Wb` for `Wb(Nat)`: the refusal `Wb()` gets, spanned on the name.
+fn bare_arity_refusal(arity: Nat, span: Span) -> ElabExprError {
+    elab_expr_error_coded(error_kind_message(ErrArityMismatch(arity, 0)), span, "E0002")
+}
+
+fn bare_path(id: Ident) -> Path {
+    MkPath(Cons(id, Nil), ident_span(id))
+}
+
+fn with_pattern(arm: MatchArm, pattern: Pattern) -> MatchArm {
+    { pattern: pattern, guard: arm.guard, body: arm.body, span: arm.span }
+}

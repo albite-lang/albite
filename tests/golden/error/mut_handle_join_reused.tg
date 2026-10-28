@@ -1,0 +1,40 @@
+// Golden test (ADR 13.10.26r AC 5): a builder threaded through one arm of a
+// two-binding join, then consumed twice after it, is E0092 at the second use;
+// the self-host's walk raises E0720.
+
+pub type StringBuilder = MkStringBuilder(Nat)
+
+extern "C" fn tg_string_builder_new() -> Nat
+extern "C" fn tg_string_builder_push_str(sb: Nat, s: String) -> Nat
+extern "C" fn tg_string_builder_len(sb: Nat) -> Nat
+extern "C" fn tg_string_builder_to_string(sb: Nat) -> String
+
+pub fn string_builder_new() -> StringBuilder {
+    MkStringBuilder(tg_string_builder_new())
+}
+
+pub fn push_str(sb: StringBuilder, s: String) -> StringBuilder {
+    match sb { MkStringBuilder(h) => MkStringBuilder(tg_string_builder_push_str(h, s)) }
+}
+
+// Reads the builder and leaves it live.
+pub fn string_builder_len(sb: StringBuilder) -> Nat {
+    match sb { MkStringBuilder(h) => tg_string_builder_len(h) }
+}
+
+// Consumes the builder: any later use of it aborts.
+pub fn to_string(sb: StringBuilder) -> String {
+    match sb { MkStringBuilder(h) => tg_string_builder_to_string(h) }
+}
+
+fn joined(c: Bool) -> String {
+    let mut sb = string_builder_new();
+    let mut n = 0;
+    if c { sb = push_str(sb, "x"); n = 1; } else { n = 2; };
+    let s = to_string(sb);
+    s ++ to_string(sb)
+}
+
+fn main() -> String {
+    joined(true)
+}

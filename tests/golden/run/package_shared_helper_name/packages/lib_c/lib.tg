@@ -1,0 +1,2 @@
+fn helper() -> Nat { 300 }
+pub fn c() -> Nat { helper() }

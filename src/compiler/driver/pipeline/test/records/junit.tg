@@ -1,0 +1,158 @@
+// src/compiler/driver/pipeline/test/records/junit.tg
+// The JUnit document (ADR 1.10.26i D5), a port of 30.9.26k's renderer in
+// `bootstrap/src/test_runner/junit/mod.rs`.
+//
+// One `<testsuites>`, one `<testsuite>` named after the entry, one
+// `<testcase>` per frame with the fixed attribute set `name classname file
+// assertions time`. A failed test carries `<failure type="failed">` with its
+// stderr; `<system-out>` appears when stdout is non-empty, and `<system-err>`
+// when stderr is non-empty and no `<failure>` already carries it. A stopped
+// run ends with one synthetic `(runner)` or `(elaboration)` error testcase, and
+// its root and suite `time` are 0. The self-host has no skip or expected-
+// failure verdict, so `skipped` is always 0.
+//
+// EVALUATOR. `++`, literals and executable externs only.
+
+use driver::ffi::{List, Nil, Cons, basename_start};
+use driver::ffi::types::{string_len, string_char_at_internal};
+use driver::util::{nat_to_string, string_is_empty};
+use driver::util::strings::scalars::{string_copy_range};
+use driver::pipeline::test::records::frames::{TestFrame};
+use driver::pipeline::test::records::xml_escape::{xml_escape_text, xml_escape_attr};
+
+/// Why a run stopped before it could report every test (30.9.26k D6).
+pub type JunitStop =
+    | JunitRunnerStop(String)
+    | JunitDiagnosticsStop(String)
+
+/// A finished run's document; `duration_ms` is the frames' sum (D4).
+pub fn junit_document(frames: List<TestFrame>, entry: String, duration_ms: Nat) -> String {
+    junit_render(frames, "", entry, duration_ms)
+}
+
+/// A stopped run's document: the frames collected so far, then the stop's
+/// synthetic testcase. Root and suite `time` are 0.
+pub fn junit_stop_document(frames: List<TestFrame>, stop: JunitStop, entry: String) -> String {
+    junit_render(frames, junit_stop_testcase(stop, entry), entry, 0)
+}
+
+/// `stop_case` is the synthetic testcase's text, or empty for none.
+fn junit_render(frames: List<TestFrame>, stop_case: String, entry: String,
+                duration_ms: Nat) -> String {
+    let errors = if string_is_empty(stop_case) { 0 } else { 1 };
+    let counts = "tests=\"" ++ nat_to_string(junit_count(frames) + errors) ++
+        "\" failures=\"" ++ nat_to_string(junit_failures(frames)) ++
+        "\" errors=\"" ++ nat_to_string(errors) ++
+        "\" skipped=\"0\" time=\"" ++ junit_seconds(duration_ms) ++ "\"";
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" ++
+    "<testsuites name=\"albite test\" " ++ counts ++ ">\n" ++
+    "  <testsuite name=\"" ++ xml_escape_attr(entry) ++ "\" " ++ counts ++ ">\n" ++
+    junit_testcases(frames, entry) ++ stop_case ++
+    "  </testsuite>\n</testsuites>"
+}
+
+fn junit_testcases(frames: List<TestFrame>, entry: String) -> String {
+    match frames {
+        Nil() => "",
+        Cons(frame, rest) => junit_testcase(frame, entry) ++ junit_testcases(rest, entry)
+    }
+}
+
+/// One frame's testcase: its failure, then its captured output.
+pub fn junit_testcase(frame: TestFrame, entry: String) -> String {
+    let failure = if frame.failed {
+        "      <failure message=\"assertion failed\" type=\"failed\">" ++
+        xml_escape_text(frame.stderr) ++ "</failure>\n"
+    } else {
+        ""
+    };
+    let out = if string_is_empty(frame.stdout) {
+        ""
+    } else {
+        "      <system-out>" ++ xml_escape_text(frame.stdout) ++ "</system-out>\n"
+    };
+    let err = if string_is_empty(frame.stderr) || frame.failed {
+        ""
+    } else {
+        "      <system-err>" ++ xml_escape_text(frame.stderr) ++ "</system-err>\n"
+    };
+    junit_close(junit_open(frame.name, entry, frame.assertions, frame.duration_ms),
+                failure ++ out ++ err)
+}
+
+/// The synthetic testcase a stopped run ends with.
+fn junit_stop_testcase(stop: JunitStop, entry: String) -> String {
+    match stop {
+        JunitRunnerStop(message) => junit_error_case("(runner)", "runner_error", message, entry),
+        JunitDiagnosticsStop(message) => junit_error_case("(elaboration)", "diagnostics", message, entry)
+    }
+}
+
+fn junit_error_case(name: String, error_type: String, message: String, entry: String) -> String {
+    junit_close(junit_open(name, entry, 0, 0),
+                "      <error message=\"" ++ xml_escape_attr(message) ++
+                "\" type=\"" ++ error_type ++ "\"/>\n")
+}
+
+/// The opening of a testcase: the fixed attribute set, in order.
+fn junit_open(name: String, entry: String, assertions: Nat, ms: Nat) -> String {
+    "    <testcase name=\"" ++ xml_escape_attr(name) ++
+    "\" classname=\"" ++ xml_escape_attr(junit_entry_stem(entry)) ++
+    "\" file=\"" ++ xml_escape_attr(entry) ++
+    "\" assertions=\"" ++ nat_to_string(assertions) ++
+    "\" time=\"" ++ junit_seconds(ms) ++ "\""
+}
+
+fn junit_close(open: String, children: String) -> String {
+    if string_is_empty(children) {
+        open ++ "/>\n"
+    } else {
+        open ++ ">\n" ++ children ++ "    </testcase>\n"
+    }
+}
+
+/// Whole milliseconds as seconds with exactly three decimals: 12 → `0.012`.
+pub fn junit_seconds(ms: Nat) -> String {
+    let frac = ms % 1000;
+    let pad = if frac < 10 { "00" } else if frac < 100 { "0" } else { "" };
+    nat_to_string(ms / 1000) ++ "." ++ pad ++ nat_to_string(frac)
+}
+
+/// The entry file's stem — the `classname` of every testcase (30.9.26k D4):
+/// the basename up to its last `.`, as Rust's `file_stem`.
+pub fn junit_entry_stem(entry: String) -> String {
+    let len = string_len(entry);
+    let base = basename_start(entry);
+    let dot = junit_last_dot(entry, base, len, len);
+    if dot > base && dot < len {
+        string_copy_range(entry, base, dot)
+    } else {
+        string_copy_range(entry, base, len)
+    }
+}
+
+// Partial: `i` ascends toward `len` — a measure recursion.
+#[partial]
+fn junit_last_dot(s: String, i: Nat, len: Nat, found: Nat) -> Nat {
+    if i >= len {
+        found
+    } else if string_char_at_internal(s, i) == 46 {
+        junit_last_dot(s, i + 1, len, i)
+    } else {
+        junit_last_dot(s, i + 1, len, found)
+    }
+}
+
+fn junit_count(frames: List<TestFrame>) -> Nat {
+    match frames {
+        Nil() => 0,
+        Cons(_, rest) => 1 + junit_count(rest)
+    }
+}
+
+fn junit_failures(frames: List<TestFrame>) -> Nat {
+    match frames {
+        Nil() => 0,
+        Cons(frame, rest) => (if frame.failed { 1 } else { 0 }) + junit_failures(rest)
+    }
+}

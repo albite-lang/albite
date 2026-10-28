@@ -1,0 +1,105 @@
+// The integer trap, written in Tungsten (ADR 7.10.26q D2, D4).
+//
+// `int_trap` is exported as the C symbol `tg_native_int_trap`
+// (`NATIVE_CORE_EXPORTS`), which every trap block calls when the switch
+// enables its row. So nothing on its path may trap: every piece of every
+// line is a string literal, and a digit is chosen by `%` and `/` on `Nat` by
+// the constant 10, which lower to `urem`/`udiv` with no zero guard. No byte
+// intrinsic is called, so no byte check can re-enter the trap.
+//
+// The lines are `albite_core`'s `int_trap_line` (`IntTrapKind::message`
+// with the `error: ` prefix), byte for byte. A bootstrap test evaluates
+// `int_trap_line` and `digit_literal` against it for every code
+// (`bootstrap/src/driver/native_core/trap_tests.rs`), so adding a kind is a
+// two-place edit that test names.
+//
+// The two externs are core-reserved runtime intrinsics
+// (`CORE_RUNTIME_INTRINSICS`): the code generator lowers them inline to
+// `write(2, ptr, len)` and `abort()`. Neither runs on the evaluator, which
+// prints its own trap line from `IntTrapKind`.
+
+extern "C" fn tg_core_write_stderr(text: String) -> Nat
+extern "C" fn tg_core_abort() -> Unit
+
+/// The whole stderr line for a trap code, `error: ` prefix included; for a
+/// code no kind owns, the line's prefix, which `int_trap` completes with the
+/// code's digits and `)`.
+pub fn int_trap_line(code: Nat) -> String {
+    if code < 8 { arithmetic_trap_line(code) } else { byte_trap_line(code) }
+}
+
+/// Codes 0–7: `Int` arithmetic and `to_int`.
+fn arithmetic_trap_line(code: Nat) -> String {
+    match code {
+        0 => "error: integer overflow in +",
+        1 => "error: integer overflow in -",
+        2 => "error: integer overflow in *",
+        3 => "error: integer overflow in /",
+        4 => "error: integer overflow in %",
+        5 => "error: integer overflow in negation",
+        6 => "error: integer division by zero",
+        _ => "error: to_int: value above the signed maximum"
+    }
+}
+
+/// Codes 8–13: the byte buffer's refusals (ADR 3.10.26n D6) and the substring
+/// cut inside a character (ADR 16.10.26h D3); any other code is unknown.
+fn byte_trap_line(code: Nat) -> String {
+    match code {
+        8 => "error: byte index out of range",
+        9 => "error: byte value out of range",
+        10 => "error: byte buffer used after conversion",
+        11 => "error: byte buffer too large",
+        12 => "error: byte buffer is not valid UTF-8",
+        13 => "error: substring cuts inside a character",
+        _ => "error: integer trap (unknown kind "
+    }
+}
+
+/// The one-character literal for a decimal digit, `0..=9`.
+pub fn digit_literal(digit: Nat) -> String {
+    match digit {
+        0 => "0",
+        1 => "1",
+        2 => "2",
+        3 => "3",
+        4 => "4",
+        5 => "5",
+        6 => "6",
+        7 => "7",
+        8 => "8",
+        _ => "9"
+    }
+}
+
+/// Write `number` in decimal, most significant digit first.
+#[partial]
+fn write_decimal(number: Nat) -> Nat {
+    if number < 10 {
+        tg_core_write_stderr(digit_literal(number))
+    } else {
+        let _ = write_decimal(number / 10);
+        tg_core_write_stderr(digit_literal(number % 10))
+    }
+}
+
+/// Complete an unknown code's line: its digits, then `)`. A known code
+/// writes nothing here.
+fn write_unknown_suffix(code: Nat) -> Nat {
+    if code > 13 {
+        let _ = write_decimal(code);
+        tg_core_write_stderr(")")
+    } else {
+        0
+    }
+}
+
+/// Print the trap's line and a newline to stderr, then abort: `SIGABRT`,
+/// exit status 134, as Rust's `tg_int_trap` does. A known code is two
+/// writes, like Rust's two slices.
+pub fn int_trap(code: Nat) -> Unit {
+    let _ = tg_core_write_stderr(int_trap_line(code));
+    let _ = write_unknown_suffix(code);
+    let _ = tg_core_write_stderr("\n");
+    tg_core_abort()
+}

@@ -1,0 +1,225 @@
+// src/compiler/driver/packages/mount.tg
+// Plan the project's packages and mount each library at the root (ADR
+// 6.10.26j D4), as the bootstrap's `mount_packages` does.
+//
+// With no manifest nothing changes: the tree is returned as parsed and the
+// sibling root is `find_workspace_root`'s, as before. With one, the shared
+// planner (`ffi.tg`) walks the graph; its refusals become records located in
+// the manifests, and otherwise each package's `lib.tg` is parsed against its
+// own file and appended to the root's submodules, public, under the package's
+// name. Before mounting, `collisions.tg` refuses what only the parsed
+// libraries show, and the plan's declarations become the package table
+// reach is decided by (ADR 6.10.26p).
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{Result, Ok, Err, string_eq, string_join, list_append, list_reverse};
+use driver::modules::tree::parsed::{ParsedModule, parsed_module_mounted, parsed_module_with_submodules};
+use driver::modules::tree::parse::{parse_module_tree, TreeFailure};
+use driver::modules::build::{get_module_name, extract_module_name, build_module_info};
+use driver::modules::workspace::{find_workspace_root, discover_sibling_modules};
+use driver::modules::workspace::load::{workspace_module_info_in};
+use driver::packages::ffi::{
+    PlanHandle, packages_plan, packages_has_manifest, packages_manifest_dir,
+    packages_count, packages_name, packages_library_root,
+    packages_problem_count, packages_problem_tag, packages_problem_file,
+    packages_problem_range, packages_problem_message,
+    packages_declares_count, packages_declares,
+    packages_application_declares_count, packages_application_declares
+};
+use driver::packages::table::{
+    PackageTable, package_table_empty, package_table_add, package_table_with_application_declares
+};
+use driver::packages::collisions::{post_mount_refusals};
+use driver::packages::notes::{read_plan_notes};
+use driver::modules::info::{ModuleInfo, module_info_with_packages};
+use elab::error::{
+    ElabError, ElabErrorKind, elab_error_new,
+    ErrManifestInvalid, ErrDependencyNotFound, ErrPackageNameConflict,
+    ErrDependencyCycle, ErrOther
+};
+use lexer::span::{span_new};
+use lexer::reserved::{reserved_words_lines};
+
+/// A parsed project: the module tree with every package mounted, the
+/// directory workspace siblings are discovered in, and which package owns
+/// each module (ADR 6.10.26p D2; empty without a manifest), and the plan's
+/// non-fatal notes for the pipeline to print (ADR 20.10.26i D2).
+pub type ProjectTree = { tree: ParsedModule, sibling_root: String, packages: PackageTable,
+                         notes: List<String> }
+
+/// Why a project could not be prepared: a module tree that did not parse
+/// (exit 3 or 1, as before), or the planner's refusals, located.
+pub type ProjectFailure =
+    | ProjectUnparsed(TreeFailure)
+    | ProjectRefused(List<ElabError>)
+
+/// Parse the entry's module tree and mount the packages its manifest names:
+/// what `check`, `run` and `test` elaborate.
+pub fn parse_project_tree(entry: String) -> Result<ProjectTree, ProjectFailure> {
+    match parse_module_tree(entry, Nil) {
+        Err(failure) => Err(ProjectUnparsed(failure)),
+        Ok(result) => {
+            let (tree, _visited) = result;
+            mount_packages(entry, tree)
+        }
+    }
+}
+
+/// Plan and mount. A first plan with no application modules finds the
+/// manifest and so the sibling root; the second passes the application's
+/// top-level modules, root children and siblings, which a package name may
+/// not take — the same set the bootstrap passes.
+pub fn mount_packages(entry: String, tree: ParsedModule) -> Result<ProjectTree, ProjectFailure> {
+    let workspace_root = find_workspace_root(entry);
+    let reserved = reserved_words_lines();
+    let probe = packages_plan(entry, "", reserved);
+    if packages_has_manifest(probe) {
+        let sibling_root = sibling_root_for(packages_manifest_dir(probe), workspace_root);
+        let app_modules = app_module_lines(tree, discover_sibling_modules(sibling_root));
+        mount_plan(packages_plan(entry, app_modules, reserved), tree, sibling_root)
+    } else {
+        Ok({ tree: tree, sibling_root: workspace_root, packages: package_table_empty(), notes: Nil } : ProjectTree)
+    }
+}
+
+/// The manifest's directory when the plan named one, else the workspace root
+/// (a refused manifest, or one in the current directory).
+pub fn sibling_root_for(manifest_dir: String, workspace_root: String) -> String {
+    if string_eq(manifest_dir, "") { workspace_root } else { manifest_dir }
+}
+
+/// What the three pipelines elaborate against: the tree's module info, the
+/// workspace siblings' names merged under it (ADR 3.10.26l D4), and the
+/// package table reach is decided by (ADR 6.10.26p D2).
+pub fn project_module_info(project: ProjectTree) -> ModuleInfo {
+    let module = project.tree;
+    module_info_with_packages(workspace_module_info_in(project.sibling_root, module, build_module_info(module)),
+                              project.packages)
+}
+
+/// The self-host kind for a planner problem: its tag is the bootstrap's code.
+/// An unknown tag is an internal fault, never a silent acceptance.
+pub fn package_problem_kind(tag: Nat, message: String) -> ElabErrorKind {
+    if tag == 120 { ErrManifestInvalid(message) }
+    else if tag == 121 { ErrDependencyNotFound(message) }
+    else if tag == 122 { ErrPackageNameConflict(message) }
+    else if tag == 124 { ErrDependencyCycle(message) }
+    else { ErrOther(message) }
+}
+
+/// The application's top-level module names, one per line.
+fn app_module_lines(tree: ParsedModule, sibling_paths: List<String>) -> String {
+    string_join(list_append(submodule_names(tree.submodules), sibling_names(sibling_paths)), "\n")
+}
+
+fn submodule_names(modules: List<ParsedModule>) -> List<String> {
+    match modules {
+        Nil() => Nil,
+        Cons(module, rest) => Cons(get_module_name(module), submodule_names(rest))
+    }
+}
+
+fn sibling_names(paths: List<String>) -> List<String> {
+    match paths {
+        Nil() => Nil,
+        Cons(path, rest) => Cons(extract_module_name(path), sibling_names(rest))
+    }
+}
+
+/// Refuse with every problem, or mount every package.
+fn mount_plan(plan: PlanHandle, tree: ParsedModule, sibling_root: String) -> Result<ProjectTree, ProjectFailure> {
+    let problems = packages_problem_count(plan);
+    if problems > 0 {
+        Err(ProjectRefused(plan_errors(plan, 0, problems, Nil)))
+    } else {
+        match parse_libraries(plan, 0, packages_count(plan), Nil) {
+            Err(failure) => Err(ProjectUnparsed(failure)),
+            Ok(libraries) => mount_checked(plan, tree, libraries, sibling_root)
+        }
+    }
+}
+
+/// Refuse what only the parsed libraries show (ADR 6.10.26p D4), else mount
+/// them, with the package table reach is decided by (D2).
+fn mount_checked(plan: PlanHandle, tree: ParsedModule, libraries: List<ParsedModule>,
+                 sibling_root: String) -> Result<ProjectTree, ProjectFailure> {
+    match post_mount_refusals(plan, tree, libraries) {
+        Cons(first, rest) => Err(ProjectRefused(Cons(first, rest))),
+        Nil() => {
+            let mounted = parsed_module_with_submodules(tree, list_append(tree.submodules, libraries));
+            Ok({ tree: mounted, sibling_root: sibling_root, packages: plan_package_table(plan),
+                 notes: read_plan_notes(plan) } : ProjectTree)
+        }
+    }
+}
+
+/// The table a plan describes: every package mounted at the root under its
+/// own name, with each one's declarations, as the bootstrap's `package_table`.
+pub fn plan_package_table(plan: PlanHandle) -> PackageTable {
+    let app_declares = read_indices(packages_application_declares_count(plan), 0, plan, NoPackage, Nil);
+    add_planned_packages(plan, 0, packages_count(plan),
+                         package_table_with_application_declares(package_table_empty(), app_declares))
+}
+
+// Partial (ADR 11.8.26b): a measure recursion over an index, as below.
+#[partial]
+fn add_planned_packages(plan: PlanHandle, index: Nat, count: Nat, table: PackageTable) -> PackageTable {
+    if index >= count {
+        table
+    } else {
+        let declares = read_indices(packages_declares_count(plan, index), 0, plan, SomePackage(index), Nil);
+        add_planned_packages(plan, index + 1, count, package_table_add(table, packages_name(plan, index), declares))
+    }
+}
+
+/// Whose declarations `read_indices` reads: the application's or a package's.
+type DeclaringPackage = | NoPackage | SomePackage(Nat)
+
+// Partial (ADR 11.8.26b): a measure recursion over an index.
+#[partial]
+fn read_indices(count: Nat, nth: Nat, plan: PlanHandle, from: DeclaringPackage, acc: List<Nat>) -> List<Nat> {
+    if nth >= count {
+        list_reverse(acc)
+    } else {
+        let index = match from {
+            NoPackage() => packages_application_declares(plan, nth),
+            SomePackage(package) => packages_declares(plan, package, nth)
+        };
+        read_indices(count, nth + 1, plan, from, Cons(index, acc))
+    }
+}
+
+/// Problems `index` to `count` as located records, in the planner's order.
+// Partial (ADR 11.8.26b): an index counting up to a bound is a measure
+// recursion, which Non-Goals defers to v2.1; no proof reaches the driver.
+#[partial]
+fn plan_errors(plan: PlanHandle, index: Nat, count: Nat, acc: List<ElabError>) -> List<ElabError> {
+    if index >= count {
+        list_reverse(acc)
+    } else {
+        let (start, end_pos) = packages_problem_range(plan, index);
+        let span = span_new(start, end_pos, packages_problem_file(plan, index));
+        let kind = package_problem_kind(packages_problem_tag(plan, index), packages_problem_message(plan, index));
+        plan_errors(plan, index + 1, count, Cons(elab_error_new(kind, span), acc))
+    }
+}
+
+/// Each planned package's `lib.tg`, parsed against its own file and mounted
+/// under the package's name, in plan order.
+// Partial (ADR 11.8.26b): a measure recursion over an index, as above.
+#[partial]
+fn parse_libraries(plan: PlanHandle, index: Nat, count: Nat,
+                   acc: List<ParsedModule>) -> Result<List<ParsedModule>, TreeFailure> {
+    if index >= count {
+        Ok(list_reverse(acc))
+    } else {
+        match parse_module_tree(packages_library_root(plan, index), Nil) {
+            Err(failure) => Err(failure),
+            Ok(result) => {
+                let (library, _visited) = result;
+                let mounted = parsed_module_mounted(library, packages_name(plan, index));
+                parse_libraries(plan, index + 1, count, Cons(mounted, acc))
+            }
+        }
+    }
+}

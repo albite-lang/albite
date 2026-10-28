@@ -1,0 +1,46 @@
+// Negative control for test_disjunction.tg (ADR 7.10.26l D6, AC 2).
+//
+// Each function below uses a disjunction form where it has no meaning, and
+// each must be refused. `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_disjunction.tg --require-tests
+//     -> aborting due to 5 errors
+//
+// The cases, in the bootstrap's codes:
+//
+//   1. `inl(3)` against `Nat + Bool`, a sum of data (E0024)
+//   2. `inl(refl)` with no expected type: the other side is unknown (E0011)
+//   3. `left` on an `Eq` goal, which is not a disjunction (E0082)
+//   4. `cases` on a disjunction with only an `inl` arm (E0082)
+//   5. a `match` on a disjunction with an arm named `Some` (E0003)
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+fn test_inl_against_a_data_sum() -> Nat + Bool {
+    inl(3)
+}
+
+fn test_inl_with_no_expected_type() -> Unit {
+    let _h = inl(refl);
+    ()
+}
+
+pub theorem left_on_an_equation(n: Nat) -> Eq<Nat, n, n> by {
+    left;
+    refl
+}
+
+pub theorem cases_missing_its_inr_arm(n: Nat, h: Eq<Nat, n, 0> + Eq<Nat, 0, 1>) -> Eq<Nat, n, 0> by {
+    cases h {
+        inl(a) => exact a
+    }
+}
+
+fn test_match_with_a_foreign_arm(h: Eq<Nat, 0, 0> + Eq<Nat, 1, 1>) -> Nat {
+    match h {
+        inl(_) => 1,
+        Some(_) => 0
+    }
+}

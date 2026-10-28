@@ -1,0 +1,7 @@
+// ADR 2.10.26f §2.4: a term binder never becomes a type. Re-pointed from
+// `p: Prop` to `p: Nat` when `Prop` stopped being a type (ADR 4.10.26i D4),
+// so it still tests its own claim rather than the sort refusal.
+
+fn f(p: Nat, h: p) -> Nat { 0 }
+
+fn main() -> Nat { 0 }

@@ -1,0 +1,18 @@
+// ADR 30.9.26h AC 1: the erroring module. Its type error sits on a line
+// past the entry's last line, the shape the parked wrong-line record
+// observed in `builder/mod.tg`.
+//
+// Padding lines follow, so the error's own line number is unambiguous.
+//
+//
+//
+//
+//
+//
+//
+//
+//
+
+pub fn wrong_type() -> Nat {
+    true
+}

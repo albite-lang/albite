@@ -1,0 +1,9 @@
+[E0111] Error: expected `}`, found end of file
+   ╭─[tests/golden/error/parse_error_eof.tg:3:17]
+   │
+ 3 │ fn f() -> Nat {
+   │                 │ 
+   │                 ╰─ UnexpectedEof
+───╯
+
+error: aborting due to 1 error

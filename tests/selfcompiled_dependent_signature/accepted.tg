@@ -1,0 +1,40 @@
+// ADR 2.10.26f §2.4: a signature mentions its parameters, and each citation
+// substitutes its argument. Both compilers must accept every line.
+
+fn add_zero_right(n: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+fn add_succ_right(n: Nat, m: Nat) -> Eq<Nat, n + (m + 1), (n + m) + 1> { refl }
+
+fn mul_zero_right(n: Nat) -> Eq<Nat, n * 0, 0> { refl }
+
+theorem add_zero_right_thm(n: Nat): Eq<Nat, n + 0, n> { refl }
+
+fn flip(n: Nat, h: Eq<Nat, n, 0>) -> Eq<Nat, 0, n> { sym(h) }
+
+fn refl_at<T>(x: T) -> Eq<T, x, x> { refl }
+
+fn two(n: Nat, m: Nat) -> Eq<Nat, n + m, n + m> { refl }
+
+axiom ax_flip(n: Nat, h: Eq<Nat, n, 0>): Eq<Nat, 0, n>
+
+fn cites(m: Nat) -> Eq<Nat, m + 0, m> { add_zero_right(m) }
+
+fn swapped(n: Nat, m: Nat) -> Eq<Nat, m + n, m + n> { two(m, n) }
+
+fn uses() -> Nat {
+    let _a: Eq<Nat, 3 + 0, 3> = add_zero_right(3);
+    let _b: Eq<Nat, 5 + 0, 5> = cites(5);
+    let _c: Eq<Nat, 2 + (4 + 1), (2 + 4) + 1> = add_succ_right(2, 4);
+    let _d: Eq<Nat, 7 * 0, 0> = mul_zero_right(7);
+    let _e: Eq<Nat, 4 + 0, 4> = add_zero_right_thm(4);
+    let _f: Eq<Nat, 0, 0> = flip(0, refl);
+    let _g: Eq<Nat, 5, 5> = refl_at(5);
+    let _h: Eq<Nat, 2 + 1, 2 + 1> = swapped(1, 2);
+    let _i: Eq<Nat, 0, 0> = ax_flip(0, refl);
+    let cited = add_zero_right;
+    let _j: Eq<Nat, 6 + 0, 6> = cited(6);
+    let _k: Eq<Nat, 8 + 0, 8> = 8 |> add_zero_right;
+    0
+}
+
+fn main() -> Nat { uses() }

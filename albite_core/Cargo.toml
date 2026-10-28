@@ -1,0 +1,27 @@
+[package]
+name = "albite_core"
+description = "Core calculus (kernel) for the Albite proof language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+atty = "0.2"
+libc = "0.2"
+albite_runtime = { path = "../albite_runtime" }
+sha2 = "0.11.0"
+# The package planner's manifest reader (ADR 6.10.26j D2). A user program
+# that never plans carries none of it: user links strip (ADR 6.10.26i).
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3.24.0"
+
+[lints]
+workspace = true

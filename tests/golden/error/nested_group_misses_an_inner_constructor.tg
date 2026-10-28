@@ -1,0 +1,19 @@
+// == a nested group with no catch-all misses an inner constructor (ADR 16.10.26e)
+//
+// `B(X())` and `B(Y())` form one group, lowered as an inner match over `K`
+// that names two of its three constructors, and no arm covers `B(Z())`. The
+// inner match refuses with E0020 at the group's first arm. Before the fix the
+// self-host exempted the inner match and `B(Z())` ran `B(Y())`'s arm.
+type K = X | Y | Z
+type P = A(Nat) | B(K) | C(Nat)
+
+fn f(q: P) -> Nat {
+    match q {
+        B(X()) => 1,
+        B(Y()) => 2,
+        A(n) => 3,
+        C(n) => 4
+    }
+}
+
+fn main() -> Nat { f(B(Z())) }

@@ -1,0 +1,300 @@
+// The Tier 4 prime library (ADR 9.10.26k): the families `IsPrime` and
+// `Congr`, the divisibility facts a prime needs, and Euclid's lemma.
+//
+// A FLAT sibling of nat_divides.tg and nat_divmod.tg, imported with
+// `mod nat_prime;` (9.10.26k D1). It is not folded into nat_divides.tg, so
+// each library keeps its own census and battery row; the absorption identity
+// `binom_absorb` is a statement about `binom` alone and lives in nat_binom.tg.
+//
+// IMPORTS (D2). 9.10.26p admits a library reached by two paths when it holds
+// theorems, but a file declaring a FAMILY loses its families that way (E0023,
+// 9.10.26i § 6). So the family libraries are re-exported, `pub mod`, and
+// reached once: `Lt`/`Le` through nat_divmod.tg's own `pub mod nat_order;`,
+// `Divides` through nat_divides.tg. A dependent imports nat_prime.tg alone and
+// spells `nat_prime::nat_divides::Divides`, never a second `mod nat_divides;`.
+//
+// EUCLID'S LEMMA takes the negated hypothesis, `p ∤ a`, not the disjunction
+// (D4), and is proved by strong induction with `mod_def` (D5): the Bézout
+// route over a `gcd` by fuel was admitted too, at 304 lines against this
+// route's 131 and 0.92 s cold against 0.67 s, so `gcd` does not ship (the
+// measurement is in the ADR's Outcome). `euclid_below` is the induction:
+// for `0 < a < p`, `p | a * b` gives `p | b`, because `p == a * q + r` with
+// `r < a`; `r == 0` makes `a` a divisor of `p`, so `a == 1`, and otherwise
+// `p | r * b` by `divides_sub` and the hypothesis applies at `r`. The
+// induction is plain `induction` on a bound `n` over `a < n`, which is
+// `nat_strong_ind`'s shape with `p` fixed: the motive is no named family.
+//
+// Each split happens in a helper that takes the disjunction as a parameter,
+// because `cases` refuses a compound scrutinee (9.10.26i § 6).
+//
+// Suite: test_nat_prime.tg, with its must-fail twin mustfail_nat_prime.tg.
+
+// `add_comm`, `mul_add` and the cancellation lemmas.
+mod nat_arith;
+// `Divides` and its lemmas; re-exported so a dependent reaches the family once.
+pub mod nat_divides;
+// `nat_mod`, `mod_def`, `nat_eq_dec`, and `Lt`/`Le` through its `pub mod nat_order;`.
+pub mod nat_divmod;
+// `binom` and `binom_absorb`, re-exported for 9.10.26l's single import.
+pub mod nat_binom;
+
+pub type IsPrime(p: Nat): Prop = (nat_divmod::nat_order::Lt<1, p>,
+    (d: Nat) -> nat_divides::Divides<d, p> -> Eq<Nat, d, 1> + Eq<Nat, d, p>)
+pub type Congr(m: Nat, a: Nat, b: Nat): Prop = (exists k: Nat. a == b + m * k) + (exists k: Nat. b == a + m * k)
+
+// ── The families' projections and the divisibility facts ────────────────────
+
+pub theorem prime_gt_one(p: Nat, hp: IsPrime<p>) -> nat_divmod::nat_order::Lt<1, p> {
+    let (lo, divs) = hp;
+    lo
+}
+
+pub theorem prime_divisor_cases(p: Nat, d: Nat, hp: IsPrime<p>, hd: nat_divides::Divides<d, p>)
+    -> Eq<Nat, d, 1> + Eq<Nat, d, p> {
+    let (lo, divs) = hp;
+    divs(d, hd)
+}
+
+// `induction k` over an arrow goal, as `le_step_cases`: `cases` does not split
+// a `Nat`. `k = 0` is `n == d * 0`, refuted through `not_lt_zero`, the
+// equation carried to a literal `0` by `mul_zero_right`, because the
+// elaborator compares a family's `exists` expansion without reducing `d * 0`.
+// `k = j + 1` is `n == d * j + d`, which `omega` reads with `d * j` an atom.
+pub theorem divides_le_step(d: Nat, n: Nat, k: Nat)
+    -> Eq<Nat, n, d * k> -> nat_divmod::nat_order::Lt<0, n> -> nat_divmod::nat_order::Le<d, n> by {
+    induction k;
+    intro e;
+    intro hn;
+    exact absurd(nat_divmod::nat_order::not_lt_zero(0,
+        subst(trans(e, nat_arith::mul_zero_right(d)), |x: Nat| nat_divmod::nat_order::Lt<0, x>, hn)));
+    intro j;
+    intro ih;
+    intro e;
+    intro hn;
+    omega
+}
+
+pub theorem divides_le(d: Nat, n: Nat, hd: nat_divides::Divides<d, n>, hn: nat_divmod::nat_order::Lt<0, n>)
+    -> nat_divmod::nat_order::Le<d, n> by {
+    cases hd { (k, e) => exact divides_le_step(d, n, k)(e, hn) }
+}
+
+pub theorem not_divides_below(p: Nat, k: Nat, h0: nat_divmod::nat_order::Lt<0, k>, hk: nat_divmod::nat_order::Lt<k, p>)
+    -> nat_divides::Divides<p, k> -> Void by {
+    intro h;
+    exact nat_divmod::nat_order::lt_irrefl(p, nat_divmod::nat_order::lt_of_le_of_lt(p, k, p, divides_le(p, k, h, h0), hk))
+}
+
+// ── divides_sub ─────────────────────────────────────────────────────────────
+
+// Witnesses `m + n == d * k1` and `m == d * k2`, split on `le_total(k1, k2)`.
+// `k1 + t == k2` gives `n + d * t == 0`, so `n == 0`; `k2 + t == k1` gives
+// `n == d * t`. `mul_add` comes first, since `omega` reads products as atoms.
+// The low arm's cancellation is term mode: `omega` finds no witness for an
+// equation goal that needs `n + c == 0` from two hypotheses (E0088).
+
+pub theorem sub_low_zero(m: Nat, n: Nat, a: Nat, c: Nat)
+    -> Eq<Nat, m + n, a> -> Eq<Nat, m, a + c> -> Eq<Nat, n + c, 0> by {
+    intro e1;
+    intro em;
+    exact nat_arith::add_right_cancel(n + c, 0, m,
+        trans(nat_arith::add_comm(n + c, m),
+              trans(sym(trans(em, trans(cong(|x: Nat| x + c, sym(e1)), nat_arith::add_assoc(m, n, c)))),
+                    sym(nat_arith::add_zero_left(m)))))
+}
+
+pub theorem divides_sub_low(d: Nat, m: Nat, n: Nat, a: Nat, c: Nat)
+    -> Eq<Nat, m + n, a> -> Eq<Nat, m, a + c> -> nat_divides::Divides<d, n> by {
+    intro e1;
+    intro em;
+    exact subst(sym(nat_arith::add_eq_zero_left(n, c, sub_low_zero(m, n, a, c)(e1, em))),
+                |x: Nat| nat_divides::Divides<d, x>, nat_divides::divides_zero(d))
+}
+
+pub theorem divides_sub_high(d: Nat, m: Nat, n: Nat, a: Nat, t: Nat)
+    -> Eq<Nat, m + n, a + d * t> -> Eq<Nat, m, a> -> nat_divides::Divides<d, n> by {
+    intro e1;
+    intro e2;
+    exists t;
+    omega
+}
+
+pub theorem divides_sub_split(d: Nat, m: Nat, n: Nat, k1: Nat, k2: Nat)
+    -> Eq<Nat, m + n, d * k1> -> Eq<Nat, m, d * k2>
+    -> nat_divmod::nat_order::Le<k1, k2> + nat_divmod::nat_order::Le<k2, k1> -> nat_divides::Divides<d, n> by {
+    intro e1;
+    intro e2;
+    intro s;
+    cases s {
+        inl(h) => cases h {
+            (t, et) => exact divides_sub_low(d, m, n, d * k1, d * t)(e1,
+                trans(e2, trans(cong(|x: Nat| d * x, sym(et)), nat_arith::mul_add(d, k1, t))))
+        },
+        inr(h) => cases h {
+            (t, et) => exact divides_sub_high(d, m, n, d * k2, t)(
+                trans(e1, trans(cong(|x: Nat| d * x, sym(et)), nat_arith::mul_add(d, k2, t))), e2)
+        }
+    }
+}
+
+pub theorem divides_sub(d: Nat, m: Nat, n: Nat, hmn: nat_divides::Divides<d, m + n>, hm: nat_divides::Divides<d, m>)
+    -> nat_divides::Divides<d, n> by {
+    cases hmn {
+        (k1, e1) => cases hm {
+            (k2, e2) => exact divides_sub_split(d, m, n, k1, k2)(e1, e2, nat_divmod::nat_order::le_total(k1, k2))
+        }
+    }
+}
+
+// ── Euclid's lemma ──────────────────────────────────────────────────────────
+
+pub theorem prime_pos(p: Nat, hp: IsPrime<p>) -> nat_divmod::nat_order::Lt<0, p> {
+    nat_divmod::nat_order::lt_trans(0, 1, p, nat_divmod::nat_order::lt_succ_self(0), prime_gt_one(p, hp))
+}
+
+pub theorem pos_of_ne_zero(r: Nat) -> (Eq<Nat, r, 0> -> Void) -> nat_divmod::nat_order::Lt<0, r> by {
+    induction r;
+    intro h;
+    exact absurd(h(refl));
+    intro j;
+    intro ih;
+    intro h;
+    omega
+}
+
+pub theorem lt_below_succ(r: Nat, a: Nat, j: Nat, h1: nat_divmod::nat_order::Lt<r, a>,
+    h2: nat_divmod::nat_order::Lt<a, j + 1>) -> nat_divmod::nat_order::Lt<r, j> by {
+    omega
+}
+
+pub theorem divides_of_zero_rem(a: Nat, n: Nat, q: Nat, r: Nat)
+    -> Eq<Nat, a * q + r, n> -> Eq<Nat, r, 0> -> nat_divides::Divides<a, n> by {
+    intro md;
+    intro er;
+    exists q;
+    exact sym(trans(cong(|x: Nat| a * q + x, sym(er)), md))
+}
+
+pub theorem rem_mul_expand(x: Nat, b: Nat, q: Nat, r: Nat) -> Eq<Nat, (x * q + r) * b, (x * b) * q + r * b> by {
+    ring
+}
+
+// A helper, not a `subst` nested in the next one's argument: nested, the
+// outer `subst`'s `hyb` was checked at `(x * q + r) * b`, the inner equation's
+// left side, instead of `y * b` (E0010, a finding in the ADR's Outcome).
+pub theorem rem_product_eq(x: Nat, y: Nat, b: Nat, q: Nat, r: Nat, md: Eq<Nat, x * q + r, y>)
+    -> Eq<Nat, y * b, (x * b) * q + r * b> {
+    subst(md, |z: Nat| Eq<Nat, z * b, (x * b) * q + r * b>, rem_mul_expand(x, b, q, r))
+}
+
+pub theorem divides_rem_product(d: Nat, x: Nat, y: Nat, b: Nat, q: Nat, r: Nat)
+    -> Eq<Nat, x * q + r, y> -> nat_divides::Divides<d, x * b> -> nat_divides::Divides<d, y * b>
+    -> nat_divides::Divides<d, r * b> by {
+    intro md;
+    intro hxb;
+    intro hyb;
+    exact divides_sub(d, (x * b) * q, r * b,
+        subst(rem_product_eq(x, y, b, q, r, md), |z: Nat| nat_divides::Divides<d, z>, hyb),
+        nat_divides::divides_mul_right(d, x * b, q, hxb))
+}
+
+pub theorem divides_self_mul(p: Nat, b: Nat) -> nat_divides::Divides<p, p * b> {
+    nat_divides::divides_mul_right(p, p, b, nat_divides::divides_refl(p))
+}
+
+pub theorem euclid_unit_or_self(p: Nat, a: Nat, b: Nat, hap: nat_divmod::nat_order::Lt<a, p>,
+    hab: nat_divides::Divides<p, a * b>) -> Eq<Nat, a, 1> + Eq<Nat, a, p> -> nat_divides::Divides<p, b> by {
+    intro s;
+    cases s {
+        inl(e) => exact subst(nat_arith::mul_one_left(b), |x: Nat| nat_divides::Divides<p, x>,
+                              subst(e, |x: Nat| nat_divides::Divides<p, x * b>, hab)),
+        inr(e) => exact absurd(nat_divmod::nat_order::lt_irrefl(p, subst(e, |x: Nat| nat_divmod::nat_order::Lt<x, p>, hap)))
+    }
+}
+
+pub theorem euclid_rem_cases(p: Nat, a: Nat, j: Nat, hp: IsPrime<p>,
+    ih: (c: Nat) -> nat_divmod::nat_order::Lt<c, j> -> nat_divmod::nat_order::Lt<0, c> -> nat_divmod::nat_order::Lt<c, p>
+        -> (b: Nat) -> nat_divides::Divides<p, c * b> -> nat_divides::Divides<p, b>)
+    -> nat_divmod::nat_order::Lt<a, j + 1> -> nat_divmod::nat_order::Lt<0, a> -> nat_divmod::nat_order::Lt<a, p>
+    -> (b: Nat) -> nat_divides::Divides<p, a * b>
+    -> Eq<Nat, nat_divmod::nat_mod(p, a), 0> + (Eq<Nat, nat_divmod::nat_mod(p, a), 0> -> Void)
+    -> nat_divides::Divides<p, b> by {
+    intro ha;
+    intro h0;
+    intro hap;
+    intro b;
+    intro hab;
+    intro s;
+    cases s {
+        inl(er) => exact euclid_unit_or_self(p, a, b, hap, hab)(prime_divisor_cases(p, a, hp,
+            divides_of_zero_rem(a, p, nat_divmod::nat_div(p, a), nat_divmod::nat_mod(p, a))(nat_divmod::mod_def(p, a, h0), er))),
+        inr(nr) => exact ih(nat_divmod::nat_mod(p, a),
+            lt_below_succ(nat_divmod::nat_mod(p, a), a, j, nat_divmod::mod_lt(p, a, h0), ha),
+            pos_of_ne_zero(nat_divmod::nat_mod(p, a))(nr),
+            nat_divmod::nat_order::lt_trans(nat_divmod::nat_mod(p, a), a, p, nat_divmod::mod_lt(p, a, h0), hap),
+            b,
+            divides_rem_product(p, a, p, b, nat_divmod::nat_div(p, a), nat_divmod::nat_mod(p, a))(
+                nat_divmod::mod_def(p, a, h0), hab, divides_self_mul(p, b)))
+    }
+}
+
+pub theorem euclid_below(p: Nat, hp: IsPrime<p>, n: Nat)
+    -> (a: Nat) -> nat_divmod::nat_order::Lt<a, n> -> nat_divmod::nat_order::Lt<0, a> -> nat_divmod::nat_order::Lt<a, p>
+    -> (b: Nat) -> nat_divides::Divides<p, a * b> -> nat_divides::Divides<p, b> by {
+    induction n;
+    intro a;
+    intro ha;
+    exact absurd(nat_divmod::nat_order::not_lt_zero(a, ha));
+    intro j;
+    intro ih;
+    intro a;
+    intro ha;
+    intro h0;
+    intro hap;
+    intro b;
+    intro hab;
+    exact euclid_rem_cases(p, a, j, hp, ih)(ha, h0, hap, b, hab, nat_divmod::nat_eq_dec(nat_divmod::nat_mod(p, a), 0))
+}
+
+pub theorem euclid_reduce(p: Nat, a: Nat, b: Nat, hp: IsPrime<p>, hab: nat_divides::Divides<p, a * b>)
+    -> (nat_divides::Divides<p, a> -> Void)
+    -> Eq<Nat, nat_divmod::nat_mod(a, p), 0> + (Eq<Nat, nat_divmod::nat_mod(a, p), 0> -> Void)
+    -> nat_divides::Divides<p, b> by {
+    intro hna;
+    intro s;
+    cases s {
+        inl(er) => exact absurd(hna(divides_of_zero_rem(p, a, nat_divmod::nat_div(a, p), nat_divmod::nat_mod(a, p))(
+            nat_divmod::mod_def(a, p, prime_pos(p, hp)), er))),
+        inr(nr) => exact euclid_below(p, hp, nat_divmod::nat_mod(a, p) + 1)(nat_divmod::nat_mod(a, p),
+            nat_divmod::nat_order::lt_succ_self(nat_divmod::nat_mod(a, p)),
+            pos_of_ne_zero(nat_divmod::nat_mod(a, p))(nr),
+            nat_divmod::mod_lt(a, p, prime_pos(p, hp)),
+            b,
+            divides_rem_product(p, p, a, b, nat_divmod::nat_div(a, p), nat_divmod::nat_mod(a, p))(
+                nat_divmod::mod_def(a, p, prime_pos(p, hp)), divides_self_mul(p, b), hab))
+    }
+}
+
+pub theorem euclid_lemma(p: Nat, a: Nat, b: Nat, hp: IsPrime<p>, hab: nat_divides::Divides<p, a * b>,
+    hna: nat_divides::Divides<p, a> -> Void) -> nat_divides::Divides<p, b> {
+    euclid_reduce(p, a, b, hp, hab)(hna, nat_divmod::nat_eq_dec(nat_divmod::nat_mod(a, p), 0))
+}
+
+// ── A prime divides its binomial coefficients (ADR 9.10.26l) ────────────────
+// `binom_absorb(v + 1, w)` is a multiple of `v + 1 + 1`, carried to the open
+// `k` and `p` by `subst`: `rewrite` matches syntactically (7.10.26k D3).
+pub theorem succ_of_lt_zero(w: Nat, k: Nat, e: Eq<Nat, 0 + 1 + w, k>) -> Eq<Nat, w + 1, k> by { omega }
+pub theorem succ_of_lt_one(v: Nat, p: Nat, e: Eq<Nat, 1 + 1 + v, p>) -> Eq<Nat, v + 1 + 1, p> by { omega }
+
+pub theorem binom_multiple(p: Nat, k: Nat, h0: nat_divmod::nat_order::Lt<0, k>, h1: nat_divmod::nat_order::Lt<1, p>)
+    -> nat_divides::Divides<p, k * nat_binom::binom(p, k)> by {
+    cases h0 { (w, e0) => cases h1 { (v, e1) => exact subst(succ_of_lt_one(v, p, e1),
+        |y: Nat| nat_divides::Divides<y, k * nat_binom::binom(y, k)>,
+        subst(succ_of_lt_zero(w, k, e0), |x: Nat| nat_divides::Divides<v + 1 + 1, x * nat_binom::binom(v + 1 + 1, x)>,
+              (nat_binom::binom(v + 1, w), nat_binom::binom_absorb(v + 1, w)))) } }
+}
+
+pub theorem prime_divides_binom(p: Nat, k: Nat, hp: IsPrime<p>, h0: nat_divmod::nat_order::Lt<0, k>,
+    hk: nat_divmod::nat_order::Lt<k, p>) -> nat_divides::Divides<p, nat_binom::binom(p, k)> {
+    euclid_lemma(p, k, nat_binom::binom(p, k), hp, binom_multiple(p, k, h0, prime_gt_one(p, hp)), not_divides_below(p, k, h0, hk))
+}

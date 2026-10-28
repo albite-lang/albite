@@ -1,0 +1,48 @@
+// src/compiler/test_ir_nat_div.tg
+// ADR 9.10.26g AC 5: the self-hosted text emitter guards `Nat` `/` and `%`
+// against a zero divisor, as the bootstrap's `nat_ops.rs` does. Each test
+// emits one operation into a fresh IRState and compares the whole text, so a
+// dropped `icmp`, a swapped `select` arm or a missing outer `select` on `/`
+// fails here.
+//
+// Run with: albite test src/compiler/test_ir_nat_div.tg
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+mod codegen;
+
+use driver::ffi::test::{assert_eq_string, assert_eq_bool};
+use driver::util::string_contains;
+use codegen::ir_builder::{ir_state_new, ir_state_to_string};
+use codegen::ir_expr::nat::{emit_nat_div, emit_nat_mod};
+use elab::cir::types::{CodegenIR, CTNat, CIRVar};
+
+fn dividend() -> CodegenIR { CIRVar("a", CTNat) }
+
+fn divisor() -> CodegenIR { CIRVar("b", CTNat) }
+
+/// 9.10.26g AC 5: `/` tests the divisor, swaps a zero for `1`, divides, and
+/// selects `0` for a zero divisor — two `select`s.
+pub fn test_nat_div_emits_the_zero_divisor_guard() -> Unit {
+    let (result, st) = emit_nat_div(ir_state_new(), dividend(), divisor());
+    let ir = ir_state_to_string(st);
+    assert_eq_bool(string_contains(ir, " = icmp eq i64 %b, 0"), true);
+    assert_eq_bool(string_contains(ir, " = select i1 %0, i64 1, i64 %b"), true);
+    assert_eq_bool(string_contains(ir, " = udiv i64 %a, %1"), true);
+    assert_eq_bool(string_contains(ir, "  %3 = select i1 %0, i64 0, i64 %2"), true);
+    assert_eq_string(result, "%3")
+}
+
+/// 9.10.26g AC 5: `%` guards the divisor the same way and has ONE `select`,
+/// because `a % 1` is already `0`.
+pub fn test_nat_mod_emits_the_guard_without_an_outer_select() -> Unit {
+    let (result, st) = emit_nat_mod(ir_state_new(), dividend(), divisor());
+    let ir = ir_state_to_string(st);
+    assert_eq_bool(string_contains(ir, " = icmp eq i64 %b, 0"), true);
+    assert_eq_bool(string_contains(ir, " = select i1 %0, i64 1, i64 %b"), true);
+    assert_eq_bool(string_contains(ir, "  %2 = urem i64 %a, %1"), true);
+    assert_eq_bool(string_contains(ir, "i64 0, i64"), false);
+    assert_eq_string(result, "%2")
+}

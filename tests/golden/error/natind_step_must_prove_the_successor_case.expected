@@ -1,0 +1,9 @@
+[E0010] Error: expected `Eq<Nat, NatAdd(Zero, Succ(Var("k"))), Succ(Var("k"))>`, found `Eq<Nat, NatAdd(Zero, Var("k")), Var("k")>`
+    ╭─[tests/golden/error/natind_step_must_prove_the_successor_case.tg:11:92]
+    │
+ 11 │     let _p: Eq<Nat, 0 + n, n> = natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => ih, n);
+    │                                                                                            ─┬  
+    │                                                                                             ╰── expected `Eq<Nat, NatAdd(Zero, Succ(Var("k"))), Succ(Var("k"))>`, found `Eq<Nat, NatAdd(Zero, Var("k")), Var("k")>`
+────╯
+
+error: aborting due to 1 error

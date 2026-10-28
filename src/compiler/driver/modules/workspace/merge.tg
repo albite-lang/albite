@@ -1,0 +1,181 @@
+// src/compiler/driver/modules/workspace/merge.tg
+// Merging a sibling's ModuleInfo under main's (ADR 30.9.26i D2, D3).
+//
+// WHY ORDER IS THE WHOLE RULE. The self-host's consumers read these lists by
+// position: `module_info_get_module` takes the FIRST match, and
+// `register_modules_from_info` walks the registry into `module_map_insert`,
+// which removes then prepends, so a later entry for a path REPLACES an
+// earlier one. A plain append therefore let a sibling's stub replace main's
+// module of the same path. Here no key appears twice in the result, so both
+// readers see `priority`'s entry. The bootstrap gets the same answer from
+// `or_insert` on hash maps (ADR 8.5.26a).
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{string_eq, list_append, list_reverse, list_contains_string};
+use driver::modules::path::{ModulePath, module_path_listed};
+use driver::modules::info::{
+    ModuleInfo, ModuleRegistryEntry, VisibilityEntry, ModuleFileEntry, ItemModuleEntry
+};
+use driver::modules::workspace::paths::{normalize_file_path};
+
+/// Merge `fallback` under `priority`.
+///
+/// First a `fallback` module whose normalised file `priority` already owns is
+/// dropped whole — registry entry, visibility, file and every `item_modules`
+/// entry naming its path (D3, 28.1.26 §3.4's file-to-module precedence,
+/// applied at merge time). Then each list keeps every `priority` entry and
+/// adds a `fallback` entry only when its key is absent: the module path for
+/// `modules`, `module_visibility` and `module_files`, the bare name for
+/// `item_modules`. A key repeated inside `fallback` keeps its first occurrence,
+/// so folding siblings in order makes the first sibling win (D2).
+///
+/// `names_only` is `priority`'s plus the path of every `fallback` module KEPT
+/// (ADR 1.10.26f D1). `fallback.names_only` is ignored on purpose: the sibling
+/// fold already marked its own paths, and one of them may be a path main owns,
+/// so recomputing from what survives here is what keeps main's paths unmarked.
+pub fn merge_module_info(priority: ModuleInfo, fallback: ModuleInfo) -> ModuleInfo {
+    let owned = normalized_entry_files(priority.module_files);
+    let dropped = paths_with_owned_file(fallback.module_files, owned);
+    let kept = fresh_registry_entries(
+        fallback.modules, list_append(dropped, registry_paths(priority.modules)), Nil);
+    {
+        modules: list_append(priority.modules, kept),
+        item_modules: list_append(priority.item_modules, fresh_item_entries(
+            fallback.item_modules, dropped, item_entry_names(priority.item_modules), Nil)),
+        module_visibility: list_append(priority.module_visibility, fresh_visibility_entries(
+            fallback.module_visibility, list_append(dropped, visibility_paths(priority.module_visibility)), Nil)),
+        module_files: list_append(priority.module_files, fresh_file_entries(
+            fallback.module_files, list_append(dropped, file_entry_paths(priority.module_files)), Nil)),
+        names_only: list_append(priority.names_only, registry_paths(kept)),
+        packages: priority.packages
+    }
+}
+
+// ===========================================================================
+// SAME-FILE DROP (D3)
+// ===========================================================================
+
+fn normalized_entry_files(entries: List<ModuleFileEntry>) -> List<String> {
+    match entries {
+        Nil() => Nil,
+        Cons(entry, rest) =>
+            let (_, file) = entry;
+            Cons(normalize_file_path(file), normalized_entry_files(rest))
+    }
+}
+
+/// The module paths among `entries` whose file is in `owned` (normalised).
+fn paths_with_owned_file(entries: List<ModuleFileEntry>, owned: List<String>) -> List<ModulePath> {
+    match entries {
+        Nil() => Nil,
+        Cons(entry, rest) =>
+            let (path, file) = entry;
+            if list_contains_string(owned, normalize_file_path(file)) {
+                Cons(path, paths_with_owned_file(rest, owned))
+            } else {
+                paths_with_owned_file(rest, owned)
+            }
+    }
+}
+
+// ===========================================================================
+// KEY-WISE MERGE (D2): each `taken` list holds the keys already present
+// ===========================================================================
+
+fn fresh_registry_entries(entries: List<ModuleRegistryEntry>, taken: List<ModulePath>,
+                          acc: List<ModuleRegistryEntry>) -> List<ModuleRegistryEntry> {
+    match entries {
+        Nil() => list_reverse(acc),
+        Cons(entry, rest) =>
+            let (path, _) = entry;
+            if module_path_listed(taken, path) {
+                fresh_registry_entries(rest, taken, acc)
+            } else {
+                fresh_registry_entries(rest, Cons(path, taken), Cons(entry, acc))
+            }
+    }
+}
+
+fn fresh_visibility_entries(entries: List<VisibilityEntry>, taken: List<ModulePath>,
+                            acc: List<VisibilityEntry>) -> List<VisibilityEntry> {
+    match entries {
+        Nil() => list_reverse(acc),
+        Cons(entry, rest) =>
+            let (path, _, _) = entry;
+            if module_path_listed(taken, path) {
+                fresh_visibility_entries(rest, taken, acc)
+            } else {
+                fresh_visibility_entries(rest, Cons(path, taken), Cons(entry, acc))
+            }
+    }
+}
+
+fn fresh_file_entries(entries: List<ModuleFileEntry>, taken: List<ModulePath>,
+                      acc: List<ModuleFileEntry>) -> List<ModuleFileEntry> {
+    match entries {
+        Nil() => list_reverse(acc),
+        Cons(entry, rest) =>
+            let (path, _) = entry;
+            if module_path_listed(taken, path) {
+                fresh_file_entries(rest, taken, acc)
+            } else {
+                fresh_file_entries(rest, Cons(path, taken), Cons(entry, acc))
+            }
+    }
+}
+
+/// Items are keyed on the bare name, and also go when their module was
+/// dropped by D3.
+fn fresh_item_entries(entries: List<ItemModuleEntry>, dropped: List<ModulePath>,
+                      taken: List<String>, acc: List<ItemModuleEntry>) -> List<ItemModuleEntry> {
+    match entries {
+        Nil() => list_reverse(acc),
+        Cons(entry, rest) =>
+            let (name, path) = entry;
+            if module_path_listed(dropped, path) || list_contains_string(taken, name) {
+                fresh_item_entries(rest, dropped, taken, acc)
+            } else {
+                fresh_item_entries(rest, dropped, Cons(name, taken), Cons(entry, acc))
+            }
+    }
+}
+
+// ===========================================================================
+// KEY PROJECTIONS
+// ===========================================================================
+
+fn registry_paths(entries: List<ModuleRegistryEntry>) -> List<ModulePath> {
+    match entries {
+        Nil() => Nil,
+        Cons(entry, rest) =>
+            let (path, _) = entry;
+            Cons(path, registry_paths(rest))
+    }
+}
+
+fn visibility_paths(entries: List<VisibilityEntry>) -> List<ModulePath> {
+    match entries {
+        Nil() => Nil,
+        Cons(entry, rest) =>
+            let (path, _, _) = entry;
+            Cons(path, visibility_paths(rest))
+    }
+}
+
+fn file_entry_paths(entries: List<ModuleFileEntry>) -> List<ModulePath> {
+    match entries {
+        Nil() => Nil,
+        Cons(entry, rest) =>
+            let (path, _) = entry;
+            Cons(path, file_entry_paths(rest))
+    }
+}
+
+fn item_entry_names(entries: List<ItemModuleEntry>) -> List<String> {
+    match entries {
+        Nil() => Nil,
+        Cons(entry, rest) =>
+            let (name, _) = entry;
+            Cons(name, item_entry_names(rest))
+    }
+}

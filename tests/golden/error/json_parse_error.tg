@@ -1,0 +1,5 @@
+// Golden test (ADR 28.9.26e, 29.9.26f): parse errors in schema-1 JSON carry
+// their syntax code (was `null`) and their message as the label.
+fn f( -> Nat { 1 }
+
+fn g() -> Nat { let = 2; 0 }

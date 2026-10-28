@@ -1,0 +1,12 @@
+// == a false proof `fn` is refused where it is written (ADR 13.10.26t D1)
+// The δ discharge evaluates `big() + 1` with the runtime's saturating
+// evaluator, so it accepts `refl` at a false equation. The kernel cites `bad`
+// at its declared type, so `cites` once rested on a body nobody checked; `bad`
+// is now checked like a theorem and refused.
+fn big() -> Nat { 18446744073709551615 }
+
+fn bad() -> Eq<Nat, big() + 1, big()> { refl }
+
+theorem cites(): Eq<Nat, big() + 1, big()> { bad() }
+
+fn main() -> Nat { 0 }

@@ -1,0 +1,113 @@
+// src/compiler/elab/exprs/blocks/mutable/exits.tg
+// The first `return` or `?` that would leave a joined arm (ADR 13.10.26r D3):
+// such an arm cannot end by pairing, so the join refuses it (E0740). One
+// inside a lambda leaves the lambda, and a `?` inside a nested `try` leaves
+// the `try`, so neither is counted — the bootstrap's `crossing_exit_word`.
+
+use lexer::span::Span;
+use parser::ast::{
+    Expr, ExprBlock, ExprIf, ExprIfLet, ExprMatch, ExprTuple, ExprReturn, ExprTry, ExprTryBlock,
+    ExprApp, ExprBinary, ExprUnary, ExprParen, ExprAnnot, ExprField, ExprRegion, ExprLet,
+    ExprLetElse, ExprTypeApp,
+    Stmt, StmtLet, StmtLetElse, StmtExpr, StmtLetMut, StmtAssign, MatchArm,
+    MaybeExpr, NoExpr, SomeExpr
+};
+use driver::ffi::{List, Nil, Cons};
+use elab::exprs::blocks::mutable::arms::{ArmSource, MaybeExit, NoExit, SomeExit};
+
+/// The first exit leaving any of the arms, in order.
+// Partial: mutual recursion over the expression tree through list helpers.
+#[partial]
+pub fn first_exit(sources: List<ArmSource>) -> MaybeExit {
+    match sources {
+        Nil() => NoExit,
+        Cons(source, rest) =>
+            or_exit(or_exit(stmts_exit(source.stmts, true), maybe_exit(source.tail, true)), first_exit(rest))
+    }
+}
+
+fn or_exit(first: MaybeExit, second: MaybeExit) -> MaybeExit {
+    match first {
+        NoExit() => second,
+        _ => first
+    }
+}
+
+// Partial: mutual recursion over the expression tree through list helpers.
+#[partial]
+fn maybe_exit(e: MaybeExpr, try_op: Bool) -> MaybeExit {
+    match e {
+        NoExpr() => NoExit,
+        SomeExpr(inner) => expr_exit(inner, try_op)
+    }
+}
+
+// Partial: mutual recursion over the expression tree through list helpers.
+#[partial]
+fn stmts_exit(stmts: List<Stmt>, try_op: Bool) -> MaybeExit {
+    match stmts {
+        Nil() => NoExit,
+        Cons(stmt, rest) => or_exit(stmt_exit(stmt, try_op), stmts_exit(rest, try_op))
+    }
+}
+
+// Partial: mutual recursion over the expression tree through list helpers.
+#[partial]
+fn stmt_exit(stmt: Stmt, try_op: Bool) -> MaybeExit {
+    match stmt {
+        StmtLet(_, _, value, _) => expr_exit(value, try_op),
+        StmtLetMut(_, _, value, _) => expr_exit(value, try_op),
+        StmtAssign(_, value, _) => expr_exit(value, try_op),
+        StmtLetElse(_, _, value, otherwise, _) => or_exit(expr_exit(value, try_op), expr_exit(otherwise, try_op)),
+        StmtExpr(e, _) => expr_exit(e, try_op),
+        _ => NoExit
+    }
+}
+
+// Partial: mutual recursion over the expression tree through list helpers.
+#[partial]
+fn exprs_exit(es: List<Expr>, try_op: Bool) -> MaybeExit {
+    match es {
+        Nil() => NoExit,
+        Cons(e, rest) => or_exit(expr_exit(e, try_op), exprs_exit(rest, try_op))
+    }
+}
+
+// Partial: mutual recursion over the expression tree through list helpers.
+#[partial]
+fn arms_exit(arms: List<MatchArm>, try_op: Bool) -> MaybeExit {
+    match arms {
+        Nil() => NoExit,
+        Cons(arm, rest) => or_exit(expr_exit(arm.body, try_op), arms_exit(rest, try_op))
+    }
+}
+
+// Partial: mutual recursion over the expression tree through list helpers.
+#[partial]
+fn expr_exit(e: Expr, try_op: Bool) -> MaybeExit {
+    match e {
+        ExprReturn(_, span) => SomeExit(span, "return"),
+        ExprTry(inner, span) => if try_op { SomeExit(span, "?") } else { expr_exit(inner, try_op) },
+        // A `try` gives its `?`s a boundary; a `return` still leaves it.
+        ExprTryBlock(body, _) => expr_exit(body, false),
+        ExprBlock(stmts, tail, _) => or_exit(stmts_exit(stmts, try_op), maybe_exit(tail, try_op)),
+        ExprIf(c, t, el, _) => or_exit(expr_exit(c, try_op), or_exit(expr_exit(t, try_op), expr_exit(el, try_op))),
+        ExprIfLet(_, scrutinee, t, el, _) =>
+            or_exit(expr_exit(scrutinee, try_op), or_exit(expr_exit(t, try_op), maybe_exit(el, try_op))),
+        ExprMatch(scrutinee, arms, _) => or_exit(expr_exit(scrutinee, try_op), arms_exit(arms, try_op)),
+        ExprApp(f, args, _) => or_exit(expr_exit(f, try_op), exprs_exit(args, try_op)),
+        ExprBinary(_, l, r, _) => or_exit(expr_exit(l, try_op), expr_exit(r, try_op)),
+        ExprUnary(_, inner, _) => expr_exit(inner, try_op),
+        ExprParen(inner, _) => expr_exit(inner, try_op),
+        ExprAnnot(inner, _, _) => expr_exit(inner, try_op),
+        ExprField(inner, _, _) => expr_exit(inner, try_op),
+        ExprTypeApp(inner, _, _) => expr_exit(inner, try_op),
+        ExprRegion(body, _) => expr_exit(body, try_op),
+        ExprTuple(items, _) => exprs_exit(items, try_op),
+        ExprLet(_, _, value, body, _) => or_exit(expr_exit(value, try_op), expr_exit(body, try_op)),
+        ExprLetElse(_, _, value, otherwise, body, _) =>
+            or_exit(expr_exit(value, try_op), or_exit(expr_exit(otherwise, try_op), expr_exit(body, try_op))),
+        // A lambda's exits leave the lambda; leaves have none.
+        _ => NoExit
+    }
+}

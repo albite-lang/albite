@@ -1,0 +1,3 @@
+note: `tests/golden/run/legacy_manifest_note/tungsten.toml` uses the old manifest name; rename it to `albite.toml`
+note: `tests/golden/run/legacy_manifest_note/packages/lib_c/tungsten.toml` uses the old manifest name; rename it to `albite.toml`
+66

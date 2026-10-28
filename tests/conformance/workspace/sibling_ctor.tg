@@ -1,0 +1,8 @@
+// A correct use of an undeclared sibling's constructor (ADR 1.10.26f §2.4,
+// D4): recorded, not held to a verdict; the misuse twin is the real probe.
+use boxes::{MkBox};
+
+fn main() -> Nat {
+    let _boxed = MkBox(1);
+    0
+}

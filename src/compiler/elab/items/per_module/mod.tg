@@ -1,0 +1,160 @@
+// Per-module elaboration loop.
+//
+// Three-phase pipeline (ADR 6.5.26e):
+//   Stub Registration   — Walk ALL modules, register type + constructor stubs globally
+//   Signature Collection — Build combined AST, run collection pass (1a–2),
+//               extract all function signatures
+//   Body Elaboration   — Elaborate each module's value bodies in post-order
+//
+// Stub Registration gives types correct arity so generics resolve cross-branch.
+// Signature Collection gives values full signatures so cross-branch function
+// imports resolve. Body Elaboration does per-module body elaboration with
+// the global context injected.
+//
+// See ADR 5.5.26b (W6.3a), ADR 6.5.26e.
+
+pub mod types;
+pub mod inject;
+pub mod stubs;
+pub mod combined;
+pub mod results;
+pub mod walk;
+
+pub use elab::items::per_module::types::*;
+pub use elab::items::per_module::inject::*;
+pub use elab::items::per_module::stubs::*;
+pub use elab::items::per_module::combined::*;
+pub use elab::items::per_module::results::*;
+pub use elab::items::per_module::walk::*;
+
+use driver::ffi::{List, Nil, Cons, alloc_profile_marker};
+use driver::modules::path::{module_path_root};
+use driver::modules::info::{ModuleInfo};
+use driver::modules::tree::parsed::{ParsedModule};
+use parser::ast::nodes::items::{Item};
+use elab::env::module::{module_map_empty};
+use elab::items::result::{ElabResult, ElabDef, elab_result_new};
+use elab::error::{ElabError};
+use elab::items::per_module::stubs::{collect_all_stubs};
+use elab::items::per_module::combined::{collect_global_signatures, build_combined_items};
+use elab::items::per_module::inject::{build_shared_base_env};
+use elab::items::per_module::results::{collect_all_defs};
+use elab::items::per_module::walk::{TreeElabCtx, BodyElabAccum, elaborate_tree_rec};
+use elab::items::holes::{holes_begin_program};
+use elab::items::termination::{
+    termination_begin_program, termination_check_program, report_termination_failures,
+    report_conversion_failures
+};
+use elab::ffi::{tg_conversion_discharge};
+use elab::items::handles::report::{report_handle_findings};
+
+// ===========================================================================
+// MAIN ENTRY POINT
+// ===========================================================================
+
+/// Elaborate a module tree with per-module elaboration.
+///
+/// Three-phase pipeline (ADR 6.5.26e):
+///   Stub Registration:   Collect type + constructor stubs from ALL modules
+///   Signature Collection: Build combined AST, run collection pass for global sigs
+///   Body Elaboration:   Elaborate per-module in post-order, seeded with global context
+///
+/// Returns a flat ElabResult combining all per-module results.
+///
+/// **`defs` comes back in REVERSE source order, and the module interleaving is
+/// post-order — neither matches the bootstrap's traversal.** Any consumer whose
+/// output a user reads must impose its own order rather than inherit this one:
+/// ADR 7.8.26b's generated test harness ran the last test in a file first,
+/// because it took `defs` order to be source order. `find_test_defs`
+/// (`driver/pipeline/test/discovery.tg`) reverses for exactly this reason. The
+/// residual, recorded there: skip *warnings* still emerge in a different module
+/// order than the bootstrap's, because post-order is a property of this phase
+/// rather than of the consumer.
+pub fn elaborate_module_tree(
+    module: ParsedModule,
+    module_info: ModuleInfo,
+    elab_mode: ElabMode
+) -> ElabResult {
+    // Stub Registration: collect type + constructor stubs from ALL modules
+    // (alloc_profile_marker is a no-op outside --alloc-profile builds;
+    // markers correlate allocation slope to phase, ADR 2.7.26a)
+    let _ = alloc_profile_marker("phaseA:stubs");
+    // Open the termination environment before any item is elaborated: the
+    // per-item notes are registered during Body Elaboration below, and a reset
+    // after them would discard the annotations the gate reads.
+    let _ = termination_begin_program();
+    // The `check` line's holes seam opens at the same boundary (ADR 16.10.26g).
+    let _ = holes_begin_program();
+    let stubs = collect_all_stubs(module);
+
+    // Signature Collection: build combined AST, run collection pass
+    let _ = alloc_profile_marker("phaseA5:combined-collect");
+    let global = collect_global_signatures(
+        module, module_info, elab_mode, stubs
+    );
+
+    // Body Elaboration: elaborate per-module in post-order, seeded with global
+    let _ = alloc_profile_marker("phaseB:start");
+    let root_path = module_path_root();
+    let ctx: TreeElabCtx = {
+        module_info: module_info,
+        elab_mode: elab_mode,
+        global: global,
+        base_env: build_shared_base_env(elab_mode, module_info, global)
+    };
+    // The walk threads a prior-results module-map inside BodyElabAccum: built
+    // once, folded per completed module, and shared across all modules —
+    // replacing per-module re-injection (ADR 23.7.26d).
+    let init_acc: BodyElabAccum = {
+        results: Nil, prior_map: module_map_empty(), errors: Nil
+    };
+    let acc = elaborate_tree_rec(module, root_path, ctx, init_acc);
+    let _ = alloc_profile_marker("phaseB:done");
+    let all_defs = collect_all_defs(acc.results);
+
+    // The termination gate, at the point the bootstrap runs it: over the whole
+    // project's definitions at once, which is the only place imported and
+    // freshly elaborated ones are in one set (ADR 19.8.26d §2.3).
+    let errors = check_termination_pass(module, module_info, all_defs, acc.errors);
+    elab_result_new(all_defs, check_handles_pass(module, acc.errors, errors))
+}
+
+/// The affine handle check (ADR 7.10.26t D6), over the parsed tree, where the
+/// bootstrap runs it: only after a walk that raised nothing, beside admission.
+fn check_handles_pass(
+    module: ParsedModule,
+    walk_errors: List<ElabError>,
+    errors: List<ElabError>
+) -> List<ElabError> {
+    match walk_errors {
+        Nil() => report_handle_findings(errors, module),
+        Cons(_, _) => errors
+    }
+}
+
+/// Run the termination gate over the whole program and record its rejections.
+///
+/// The combined item list is rebuilt ONLY when there is a rejection to locate.
+/// It is the same list Signature Collection built and discarded, and rebuilding
+/// it is worth avoiding on the clean path — which is every run of a healthy
+/// corpus.
+///
+/// Then the δ discharge (ADR 7.10.26u): every `refl` deferred during Body
+/// Elaboration is decided against the admission just computed, and each that
+/// fails is reported where it was written. It runs here because this is the
+/// first point at which admission is known and an error can still be raised.
+fn check_termination_pass(
+    module: ParsedModule,
+    module_info: ModuleInfo,
+    defs: List<ElabDef>,
+    errors: List<ElabError>
+) -> List<ElabError> {
+    let rejections = termination_check_program(defs);
+    let checked = if rejections == 0 {
+        errors
+    } else {
+        let items = build_combined_items(module, module_path_root(), module_info);
+        report_termination_failures(errors, items, rejections)
+    };
+    report_conversion_failures(checked, tg_conversion_discharge())
+}

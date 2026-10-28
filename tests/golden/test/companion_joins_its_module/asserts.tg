@@ -1,0 +1,4 @@
+// The one runtime assertion the fixture needs, imported by both modules.
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+
+pub fn assert_eq_nat(a: Nat, b: Nat) -> Unit { tg_assert_eq_nat(a, b) }

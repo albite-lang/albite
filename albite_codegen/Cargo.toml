@@ -1,0 +1,23 @@
+[package]
+name = "albite_codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "LLVM code generation for the Albite proof language"
+
+[dependencies]
+albite_core = { path = "../albite_core" }
+inkwell = { version = "0.5", features = ["llvm18-0"] }
+# The settings seam, `ALBITE_*` first (ADR 20.10.26e D1); also the tests'
+# runtime, which it was the dev-dependency for before.
+albite_runtime = { path = "../albite_runtime" }
+
+[lints.rust]
+# Allow unsafe in codegen - LLVM bindings require it
+unsafe_code = "allow"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

@@ -1,0 +1,14 @@
+// Golden test (ADR 16.10.26c): a constructor pattern nested in a multi-field
+// constructor is refused by both compilers, at the first arm of the group.
+// Before this ADR the self-host accepted it and printed `2223` where the
+// source says `1233`. E0021 (self-host E0308).
+type E = A | B | C
+type W = Pr(E, Nat) | Q
+
+fn f(p: W) -> Nat {
+    match p { Pr(A(), n) => 1, Pr(B(), n) => 2, _ => 3 }
+}
+
+fn main() -> Nat {
+    f(Pr(A(), 0)) * 1000 + f(Pr(B(), 0)) * 100 + f(Pr(C(), 0)) * 10 + f(Q())
+}

@@ -1,0 +1,239 @@
+// Unit tests for package reach in the self-host (ADR 6.10.26p AC 1): the
+// package table (`driver/packages/table.tg`), `pub(crate)`'s package boundary
+// (`env_check_visibility`), the bare-name reach predicate
+// (`elab/env/resolve/reach.tg`) and the pure halves of the two post-mount
+// refusals (`driver/packages/collisions.tg`). Every subject is a pure function
+// over hand-built tables, `ModuleInfo` and `Env` values; nothing here plans a
+// manifest, lists a directory or parses a file.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_bool, assert_eq_string, assert_eq_nat};
+use driver::util::{Option, Some, None, list_len, string_join};
+use driver::modules::path::{ModulePath, module_path_new};
+use driver::modules::info::{ModuleInfo, module_info_empty, module_info_with_packages};
+use driver::packages::table::{
+    PackageTable, PackageMount, PackageId, PkgApplication, PkgDependency,
+    package_table_empty, package_table_is_empty, package_table_add,
+    package_table_with_application_declares, package_id_eq,
+    package_of_path, package_may_reach, package_path_may_reach,
+    package_absolute_root, package_absolute_candidate, package_display_name
+};
+use driver::packages::collisions::{
+    ExternSymbol, SymbolOwner, clashing_key_indices, key_clash_message,
+    extern_collision_message, earlier_owner
+};
+use driver::packages::notes::{package_note_line};
+use driver::cli::format::{FormatHuman, FormatJson};
+use parser::ast::common::{VisCrate, VisPublic, VisPrivate};
+use lexer::span::{Span, span_new};
+use elab::env::{env_new, populate_module_info, Env};
+use elab::env::types::{env_with_current_module};
+use elab::env::module::path::{elab_module_path_new};
+use elab::env::ops::{env_check_visibility};
+use elab::env::resolve::reach::{defined_in_reach, module_of_file};
+
+// --- Builders ----------------------------------------------------------------
+
+fn one_segment(segment: String) -> List<String> { Cons(segment, Nil) }
+fn two_segments(first: String, second: String) -> List<String> { Cons(first, Cons(second, Nil)) }
+
+/// The application declares `lib_a` (0) and `lib_b` (1); `lib_a` declares
+/// `lib_c` (2); `lib_b` declares nothing. The shape of the transitive goldens.
+fn transitive_table() -> PackageTable {
+    let mounted = package_table_add(package_table_add(package_table_add(package_table_empty(),
+        "lib_a", Cons(2, Nil)), "lib_b", Nil), "lib_c", Nil);
+    package_table_with_application_declares(mounted, Cons(0, Cons(1, Nil)))
+}
+
+/// A table whose second mount sits inside the first, so a path under both
+/// must take the longer.
+fn nested_table() -> PackageTable {
+    let outer: PackageMount = { name: "outer", mount: one_segment("outer"), declares: Nil };
+    let inner: PackageMount = { name: "inner", mount: two_segments("outer", "inner"), declares: Nil };
+    { mounts: Cons(outer, Cons(inner, Nil)), application_declares: Nil } : PackageTable
+}
+
+/// The index a package id names, or 99 for the application.
+fn id_index(id: PackageId) -> Nat {
+    match id { PkgApplication() => 99, PkgDependency(i) => i }
+}
+
+/// An env whose registry carries `table`, sitting in module `current`.
+fn env_in(table: PackageTable, info: ModuleInfo, current: List<String>) -> Env {
+    let env = populate_module_info(env_new(), module_info_with_packages(info, table));
+    env_with_current_module(env, elab_module_path_new(current), env.modules)
+}
+
+/// `info` with module `path` read from `file`.
+fn with_file(info: ModuleInfo, path: List<String>, file: String) -> ModuleInfo {
+    module_info_with_packages(
+        { modules: info.modules, item_modules: info.item_modules,
+          module_visibility: info.module_visibility,
+          module_files: Cons((module_path_new(path), file), info.module_files),
+          names_only: info.names_only, packages: info.packages } : ModuleInfo,
+        info.packages)
+}
+
+fn no_span() -> Span { span_new(0, 0, "") }
+
+// --- package_of: the longest mount ---------------------------------------------
+
+// 6.10.26p AC1: a path under a mount belongs to that package; the root, and
+// a module no mount prefixes, to the application.
+pub fn test_package_of_takes_the_mount_prefix() -> Unit {
+    let table = transitive_table();
+    assert_eq_nat(id_index(package_of_path(table, one_segment("lib_a"))), 0);
+    assert_eq_nat(id_index(package_of_path(table, two_segments("lib_c", "shapes"))), 2);
+    assert_eq_nat(id_index(package_of_path(table, Nil)), 99);
+    assert_eq_nat(id_index(package_of_path(table, one_segment("app_util"))), 99)
+}
+
+// 6.10.26p AC1: two mounts prefixing one path, the longer wins, in either order.
+pub fn test_package_of_takes_the_longest_mount() -> Unit {
+    let table = nested_table();
+    assert_eq_nat(id_index(package_of_path(table, two_segments("outer", "inner"))), 1);
+    assert_eq_nat(id_index(package_of_path(table, two_segments("outer", "other"))), 0);
+    let flipped: PackageTable = { mounts: Cons({ name: "inner", mount: two_segments("outer", "inner"), declares: Nil } : PackageMount,
+                                          Cons({ name: "outer", mount: one_segment("outer"), declares: Nil } : PackageMount, Nil)),
+                                  application_declares: Nil };
+    assert_eq_nat(id_index(package_of_path(flipped, two_segments("outer", "inner"))), 0)
+}
+
+// --- may_reach -------------------------------------------------------------------
+
+// 6.10.26p AC1: the same package or a declared one; a transitive dependency
+// is not declared, and nothing reaches the application.
+pub fn test_may_reach_is_the_same_or_a_declared_package() -> Unit {
+    let table = transitive_table();
+    assert_eq_bool(package_may_reach(table, PkgApplication, PkgDependency(0)), true);
+    assert_eq_bool(package_may_reach(table, PkgApplication, PkgDependency(2)), false);
+    assert_eq_bool(package_may_reach(table, PkgDependency(0), PkgDependency(2)), true);
+    assert_eq_bool(package_may_reach(table, PkgDependency(1), PkgDependency(2)), false);
+    assert_eq_bool(package_may_reach(table, PkgDependency(0), PkgDependency(1)), false);
+    assert_eq_bool(package_may_reach(table, PkgDependency(1), PkgDependency(1)), true);
+    assert_eq_bool(package_may_reach(table, PkgDependency(0), PkgApplication), false);
+    assert_eq_bool(package_may_reach(table, PkgApplication, PkgApplication), true)
+}
+
+// 6.10.26p AC1: the path form agrees — a library cannot name the
+// application's module, the application cannot name lib_a's dependency.
+pub fn test_path_reach_follows_the_packages() -> Unit {
+    let table = transitive_table();
+    assert_eq_bool(package_path_may_reach(table, one_segment("lib_a"), one_segment("app_util")), false);
+    assert_eq_bool(package_path_may_reach(table, Nil, one_segment("lib_c")), false);
+    assert_eq_bool(package_path_may_reach(table, one_segment("lib_a"), two_segments("lib_c", "x")), true);
+    assert_eq_bool(package_path_may_reach(table, two_segments("lib_a", "inner"), one_segment("lib_a")), true)
+}
+
+// --- absolute_root ---------------------------------------------------------------
+
+// 6.10.26p AC1: a declared first segment roots at the root; anything else at
+// the writing package's own root.
+pub fn test_absolute_root_picks_the_root_for_a_declared_dependency() -> Unit {
+    let table = transitive_table();
+    assert_eq_nat(list_len(package_absolute_root(table, PkgDependency(0), "lib_c")), 0);
+    assert_eq_string(string_join(package_absolute_root(table, PkgDependency(0), "shapes"), "::"), "lib_a");
+    assert_eq_string(string_join(package_absolute_root(table, PkgDependency(1), "lib_c"), "::"), "lib_b");
+    assert_eq_nat(list_len(package_absolute_root(table, PkgApplication, "lib_a")), 0);
+    assert_eq_string(string_join(package_absolute_candidate(table, one_segment("lib_a"), one_segment("app_util")), "::"), "lib_a::app_util");
+    assert_eq_string(string_join(package_absolute_candidate(table, two_segments("lib_a", "x"), two_segments("lib_c", "y")), "::"), "lib_c::y")
+}
+
+// --- the empty table -------------------------------------------------------------
+
+// 6.10.26p AC1: without a manifest every query answers as today.
+pub fn test_an_empty_table_answers_as_today() -> Unit {
+    let table = package_table_empty();
+    assert_eq_bool(package_table_is_empty(table), true);
+    assert_eq_bool(package_table_is_empty(transitive_table()), false);
+    assert_eq_nat(id_index(package_of_path(table, one_segment("lib_a"))), 99);
+    assert_eq_bool(package_path_may_reach(table, one_segment("a"), one_segment("b")), true);
+    assert_eq_string(string_join(package_absolute_candidate(table, one_segment("a"), two_segments("b", "c")), "::"), "b::c");
+    assert_eq_string(package_display_name(table, PkgDependency(0)), "")
+}
+
+// 6.10.26p AC1: ids compare by package.
+pub fn test_package_ids_compare_by_package() -> Unit {
+    assert_eq_bool(package_id_eq(PkgDependency(3), PkgDependency(3)), true);
+    assert_eq_bool(package_id_eq(PkgDependency(3), PkgDependency(4)), false);
+    assert_eq_bool(package_id_eq(PkgApplication, PkgDependency(0)), false);
+    assert_eq_string(package_display_name(transitive_table(), PkgDependency(1)), "lib_b")
+}
+
+// --- pub(crate) ------------------------------------------------------------------
+
+// 6.10.26p AC1: a pub(crate) item is visible within its package and not
+// across it; without a manifest it is visible everywhere, as before.
+pub fn test_pub_crate_stops_at_the_package_boundary() -> Unit {
+    let table = transitive_table();
+    let item = elab_module_path_new(two_segments("lib_a", "core"));
+    assert_eq_bool(env_check_visibility(env_in(table, module_info_empty(), one_segment("lib_a")), VisCrate, item), true);
+    assert_eq_bool(env_check_visibility(env_in(table, module_info_empty(), Nil), VisCrate, item), false);
+    assert_eq_bool(env_check_visibility(env_in(table, module_info_empty(), one_segment("lib_b")), VisCrate, item), false);
+    assert_eq_bool(env_check_visibility(env_in(table, module_info_empty(), Nil), VisPublic, item), true);
+    assert_eq_bool(env_check_visibility(env_in(package_table_empty(), module_info_empty(), Nil), VisCrate, item), true)
+}
+
+// --- bare-name reach -------------------------------------------------------------
+
+// 6.10.26p AC1: a definition's file names its module, and so its package; a
+// file no module owns is in reach.
+pub fn test_bare_name_reach_follows_the_defining_file() -> Unit {
+    let table = transitive_table();
+    let info = with_file(with_file(module_info_empty(), one_segment("lib_b"), "p/lib_b/lib.tg"), Nil, "main.tg");
+    let in_lib_a = env_in(table, info, one_segment("lib_a"));
+    assert_eq_bool(defined_in_reach(in_lib_a, "p/lib_b/lib.tg"), false);
+    assert_eq_bool(defined_in_reach(in_lib_a, "main.tg"), false);
+    assert_eq_bool(defined_in_reach(in_lib_a, "builtin.tg"), true);
+    assert_eq_bool(defined_in_reach(env_in(table, info, Nil), "p/lib_b/lib.tg"), true);
+    let found = match module_of_file(info.module_files, "p/lib_b/lib.tg") {
+        Some(segments) => string_join(segments, "::"),
+        None() => "<none>"
+    };
+    assert_eq_string(found, "lib_b")
+}
+
+// --- the post-mount refusals' pure halves ---------------------------------------
+
+// 6.10.26p AC1/D4: a key equal to one of the library's own modules, at its
+// position in manifest order; the bootstrap's wording.
+pub fn test_a_key_naming_an_own_module_clashes() -> Unit {
+    let keys = Cons("lib_b", Cons("shapes", Cons("lib_c", Nil)));
+    let own = Cons("shapes", Cons("lib_c", Nil));
+    let clashing = clashing_key_indices(keys, own, 0);
+    assert_eq_nat(list_len(clashing), 2);
+    assert_eq_nat(list_len(clashing_key_indices(keys, Nil, 0)), 0);
+    let first = match clashing { Cons(n, _) => n, Nil() => 99 };
+    assert_eq_nat(first, 1);
+    assert_eq_string(key_clash_message("lib_c", "lib_a"),
+        "dependency `lib_c` conflicts: `lib_a` already has a top-level module of that name")
+}
+
+// 6.10.26p AC1/D4: the first owner declaring a symbol is found, in order.
+pub fn test_an_earlier_owner_of_a_symbol_is_found() -> Unit {
+    let lib_a_owner: SymbolOwner = { owner: "lib_a", symbols: Cons({ symbol: "tg_x", span: no_span() } : ExternSymbol, Nil) };
+    let lib_b_owner: SymbolOwner = { owner: "lib_b", symbols: Cons({ symbol: "tg_x", span: no_span() } : ExternSymbol, Nil) };
+    let owner = match earlier_owner(Cons(lib_a_owner, Cons(lib_b_owner, Nil)), "tg_x") {
+        Some(found) => { let (name, _) = found; name },
+        None() => "<none>"
+    };
+    assert_eq_string(owner, "lib_a");
+    let missing = match earlier_owner(Cons(lib_a_owner, Nil), "tg_y") { Some(_) => true, None() => false };
+    assert_eq_bool(missing, false);
+    assert_eq_string(extern_collision_message("tg_x", "lib_a", "lib_b"),
+        "two packages declare the C symbol `tg_x`: package `lib_a` and package `lib_b`")
+}
+
+// 20.10.26i AC2: a plan's legacy-manifest note prints after `note: `, or as a
+// `note`-level record under `--error-format json`, as the bootstrap's.
+pub fn test_a_package_note_is_a_line_or_a_note_record() -> Unit {
+    assert_eq_string(package_note_line(FormatHuman, "`/p/tungsten.toml` uses the old manifest name"),
+        "note: `/p/tungsten.toml` uses the old manifest name");
+    assert_eq_string(package_note_line(FormatJson, "renamed"),
+        "{\"schema\":1,\"kind\":\"diagnostic\",\"level\":\"note\",\"code\":null,\"message\":\"renamed\",\"primary_span\":null,\"notes\":[],\"help\":[],\"diagnostic_hints\":[]}")
+}

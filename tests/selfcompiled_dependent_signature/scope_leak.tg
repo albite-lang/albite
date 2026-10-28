@@ -1,0 +1,8 @@
+// ADR 2.10.26f D2: a signature that fails on its second parameter's type
+// leaves no binding behind, so the second signature's `n` is unknown.
+
+fn first(n: Nat, q: Missing) -> Nat { 0 }
+
+fn second(m: Nat) -> Eq<Nat, n, n> { refl }
+
+fn main() -> Nat { 0 }

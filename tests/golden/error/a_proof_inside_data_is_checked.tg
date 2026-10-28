@@ -1,0 +1,11 @@
+// == a proof inside data is checked at the `fn` (ADR 13.10.26t D1)
+// `(Eq<…>, Nat)` sorts `Type₀`, yet `t` takes the false proof back out with a
+// `let`. Any `fn` whose type holds a proposition anywhere is checked like a
+// theorem, so `bad_pair` is refused, not cited unchecked.
+fn big() -> Nat { 18446744073709551615 }
+
+fn bad_pair() -> (Eq<Nat, big() + 1, big()>, Nat) { (refl, 0) }
+
+theorem t(): Eq<Nat, big() + 1, big()> { let (p, _n) = bad_pair(); p }
+
+fn main() -> Nat { 0 }

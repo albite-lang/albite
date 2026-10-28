@@ -1,0 +1,11 @@
+// A constructor of another type as a pattern (ADR 3.10.26l §2.4, D7): it once
+// matched by index on the bootstrap. Since ADR 4.10.26d the bootstrap refuses
+// it with E0022, as the self-host refuses it with its E0001.
+type OptWrong = NadaWrong | AlgoWrong(Nat)
+type OtherWrong = PickWrong(Nat) | SkipWrong
+
+fn pick(o: OptWrong) -> Nat {
+    match o { PickWrong(k) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(AlgoWrong(1)) }

@@ -1,0 +1,76 @@
+// src/compiler/elab/items/holes/mod.tg
+// Registration half of the `check` line's holes seam (ADR 16.10.26g D3).
+//
+// The bootstrap's `check` says when a program holds a hole and how many
+// theorems rest on an axiom or sorry. The analysis lives in `albite_core`
+// (`elab/ffi/holes.tg`); this file hands it each item's KIND during Body
+// Elaboration, beside the termination note, and each definition's TERM once
+// the whole module tree is done.
+//
+// The kinds are keyed by the same `ident_name` the termination note keys on,
+// so they match the `ElabDef` names the stream sends. Every extern returns
+// Bool and the stream threads it: a lost definition is a hole nobody counted.
+
+use parser::ast::{Item, ItemFn, ItemTheorem, ItemLemma, ItemAxiom, ident_name};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{
+    tg_string_to_cstr, tg_holes_reset, tg_holes_note_item, tg_holes_add_def
+};
+use elab::items::result::{ElabDef};
+
+/// The seam's kind code for an item: 1 a theorem or lemma, 2 an axiom, and 0
+/// for everything else, which is what the seam assumes of a name never noted.
+pub fn hole_item_kind(item: Item) -> Nat {
+    match item {
+        ItemTheorem(_) => 1,
+        ItemLemma(_) => 1,
+        ItemAxiom(_) => 2,
+        _ => 0
+    }
+}
+
+/// Open the seam for one whole-program check, discarding the last program.
+pub fn holes_begin_program() -> Unit {
+    tg_holes_reset()
+}
+
+/// Note one item's kind, kind 0 included: the seam keeps the LAST note for a
+/// name, so a `fn` sharing a bare name with an earlier axiom must overwrite it,
+/// as the bootstrap's name-keyed maps do. An item naming no definition needs
+/// no note.
+pub fn holes_note_item(item: Item) -> Bool {
+    let name = holes_item_name(item);
+    if name == "" {
+        true
+    } else {
+        tg_holes_note_item(tg_string_to_cstr(name), hole_item_kind(item))
+    }
+}
+
+/// The name an item defines, or `""` for an item that produces no definition
+/// — the same four kinds the termination note names.
+fn holes_item_name(item: Item) -> String {
+    match item {
+        ItemFn(f) => ident_name(f.name),
+        ItemTheorem(t) => ident_name(t.name),
+        ItemLemma(t) => ident_name(t.name),
+        ItemAxiom(a) => ident_name(a.name),
+        _ => ""
+    }
+}
+
+/// Offer every definition's term. False when any was refused, and the
+/// refusal is kept: a later success cannot fold it away.
+pub fn holes_stream(defs: List<ElabDef>) -> Bool {
+    holes_stream_from(defs, true)
+}
+
+fn holes_stream_from(defs: List<ElabDef>, ok: Bool) -> Bool {
+    match defs {
+        Nil() => ok,
+        Cons(def, rest) => {
+            let added = tg_holes_add_def(tg_string_to_cstr(def.name), def.term);
+            holes_stream_from(rest, ok && added)
+        }
+    }
+}

@@ -1,0 +1,1 @@
+{"schema":1,"kind":"diagnostic","level":"error","code":"E0146","message":"could not write 'tests/golden/compile_error/missing/out.ll': No such file or directory (os error 2)","primary_span":null,"notes":[],"help":[],"diagnostic_hints":[]}

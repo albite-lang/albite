@@ -1,0 +1,9 @@
+[E0092] Error: handle `sb` is used after it was consumed, in `joined`
+    ╭─[tests/golden/error/mut_handle_value_join_reused.tg:35:20]
+    │
+ 35 │     s ++ to_string(sb)
+    │                    ─┬  
+    │                     ╰── 
+────╯
+
+error: aborting due to 1 error

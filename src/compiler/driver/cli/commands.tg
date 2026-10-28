@@ -1,0 +1,173 @@
+// src/compiler/driver/cli/commands.tg
+// The per-command argument parsers: `check`, `run`, `compile`, `info` and
+// `explain`. Moved out of `mod.tg` by ADR 30.9.26h, which needed the room;
+// `test` has had its own file (`test.tg`) all along.
+
+use driver::ffi::{List, Nil, Cons};
+use parser::option::{Option, Some, None};
+use driver::util::{string_eq, string_concat, Result, Ok, Err};
+use elab::env::types::{ElabCheck};
+use driver::cli::{
+    Command, CmdCheck, CmdRun, CmdCompile, CmdInfo, CmdExplain, CmdError,
+    CheckOpts, RunOpts, CompileOpts, CliError,
+    InfoOpts, InfoPipeline, InfoVersion,
+    ExplainOpts, ExplainFlag, ExplainError, ExplainErrorList
+};
+use driver::cli::options::{ParseState, initial_state, parse_options};
+use driver::cli::format::{ErrorFormat};
+
+// ===========================================================================
+// COMMAND PARSERS
+// ===========================================================================
+
+/// Parse `check` command arguments. A bad `--error-format` value is refused
+/// here, by name, before the file is even looked for (ADR 30.9.26h D3).
+pub fn parse_check_command(args: List<String>) -> Command {
+    let state = parse_options(initial_state(args));
+    match state.error_format {
+        Err(bad) => CmdError({
+            message: "invalid value '" ++ bad ++ "' for --error-format (expected 'human' or 'json')",
+            usage: "albite check [--error-format human|json] [OPTIONS] <FILE>"
+        } : CliError),
+        Ok(format) => check_command_for_file(state, format)
+    }
+}
+
+/// The rest of `check`: the file is required.
+fn check_command_for_file(state: ParseState, format: ErrorFormat) -> Command {
+    let file_opt: Option<String> = state.file;
+    match file_opt {
+        None() => {
+            let err: CliError = {
+                message: "missing required argument: <FILE>",
+                usage: "albite check [OPTIONS] <FILE>"
+            };
+            CmdError(err)
+        },
+        Some(f) => {
+            let file: String = f;
+            let opts: CheckOpts = {
+                file: file,
+                verbose: state.verbose,
+                max_errors: state.max_errors,
+                dump_core: state.dump_core,
+                dump_core_terms: state.dump_core_terms,
+                check_tyvar_escape: state.check_tyvar_escape,
+                check_free_vars: state.check_free_vars,
+                check_well_typed: state.check_well_typed,
+                elab_mode: ElabCheck,
+                error_format: format
+            };
+            CmdCheck(opts)
+        }
+    }
+}
+
+/// Parse `run` command arguments.
+pub fn parse_run_command(args: List<String>) -> Command {
+    let state = parse_options(initial_state(args));
+    let file_opt: Option<String> = state.file;
+    match file_opt {
+        None() => {
+            let err: CliError = {
+                message: "missing required argument: <FILE>",
+                usage: "albite run [OPTIONS] <FILE>"
+            };
+            CmdError(err)
+        },
+        Some(f) => {
+            let file: String = f;
+            let opts: RunOpts = {
+                file: file,
+                verbose: state.verbose,
+                max_errors: state.max_errors
+            };
+            CmdRun(opts)
+        }
+    }
+}
+
+/// Parse `compile` command arguments.
+pub fn parse_compile_command(args: List<String>) -> Command {
+    let state = parse_options(initial_state(args));
+    let file_opt: Option<String> = state.file;
+    match file_opt {
+        None() => {
+            let err: CliError = {
+                message: "missing required argument: <FILE>",
+                usage: "albite compile [OPTIONS] <FILE>"
+            };
+            CmdError(err)
+        },
+        Some(f) => {
+            let file: String = f;
+            let opts: CompileOpts = {
+                file: file,
+                output: state.output,
+                emit_llvm: state.emit_llvm,
+                verbose: state.verbose
+            };
+            CmdCompile(opts)
+        }
+    }
+}
+
+/// Parse `info` subcommand arguments.
+pub fn parse_info_command(args: List<String>) -> Command {
+    match args {
+        Nil() => CmdInfo(InfoPipeline),
+        Cons(sub, _rest) =>
+            if string_eq(sub, "pipeline") {
+                CmdInfo(InfoPipeline)
+            } else if string_eq(sub, "version") {
+                CmdInfo(InfoVersion)
+            } else {
+                CmdError({
+                    message: string_concat("unknown info subcommand: ", sub),
+                    usage: "albite info [pipeline|version]"
+                })
+            }
+    }
+}
+
+/// Parse `explain` subcommand arguments.
+pub fn parse_explain_command(args: List<String>) -> Command {
+    match args {
+        Nil() => CmdError({
+            message: "missing subcommand for explain",
+            usage: "albite explain [flag <name>|error [code]]"
+        }),
+        Cons(sub, rest) =>
+            if string_eq(sub, "flag") {
+                parse_explain_flag(rest)
+            } else if string_eq(sub, "error") {
+                parse_explain_error(rest)
+            } else {
+                CmdError({
+                    message: string_concat("unknown explain subcommand: ", sub),
+                    usage: "albite explain [flag <name>|error [code]]"
+                })
+            }
+    }
+}
+
+/// `explain flag <name>`: the name is required. A helper of its own so no
+/// `match` nests inside another (the .tg match-depth gate is 1).
+fn parse_explain_flag(rest: List<String>) -> Command {
+    match rest {
+        Nil() => CmdError({
+            message: "missing flag name",
+            usage: "albite explain flag <name>"
+        } : CliError),
+        Cons(name, _rest2) => CmdExplain(ExplainFlag(name))
+    }
+}
+
+/// `explain error [code]`: no code lists them all.
+fn parse_explain_error(rest: List<String>) -> Command {
+    match rest {
+        Nil() => CmdExplain(ExplainErrorList),
+        Cons(code, _rest2) => CmdExplain(ExplainError(code))
+    }
+}
+

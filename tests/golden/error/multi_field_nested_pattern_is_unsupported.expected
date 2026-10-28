@@ -1,0 +1,11 @@
+[E0021] Error: pattern `nested constructor patterns in a multi-field constructor` is not supported
+   ╭─[tests/golden/error/multi_field_nested_pattern_is_unsupported.tg:9:15]
+   │
+ 9 │     match p { Pr(A(), n) => 1, Pr(B(), n) => 2, _ => 3 }
+   │               ─────┬────  
+   │                    ╰────── 
+   │ 
+   │ Help: rewrite as an explicit inner match on the nested field of `Pr`
+───╯
+
+error: aborting due to 1 error

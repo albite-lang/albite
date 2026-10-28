@@ -1,0 +1,20 @@
+// A test that calls the program's own `main` — a KNOWN runner divergence
+// (ADR 28.9.26g §1.3, D8). Not a regression when the runners disagree on it.
+//
+// The bootstrap evaluates the file directly, so `main()` is the definition
+// below and the test passes: exit 0.
+//
+// `tungsten1 test` renames the root `main` DEFINITION to make room for its
+// harness `main`, but leaves the CALL SITE alone, so `main()` binds to the
+// harness, the harness calls the test and the test calls the harness. It
+// refuses with "cannot prove termination of `_harness_run_test_0`", exit 1.
+//
+// The runner-parity gate registers this as SelfhostRefused; the fix is parked
+// in notes/parked/28.9.26g.self-host-test-harness-binds-a-call-to-main-to-the-harness.toml.
+// When it lands, the gate reports this entry Stale and the register line goes.
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+fn assert_eq_nat(a: Nat, b: Nat) -> Unit { tg_assert_eq_nat(a, b) }
+
+pub fn main() -> Nat { 7 }
+
+pub fn test_main_is_still_callable() -> Unit { assert_eq_nat(main(), 7) }

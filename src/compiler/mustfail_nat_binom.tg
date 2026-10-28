@@ -1,0 +1,41 @@
+// Negative control for test_nat_binom.tg (ADR 7.10.26k D5, AC 2).
+//
+// Each function below states a nat_binom.tg fact at a value it does not
+// have, and each must be refused. `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_nat_binom.tg --require-tests
+//     -> aborting due to 4 errors
+//
+// The cases, in the bootstrap's codes:
+//
+//   1. `refl` at `binom(4, 2) == 5`: the closed value is 6 (E0071)
+//   2. binom_succ(n, k) stated with `binom(n, k)` twice on the right (E0010)
+//   3. binom_zero_right(n) stated at `binom(n, 0) == 0` (E0010)
+//   4. binom_self(n) stated at `binom(n, n) == 0` (E0010, ADR 9.10.26j D6)
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+mod nat_binom;
+
+fn test_binom_closed_value_off_by_one() -> Unit {
+    let _r: Eq<Nat, nat_binom::binom(4, 2), 5> = refl;
+    ()
+}
+
+fn test_binom_succ_with_a_repeated_summand(n: Nat, k: Nat) -> Unit {
+    let _r: Eq<Nat, nat_binom::binom(n + 1, k + 1),
+               nat_binom::binom(n, k) + nat_binom::binom(n, k)> = nat_binom::binom_succ(n, k);
+    ()
+}
+
+fn test_binom_zero_right_at_zero(n: Nat) -> Unit {
+    let _r: Eq<Nat, nat_binom::binom(n, 0), 0> = nat_binom::binom_zero_right(n);
+    ()
+}
+
+fn test_binom_self_at_zero(n: Nat) -> Unit {
+    let _r: Eq<Nat, nat_binom::binom(n, n), 0> = nat_binom::binom_self(n);
+    ()
+}

@@ -1,0 +1,231 @@
+// src/compiler/elab/env/defs/types.tg
+// Record field info, type definitions, and value definitions.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::list_get;
+use lexer::span::Span;
+use parser::ast::Visibility;
+use elab::ffi::{TypeHandle, INVALID_HANDLE, STUB_KIND_UNSET};
+
+// ===========================================================================
+// RECORD FIELD INFO (for named field access)
+// ===========================================================================
+
+/// Information about a single record field.
+pub type RecordFieldInfo = { name: String, ty: TypeHandle, index: Nat }
+
+/// Create a new record field info.
+pub fn record_field_info_new(name: String, ty: TypeHandle, index: Nat) -> RecordFieldInfo {
+    { name: name, ty: ty, index: index }
+}
+
+/// Optional list of record fields.
+pub type MaybeRecordFields =
+    | NoRecordFields
+    | SomeRecordFields(List<RecordFieldInfo>)
+
+/// Look up a field by name in a record field list.
+pub fn record_field_lookup(fields: List<RecordFieldInfo>, name: String) -> MaybeRecordField {
+    match fields {
+        Nil() => NoRecordField,
+        Cons(field, rest) =>
+            if field.name == name {
+                SomeRecordField(field)
+            } else {
+                record_field_lookup(rest, name)
+            }
+    }
+}
+
+/// Look up a field by its canonical `index` in a record field list.
+///
+/// **The list is not in index order, and a consumer that counts places in it
+/// gets the mirror-image field** (ADR 7.9.26b D1). `elaborate_record_body`
+/// returns `field_info` newest-first — its own header says so — so position `i`
+/// holds field `n-1-i`. Every consumer that wants field `i` therefore asks for
+/// it by index, exactly as `project_from_type_info` already does; that is the
+/// one ordering, and list position is not a second one.
+pub fn record_field_at_index(fields: List<RecordFieldInfo>, index: Nat) -> MaybeRecordField {
+    match fields {
+        Nil() => NoRecordField,
+        Cons(field, rest) =>
+            if field.index == index {
+                SomeRecordField(field)
+            } else {
+                record_field_at_index(rest, index)
+            }
+    }
+}
+
+/// Optional single record field result.
+pub type MaybeRecordField =
+    | NoRecordField
+    | SomeRecordField(RecordFieldInfo)
+
+// ===========================================================================
+// TYPE DEFINITION
+// ===========================================================================
+
+/// Information about a registered type.
+pub type TypeDefInfo = {
+    name: String,
+    arity: Nat,              // Number of type parameters
+    params: List<String>,    // Type parameter names (e.g., ["T"] for List<T>)
+    kind: TypeHandle,        // The kind of this type (Type, Type -> Type, etc.)
+    visibility: Visibility,
+    span: Span,
+    encoded_type: TypeHandle, // The Core type representation (for aliases)
+    record_fields: MaybeRecordFields  // Field info for records, NoRecordFields for sum types/aliases
+}
+
+/// Stable identity of a type definition: name + arity + parameter names.
+/// Used to bundle the fields that don't change between stub creation
+/// and encoding update.
+pub type TypeDefCore = { name: String, arity: Nat, params: List<String> }
+
+/// Metadata for a type definition: kind, visibility, span, and encoding.
+pub type TypeDefMeta = { kind: TypeHandle, vis: Visibility, span: Span, encoded_type: TypeHandle }
+
+/// Create a new type definition with no record fields.
+pub fn type_def_info_new(
+    core: TypeDefCore,
+    meta: TypeDefMeta
+) -> TypeDefInfo {
+    { name: core.name, arity: core.arity, params: core.params, kind: meta.kind, visibility: meta.vis, span: meta.span, encoded_type: meta.encoded_type, record_fields: NoRecordFields }
+}
+
+/// Create a new type definition with record fields.
+pub fn type_def_info_with_fields(
+    core: TypeDefCore,
+    meta: TypeDefMeta,
+    fields: List<RecordFieldInfo>
+) -> TypeDefInfo {
+    { name: core.name, arity: core.arity, params: core.params, kind: meta.kind, visibility: meta.vis, span: meta.span, encoded_type: meta.encoded_type, record_fields: SomeRecordFields(fields) }
+}
+
+/// Get type parameter name at index, or empty string if out of bounds.
+pub fn type_def_info_param_at(info: TypeDefInfo, index: Nat) -> String {
+    match list_get(info.params, index) {
+        Some(name) => name,
+        None() => ""
+    }
+}
+
+/// Check if a type definition is a stub (created by populate_module_info).
+/// Stubs use kind=0 (from populate_type_stubs) or kind=INVALID_HANDLE
+/// (from register_type_stub in Type-Name Registration). Both indicate the type body
+/// has not been elaborated yet.
+pub fn type_def_is_stub(info: TypeDefInfo) -> Bool {
+    if info.kind == STUB_KIND_UNSET() {
+        true
+    } else {
+        if info.kind == INVALID_HANDLE() {
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Is `def` a names-only stub — a type an undeclared sibling exports, which
+/// imports but never resolves (ADR 2.10.26g D3)? `populate_type_stubs` gives it
+/// `kind STUB_KIND_UNSET()` with `encoded_type INVALID_HANDLE()`; a declared
+/// stub's encoding is `0`, and Type-Name Registration's in-flight placeholder
+/// has `kind INVALID_HANDLE`, so neither matches.
+pub fn type_def_is_names_only(def: TypeDefInfo) -> Bool {
+    def.kind == STUB_KIND_UNSET() && def.encoded_type == INVALID_HANDLE()
+}
+
+/// Optional type definition.
+pub type MaybeTypeDef =
+    | NoTypeDef
+    | SomeTypeDef(TypeDefInfo)
+
+/// Look up a type definition by name.
+pub fn type_def_list_lookup(list: List<TypeDefInfo>, name: String) -> MaybeTypeDef {
+    
+    match list {
+        Nil() => NoTypeDef,
+        Cons(def, rest) =>
+            if def.name == name {
+                SomeTypeDef(def)
+            } else {
+                type_def_list_lookup(rest, name)
+            }
+    }
+}
+
+// ===========================================================================
+// VALUE DEFINITION
+// ===========================================================================
+
+/// Information about a registered value (function, constant).
+pub type ValueDefInfo = {
+    name: String,
+    ty: TypeHandle,
+    visibility: Visibility,
+    span: Span
+}
+
+/// Create a new value definition.
+pub fn value_def_info_new(
+    name: String,
+    ty: TypeHandle,
+    visibility: Visibility,
+    span: Span
+) -> ValueDefInfo {
+    { name: name, ty: ty, visibility: visibility, span: span }
+}
+
+/// Is `def` a names-only stub — a name an undeclared sibling exports, which
+/// imports but is never a value (ADR 1.10.26f D2)? `populate_value_stubs`
+/// writes those with `INVALID_HANDLE()`, never the `0` a declared module's
+/// stub carries until its real def shadows it.
+pub fn value_def_is_names_only(def: ValueDefInfo) -> Bool {
+    def.ty == INVALID_HANDLE()
+}
+
+/// Optional value definition.
+pub type MaybeValueDef =
+    | NoValueDef
+    | SomeValueDef(ValueDefInfo)
+
+/// Look up a value definition by name.
+///
+/// **This scan stays linear on purpose — do not index it (ADR 5.8.26c).**
+/// It profiles as the #1 symbol of the self-compiled check (23.93%, ≈ 0.80 s
+/// of 3.34 s on 2026-08-05), which makes it look exactly like the two scans
+/// ADRs 21.7.26c and 5.8.26b indexed for 5.2× and 2.0×. It is not the same
+/// case, and the difference is the **insert:lookup ratio**: one check of
+/// `src/compiler/main.tg` performs **1,884,858** `module_contents_add_value`
+/// calls against **44,643** lookup *operations* — **42 inserts per lookup**,
+/// where imports are lookup-dominated.
+///
+/// **If you re-measure that ratio, do not count entries to THIS function.**
+/// It is self-recursive, so an entry counter reports cons cells *walked*, not
+/// lookups — on a ~2,100-entry list that is ~10⁷–10⁸, which reads
+/// lookup-heavy and inverts the conclusion below. Count at the four call sites
+/// instead (`env/resolve.tg`, `env/resolve_path.tg`,
+/// `items/imports/lookup.tg`). The `44,643` was measured on a
+/// `module_contents_lookup_value` wrapper that existed only in the reverted
+/// indexed build and is not in this tree (ADR 5.8.26c §6.3).
+///
+/// Swapping this list for a `StrMap` index was implemented and measured. The
+/// scan vanished from the profile and the run got **1.47× SLOWER** (3.94 s →
+/// 5.80 s wall, RSS 2.58 → 5.23 GiB): each insert stopped costing one `Cons`
+/// and started costing an O(log n) *persistent* AVL rebuild (~11 fresh nodes),
+/// so 0.80 s of scanning became 1.62 s of index maintenance to serve lookups
+/// worth 0.014 s. The change was reverted. See ADR 5.8.26c §6.3 — and note
+/// the lever it identifies is the 1.88 M inserts, not the data structure.
+pub fn value_def_list_lookup(list: List<ValueDefInfo>, name: String) -> MaybeValueDef {
+    
+    match list {
+        Nil() => NoValueDef,
+        Cons(def, rest) =>
+            if def.name == name {
+                SomeValueDef(def)
+            } else {
+                value_def_list_lookup(rest, name)
+            }
+    }
+}

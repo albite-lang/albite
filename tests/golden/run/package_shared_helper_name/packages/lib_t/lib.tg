@@ -1,0 +1,3 @@
+use lib_b::b;
+use lib_c::c;
+pub fn t() -> Nat { b() + c() }

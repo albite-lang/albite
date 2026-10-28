@@ -1,0 +1,239 @@
+// src/compiler/elab/exprs/forms/induction/dependent.tg
+// A dependent `natind` motive (ADR 3.10.26i D1, D2): the self-host's mirror of
+// the bootstrap's rule (ADR 29.9.26d).
+//
+// A motive `|k: Nat| P` is dependent when `k` occurs free in `P`, which the core
+// answers: `tg_type_pi(k, Nat, P)` is a `Pi` exactly then (D1). `P(t)` is that
+// `Pi` instantiated at `t` by the core's capture-avoiding substitution, so both
+// compilers instantiate a motive with one body. The cases are CHECKED against
+// their instances, not synthesised (D2):
+//
+//   base : P(0)
+//   step : fn(j[: Nat], ih[: P(j)]) => b      with b : P(succ j)
+//   n    : Nat                                 the result is P(n)
+//
+// The step must be a literal two-parameter lambda, and a step parameter other
+// than `k` that the motive mentions is refused (reverse capture), as on the
+// bootstrap. Every refusal here is E0001, the counterpart of its E0010.
+
+use lexer::span::Span;
+use parser::ast::{Expr, expr_span, ExprLambda, ExprParen, LambdaParam,
+    TypeExpr, MaybeTypeExpr, SomeTypeExpr, NoTypeExpr};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{
+    TermHandle, TypeHandle,
+    tg_term_natind, tg_term_lambda, tg_term_zero, tg_term_succ, tg_term_var_named,
+    tg_type_nat, tg_type_arrow, tg_type_pi, tg_type_is_dependent,
+    tg_type_instantiate_codomain, tg_types_equal, tg_string_to_cstr
+};
+use elab::env::Env;
+use elab::env::ops::env_bind_local;
+use elab::exprs::forms::result::{
+    ElabExprResult, ElabExprOk, ElabExprErr, ElabExprError, elab_expr_error_coded,
+    type_error_to_expr_error, pattern_to_name
+};
+use elab::types::{elab_type};
+use elab::types::result_types::{ElabTypeResult, ElabTypeOk, ElabTypeErr};
+use elab::cir::{CodegenIR, CIRRefl, CIRUnit, ct_unit};
+use elab::exprs::{synth, check};
+
+/// A `natind` motive `|k: Nat| body` (D1): the binder's name, the same name as
+/// a C string for the core, the elaborated body, and `Pi(k: Nat). body`.
+pub type NatindMotive = { name: String, binder: Nat, body: TypeHandle, pi: TypeHandle }
+
+/// The three case expressions of a `natind`, and its span.
+pub type NatindCases = { base: Expr, step: Expr, n: Expr, span: Span }
+
+/// The elaborated base and step, carried to the target.
+type CheckedCases = { base: TermHandle, step: TermHandle }
+
+/// The parts of a literal step `fn(j[: Nat], ih[: T]) => proof`.
+type StepParts = { index: LambdaParam, hypothesis: LambdaParam, proof: Expr }
+
+/// Whether a step expression is a literal two-parameter lambda (D2).
+type StepShape =
+    | LiteralStep(StepParts)
+    | NotALiteralStep
+
+/// `P(t)`: the motive instantiated at the term `t` (D1).
+pub fn motive_at(motive: NatindMotive, t: TermHandle) -> TypeHandle {
+    tg_type_instantiate_codomain(motive.pi, t)
+}
+
+/// `natind` under a dependent motive: base at P(0), step per D2, result P(n).
+pub fn synth_natind_dependent(env: Env, motive: NatindMotive, cases: NatindCases) -> ElabExprResult {
+    match check(env, cases.base, motive_at(motive, tg_term_zero())) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, base_term, _, _) =>
+            synth_natind_dependent_step(env2, motive, cases, base_term)
+    }
+}
+
+fn synth_natind_dependent_step(env: Env, motive: NatindMotive, cases: NatindCases,
+                               base_term: TermHandle) -> ElabExprResult {
+    match check_dependent_step(env, motive, cases.step) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(_, step_term, _, _) =>
+            // The step's own scope (`j`, `ih`) ends with it: the target is
+            // elaborated in the environment the step was given.
+            let checked: CheckedCases = { base: base_term, step: step_term };
+            synth_natind_dependent_target(env, motive, cases, checked)
+    }
+}
+
+fn synth_natind_dependent_target(env: Env, motive: NatindMotive, cases: NatindCases,
+                                 checked: CheckedCases) -> ElabExprResult {
+    match synth(env, cases.n) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, n_term, n_ty, _) =>
+            if !tg_types_equal(n_ty, tg_type_nat()) {
+                ElabExprErr(elab_expr_error_coded("natind target must be Nat", cases.span, "E0001"))
+            } else {
+                let motive_type = tg_type_arrow(tg_type_nat(), motive.body);
+                let term = tg_term_natind(motive.binder, motive_type, checked.base, checked.step, n_term);
+                ElabExprOk(env2, term, motive_at(motive, n_term), CIRRefl(ct_unit(), CIRUnit))
+            }
+    }
+}
+
+// ===========================================================================
+// THE STEP (D2)
+// ===========================================================================
+
+/// Check a dependent motive's step; its term is `λj:Nat. λih:P(j). proof`,
+/// what the bootstrap builds. Only the term of the result is meaningful.
+pub fn check_dependent_step(env: Env, motive: NatindMotive, step: Expr) -> ElabExprResult {
+    match literal_step_parts(step) {
+        NotALiteralStep() => ElabExprErr(elab_expr_error_coded(
+            "a dependent motive's step must be written fn(k: Nat, ih) => …",
+            expr_span(step), "E0001"
+        )),
+        LiteralStep(parts) => check_step_capture(env, motive, parts, expr_span(step))
+    }
+}
+
+/// The parts of `fn(j, ih) => proof`, seen through parentheses.
+fn literal_step_parts(step: Expr) -> StepShape {
+    match step {
+        ExprParen(inner, _) => literal_step_parts(inner),
+        ExprLambda(params, proof, _) => first_step_param(params, proof),
+        _ => NotALiteralStep
+    }
+}
+
+fn first_step_param(params: List<LambdaParam>, proof: Expr) -> StepShape {
+    match params {
+        Nil() => NotALiteralStep,
+        Cons(index, rest) => second_step_param(index, rest, proof)
+    }
+}
+
+fn second_step_param(index: LambdaParam, rest: List<LambdaParam>, proof: Expr) -> StepShape {
+    match rest {
+        Nil() => NotALiteralStep,
+        Cons(hypothesis, tail) => no_third_step_param(index, hypothesis, tail, proof)
+    }
+}
+
+fn no_third_step_param(index: LambdaParam, hypothesis: LambdaParam, tail: List<LambdaParam>,
+                       proof: Expr) -> StepShape {
+    match tail {
+        Nil() =>
+            let parts: StepParts = { index: index, hypothesis: hypothesis, proof: proof };
+            LiteralStep(parts),
+        _ => NotALiteralStep
+    }
+}
+
+/// Reverse capture (D2): `P(Var j)` would conflate the step's `j` with an
+/// outer `j` the motive mentions. The motive's own binder is not a capture.
+pub fn step_name_captures(motive: NatindMotive, name: String) -> Bool {
+    if name == motive.name {
+        false
+    } else {
+        tg_type_is_dependent(tg_type_pi(tg_string_to_cstr(name), tg_type_nat(), motive.body))
+    }
+}
+
+/// The refusal for a step parameter the motive mentions, in the words of the
+/// bootstrap's note.
+pub fn step_capture_refusal(name: String, span: Span) -> ElabExprError {
+    elab_expr_error_coded(
+        "the step's parameter `" ++ name ++ "` shadows `" ++ name ++
+            "`, which the motive mentions; rename it",
+        span, "E0001"
+    )
+}
+
+fn check_step_capture(env: Env, motive: NatindMotive, parts: StepParts, span: Span) -> ElabExprResult {
+    let index = pattern_to_name(parts.index.pattern);
+    let hypothesis = pattern_to_name(parts.hypothesis.pattern);
+    if step_name_captures(motive, index) {
+        ElabExprErr(step_capture_refusal(index, span))
+    } else if step_name_captures(motive, hypothesis) {
+        ElabExprErr(step_capture_refusal(hypothesis, span))
+    } else {
+        check_step_index(env, motive, parts)
+    }
+}
+
+/// A first parameter written with a type must be `Nat`.
+fn check_step_index(env: Env, motive: NatindMotive, parts: StepParts) -> ElabExprResult {
+    match parts.index.ty {
+        NoTypeExpr() => check_step_hypothesis(env, motive, parts),
+        SomeTypeExpr(index_ty_expr) => check_step_index_type(env, motive, parts, index_ty_expr)
+    }
+}
+
+fn check_step_index_type(env: Env, motive: NatindMotive, parts: StepParts,
+                         index_ty_expr: TypeExpr) -> ElabExprResult {
+    match elab_type(env, index_ty_expr) {
+        ElabTypeErr(e) => ElabExprErr(type_error_to_expr_error(e)),
+        ElabTypeOk(index_ty, _) =>
+            if tg_types_equal(index_ty, tg_type_nat()) {
+                check_step_hypothesis(env, motive, parts)
+            } else {
+                ElabExprErr(elab_expr_error_coded("type mismatch", parts.index.span, "E0001"))
+            }
+    }
+}
+
+/// `j : Nat` is bound and `ih : P(j)`; a written IH type must equal `P(j)`.
+fn check_step_hypothesis(env: Env, motive: NatindMotive, parts: StepParts) -> ElabExprResult {
+    let index = pattern_to_name(parts.index.pattern);
+    let env_index = env_bind_local(env, index, tg_type_nat());
+    let hypothesis_ty = motive_at(motive, tg_term_var_named(tg_string_to_cstr(index)));
+    match parts.hypothesis.ty {
+        NoTypeExpr() => check_step_proof(env_index, motive, parts, hypothesis_ty),
+        SomeTypeExpr(written) => check_step_hypothesis_type(env_index, motive, parts, hypothesis_ty, written)
+    }
+}
+
+fn check_step_hypothesis_type(env: Env, motive: NatindMotive, parts: StepParts,
+                              hypothesis_ty: TypeHandle, written: TypeExpr) -> ElabExprResult {
+    match elab_type(env, written) {
+        ElabTypeErr(e) => ElabExprErr(type_error_to_expr_error(e)),
+        ElabTypeOk(written_ty, _) =>
+            if tg_types_equal(written_ty, hypothesis_ty) {
+                check_step_proof(env, motive, parts, hypothesis_ty)
+            } else {
+                ElabExprErr(elab_expr_error_coded("type mismatch", parts.hypothesis.span, "E0001"))
+            }
+    }
+}
+
+/// `proof : P(succ j)` with `ih` bound; the term is `λj:Nat. λih:P(j). proof`.
+fn check_step_proof(env: Env, motive: NatindMotive, parts: StepParts,
+                    hypothesis_ty: TypeHandle) -> ElabExprResult {
+    let index = pattern_to_name(parts.index.pattern);
+    let hypothesis = pattern_to_name(parts.hypothesis.pattern);
+    let env_hypothesis = env_bind_local(env, hypothesis, hypothesis_ty);
+    let successor_goal = motive_at(motive, tg_term_succ(tg_term_var_named(tg_string_to_cstr(index))));
+    match check(env_hypothesis, parts.proof, successor_goal) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, proof_term, _, cir) =>
+            let inner = tg_term_lambda(tg_string_to_cstr(hypothesis), hypothesis_ty, proof_term);
+            let step_term = tg_term_lambda(tg_string_to_cstr(index), tg_type_nat(), inner);
+            ElabExprOk(env2, step_term, tg_type_arrow(tg_type_nat(), tg_type_arrow(hypothesis_ty, successor_goal)), cir)
+    }
+}

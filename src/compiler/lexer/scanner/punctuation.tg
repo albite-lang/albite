@@ -1,0 +1,114 @@
+// src/compiler/lexer/scanner/punctuation.tg
+// Punctuation and operator scanning, as a tail-call chain of stages
+// (ADR 29.9.26k D4).
+//
+// Each stage tests a few spellings and either scans its token or tail-calls
+// the next stage; the last produces the unexpected-character error. The one
+// ordering constraint is ACROSS stages: every two-character test runs before
+// any one-character test on the same first character (`<=` before `<`, `::`
+// before `:`, `..` before `.`). Within a stage the tests are disjoint, so
+// their order there is free. Nothing is allocated beyond the ScanResult a
+// matched stage returns — a classifier returning an optional kind would add a
+// value per token on the lexer's hottest path.
+
+use lexer::token::*;
+use lexer::error::*;
+use driver::ffi::{string_char_at_internal, string_len};
+use lexer::scanner::state::{
+    LexerState, ScanResult,
+    lex_source, lex_pos, lex_file,
+    lex_peek, lex_peek_next,
+    lex_advance, lex_advance_n, lex_add_error, lex_span
+};
+use lexer::scanner::chars::{
+    char_slash, char_star,
+    char_eq, char_bang, char_langle, char_rangle, char_plus, char_minus,
+    char_amp, char_pipe, char_colon, char_dot, char_lparen, char_rparen,
+    char_lbrace, char_rbrace, char_lbracket, char_rbracket,
+    char_comma, char_semicolon, char_at_sign, char_hash, char_question,
+    char_percent, char_caret, char_tilde
+};
+
+/// Scan one punctuation or operator token at the lexer's position.
+pub fn scan_punctuation(lex: LexerState) -> ScanResult {
+    let start = lex_pos(lex);
+    let ch = lex_peek(lex);
+    let ch2 = lex_peek_next(lex);
+
+    if ch == char_eq() && ch2 == char_eq() { scan_simple(lex, 2, TokEqEq, start) }
+    else if ch == char_bang() && ch2 == char_eq() { scan_simple(lex, 2, TokBangEq, start) }
+    else if ch == char_langle() && ch2 == char_eq() { scan_simple(lex, 2, TokLe, start) }
+    else if ch == char_rangle() && ch2 == char_eq() { scan_simple(lex, 2, TokGe, start) }
+    else if ch == char_eq() && ch2 == char_rangle() { scan_simple(lex, 2, TokFatArrow, start) }
+    else if ch == char_minus() && ch2 == char_rangle() { scan_simple(lex, 2, TokArrow, start) }
+    else { scan_two_char_rest(lex, ch, ch2, start) }
+}
+
+/// The remaining two-character spellings, then `..`/`...`.
+fn scan_two_char_rest(lex: LexerState, ch: Nat, ch2: Nat, start: Nat) -> ScanResult {
+    if ch == char_plus() && ch2 == char_plus() { scan_simple(lex, 2, TokPlusPlus, start) }
+    else if ch == char_amp() && ch2 == char_amp() { scan_simple(lex, 2, TokAmpAmp, start) }
+    else if ch == char_pipe() && ch2 == char_pipe() { scan_simple(lex, 2, TokPipePipe, start) }
+    else if ch == char_pipe() && ch2 == char_rangle() { scan_simple(lex, 2, TokPipeRight, start) }
+    else if ch == char_colon() && ch2 == char_colon() { scan_simple(lex, 2, TokColonColon, start) }
+    else if ch == char_dot() && ch2 == char_dot() { scan_dots(lex, start) }
+    else { scan_bracket(lex, ch, start) }
+}
+
+/// `..` or `...`; the third character is read only when the source has one.
+fn scan_dots(lex: LexerState, start: Nat) -> ScanResult {
+    let ch3 = if lex_pos(lex) + 2 < string_len(lex_source(lex)) { string_char_at_internal(lex_source(lex), lex_pos(lex) + 2) } else { 0 };
+    if ch3 == char_dot() { scan_simple(lex, 3, TokDotDotDot, start) }
+    else { scan_simple(lex, 2, TokDotDot, start) }
+}
+
+fn scan_bracket(lex: LexerState, ch: Nat, start: Nat) -> ScanResult {
+    if ch == char_lparen() { scan_simple(lex, 1, TokLParen, start) }
+    else if ch == char_rparen() { scan_simple(lex, 1, TokRParen, start) }
+    else if ch == char_lbrace() { scan_simple(lex, 1, TokLBrace, start) }
+    else if ch == char_rbrace() { scan_simple(lex, 1, TokRBrace, start) }
+    else if ch == char_lbracket() { scan_simple(lex, 1, TokLBracket, start) }
+    else if ch == char_rbracket() { scan_simple(lex, 1, TokRBracket, start) }
+    else if ch == char_langle() { scan_simple(lex, 1, TokLAngle, start) }
+    else if ch == char_rangle() { scan_simple(lex, 1, TokRAngle, start) }
+    else { scan_separator(lex, ch, start) }
+}
+
+fn scan_separator(lex: LexerState, ch: Nat, start: Nat) -> ScanResult {
+    if ch == char_comma() { scan_simple(lex, 1, TokComma, start) }
+    else if ch == char_semicolon() { scan_simple(lex, 1, TokSemi, start) }
+    else if ch == char_colon() { scan_simple(lex, 1, TokColon, start) }
+    else if ch == char_dot() { scan_simple(lex, 1, TokDot, start) }
+    else if ch == char_at_sign() { scan_simple(lex, 1, TokAt, start) }
+    else if ch == char_hash() { scan_simple(lex, 1, TokHash, start) }
+    else if ch == char_question() { scan_simple(lex, 1, TokQuestion, start) }
+    else { scan_operator_char(lex, ch, start) }
+}
+
+fn scan_operator_char(lex: LexerState, ch: Nat, start: Nat) -> ScanResult {
+    if ch == char_eq() { scan_simple(lex, 1, TokEq, start) }
+    else if ch == char_bang() { scan_simple(lex, 1, TokBang, start) }
+    else if ch == char_plus() { scan_simple(lex, 1, TokPlus, start) }
+    else if ch == char_minus() { scan_simple(lex, 1, TokMinus, start) }
+    else if ch == char_star() { scan_simple(lex, 1, TokStar, start) }
+    else if ch == char_slash() { scan_simple(lex, 1, TokSlash, start) }
+    else if ch == char_percent() { scan_simple(lex, 1, TokPercent, start) }
+    else if ch == char_amp() { scan_simple(lex, 1, TokAmp, start) }
+    else if ch == char_pipe() { scan_simple(lex, 1, TokPipe, start) }
+    else if ch == char_caret() { scan_simple(lex, 1, TokCaret, start) }
+    else if ch == char_tilde() { scan_simple(lex, 1, TokTilde, start) }
+    else { scan_unexpected_char(lex, ch, start) }
+}
+
+fn scan_unexpected_char(lex: LexerState, ch: Nat, start: Nat) -> ScanResult {
+    let lex2 = lex_add_error(lex, err_unexpected_char(ch, start, lex_file(lex)));
+    let lex3 = lex_advance(lex2);
+    let span = lex_span(lex3, start);
+    { token: token_new(TokError("unexpected character"), span), state: lex3 }
+}
+
+fn scan_simple(lex: LexerState, len: Nat, kind: TokenKind, start: Nat) -> ScanResult {
+    let lex2 = lex_advance_n(lex, len);
+    let span = lex_span(lex2, start);
+    { token: token_new(kind, span), state: lex2 }
+}

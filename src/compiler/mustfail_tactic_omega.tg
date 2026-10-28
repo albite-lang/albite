@@ -1,0 +1,41 @@
+// Negative control for test_tactic_omega.tg (ADR 6.10.26f D8, AC 3).
+//
+// Each theorem below is one wrong `omega` proof, and each must be refused
+// for its own reason. `check-mustfail-fixtures` (make/quality/tg-tests.mk)
+// requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_tactic_omega.tg --require-tests
+//     -> aborting due to 4 errors
+//
+// The count alone cannot say which error fired, so each case's code is also
+// pinned by a Rust test in bootstrap/src/elaborate/tactics/procedures/omega/
+// tests/ (the 2.9.26c lesson). The cases and their codes:
+//
+//   1. omega_mustfail_false        `Le<n + 1, n>`, false            E0088 (no witness)
+//   2. omega_mustfail_product      `Le<n, n * n>`, true but needs a
+//                                  product: the `n` term is negative E0088 (no witness)
+//   3. omega_mustfail_unoriented   `h: Le<a + b, c + d>` neither
+//                                  orients nor cancels              E0088 (unused: `h`)
+//   4. omega_mustfail_bool         a goal over `Bool`               E0082
+//
+// `omega` without `mod nat_arith;` cannot share this file, which imports the
+// library: it is pinned by `omega_without_the_library_is_e0082` instead, as
+// `ring`'s is. D7's first message has no surface case (D8): it is pinned over
+// hand-built Core by `a_pow_atom_is_outside_the_fragment`.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+// Cited by qualified path, as test_tactic_omega.tg does.
+mod nat_arith;
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+
+pub theorem omega_mustfail_false(n: Nat) -> Le<n + 1, n> by { omega }
+
+pub theorem omega_mustfail_product(n: Nat) -> Le<n, n * n> by { omega }
+
+pub theorem omega_mustfail_unoriented(a: Nat, b: Nat, c: Nat, d: Nat, h: Le<a + b, c + d>)
+    -> Le<b + a, d + c> by { omega }
+
+pub theorem omega_mustfail_bool(a: Bool) -> Eq<Bool, a, a> by { omega }

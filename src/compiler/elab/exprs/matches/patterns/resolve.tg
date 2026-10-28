@@ -1,0 +1,245 @@
+// src/compiler/elab/exprs/matches/patterns/resolve.tg
+// One resolver for a pattern's constructor, and the one refusal of an arm
+// whose constructor resolves to nothing (ADR 3.10.26l D1, D2).
+//
+// Every helper that needs an arm's constructor — the binding type, the sort
+// index, the newtype test — asks `resolve_pattern_constructor`, so a path is
+// read one way. Before this, each looked up the path's FIRST segment on its
+// own and invented an answer on a miss, which is how `Foo(k)` over a local
+// ADT was accepted with `k` typed at the scrutinee's type.
+
+use parser::ast::{
+    Pattern, PatConstructor, MatchArm,
+    Ident, ident_name, ident_list_len, ident_list_is_empty,
+    Path, MkPath,
+    MaybeString, NoString, SomeString
+};
+use lexer::span::Span;
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::TypeHandle;
+use elab::env::{Env, env_resolve_value};
+use elab::env::resolve_qualified::env_resolve_qualified_value_path;
+use elab::env::defs::{
+    MaybeResolvedValue, NoResolvedValue, SomeResolvedValue,
+    ResolvedValue, ResolvedConstructor,
+    ValuePathResult, ValuePathOk, ValuePathErr
+};
+use elab::error::{ErrConstructorNotFound, error_kind_message};
+use elab::exprs::forms::result::{ElabExprError, elab_expr_error_coded};
+use elab::exprs::records::get_type_name;
+
+/// An arm-guard verdict: no refusal, or the refusal to return.
+pub type MaybeElabExprError =
+    | NoElabExprError
+    | SomeElabExprError(ElabExprError)
+
+// ===========================================================================
+// THE RESOLVER (D2)
+// ===========================================================================
+
+/// Resolve a constructor pattern's path the way the bootstrap's
+/// `resolve_constructor_path` does: a bare name through scope; a two-segment
+/// `Type::Ctor` when `Ctor`'s parent type is `Type`; otherwise the path's
+/// leading segments name a module. The first segment is never looked up as
+/// the constructor.
+pub fn resolve_pattern_constructor(env: Env, path: Path) -> MaybeResolvedValue {
+    match path {
+        MkPath(segments, span) =>
+            if ident_list_len(segments) == 1 {
+                env_resolve_value(env, segments_last_name(segments))
+            } else {
+                resolve_qualified_pattern_constructor(env, segments, span)
+            }
+    }
+}
+
+fn resolve_qualified_pattern_constructor(env: Env, segments: List<Ident>, span: Span) -> MaybeResolvedValue {
+    let ctor_name = segments_last_name(segments);
+    let by_type = if ident_list_len(segments) == 2 {
+        type_qualified_constructor(env, segments_first_name(segments), ctor_name)
+    } else {
+        NoResolvedValue
+    };
+    match by_type {
+        SomeResolvedValue(found) => SomeResolvedValue(found),
+        NoResolvedValue() =>
+            value_path_to_maybe(env_resolve_qualified_value_path(env, segments, span))
+    }
+}
+
+/// `Type::Ctor`: the bare `Ctor`, kept only when its parent type is `Type`.
+fn type_qualified_constructor(env: Env, type_name: String, ctor_name: String) -> MaybeResolvedValue {
+    match env_resolve_value(env, ctor_name) {
+        NoResolvedValue() => NoResolvedValue,
+        SomeResolvedValue(resolved) =>
+            if constructor_parent_is(resolved, type_name) {
+                SomeResolvedValue(resolved)
+            } else {
+                NoResolvedValue
+            }
+    }
+}
+
+fn constructor_parent_is(resolved: ResolvedValue, type_name: String) -> Bool {
+    match resolved {
+        ResolvedConstructor(info) => info.parent_type == type_name,
+        _ => false
+    }
+}
+
+fn value_path_to_maybe(result: ValuePathResult) -> MaybeResolvedValue {
+    match result {
+        ValuePathOk(resolved) => SomeResolvedValue(resolved),
+        ValuePathErr(_) => NoResolvedValue
+    }
+}
+
+// ===========================================================================
+// THE REFUSAL (D1)
+// ===========================================================================
+
+/// Refuse the first arm whose top-level constructor pattern does not resolve
+/// to a constructor, with `E0302` `ErrConstructorNotFound`. The ADT route's
+/// only refusing site for this: the helpers downstream poison or sort last,
+/// and poison unifies silently, so it is never a refusal (D3).
+///
+/// The scrutinee's type is rendered only on the refusal path: rendering
+/// reaches an extern the evaluator cannot run, so the decision
+/// (`unresolved_arm_suffix`) and the record (`unresolved_constructor_error`)
+/// are kept apart, each executable on its own.
+pub fn refuse_unresolved_arms(env: Env, scrut_ty: TypeHandle, arms: List<MatchArm>) -> MaybeElabExprError {
+    match unresolved_arm_suffix(env, arms) {
+        Nil() => NoElabExprError,
+        Cons(arm, _) =>
+            SomeElabExprError(unresolved_constructor_error(
+                refused_name_text(arm_refusal_name(env, arm)),
+                scrutinee_type_label(scrut_ty),
+                arm_pattern_span(arm)
+            ))
+    }
+}
+
+/// The arms from the first refused one on; `Nil` when every arm passes.
+pub fn unresolved_arm_suffix(env: Env, arms: List<MatchArm>) -> List<MatchArm> {
+    match arms {
+        Nil() => Nil,
+        Cons(arm, rest) =>
+            if arm_is_refused(env, arm) {
+                arms
+            } else {
+                unresolved_arm_suffix(env, rest)
+            }
+    }
+}
+
+fn arm_is_refused(env: Env, arm: MatchArm) -> Bool {
+    match arm_refusal_name(env, arm) {
+        NoString() => false,
+        SomeString(_) => true
+    }
+}
+
+/// The refusal record: `E0302` with `ErrConstructorNotFound`'s own message.
+pub fn unresolved_constructor_error(ctor: String, type_label: String, span: Span) -> ElabExprError {
+    elab_expr_error_coded(error_kind_message(ErrConstructorNotFound(ctor, type_label)), span, "E0302")
+}
+
+fn refused_name_text(refusal: MaybeString) -> String {
+    match refusal {
+        NoString() => "",
+        SomeString(ctor) => ctor
+    }
+}
+
+/// The miss decision alone: the constructor's path text when the arm names a
+/// constructor that does not resolve to one, `NoString` otherwise.
+pub fn arm_refusal_name(env: Env, arm: MatchArm) -> MaybeString {
+    match arm.pattern {
+        PatConstructor(path, _, _) =>
+            if resolves_to_constructor(resolve_pattern_constructor(env, path)) {
+                NoString
+            } else {
+                SomeString(path_key_text(path))
+            },
+        _ => NoString
+    }
+}
+
+fn resolves_to_constructor(found: MaybeResolvedValue) -> Bool {
+    match found {
+        NoResolvedValue() => false,
+        SomeResolvedValue(resolved) => is_resolved_constructor(resolved)
+    }
+}
+
+fn is_resolved_constructor(resolved: ResolvedValue) -> Bool {
+    match resolved {
+        ResolvedConstructor(_) => true,
+        _ => false
+    }
+}
+
+/// The self-host has no type renderer, and an ADT scrutinee arrives as its
+/// encoded sum, which carries no name; such a type renders as `<scrutinee>`.
+fn scrutinee_type_label(ty: TypeHandle) -> String {
+    let name = get_type_name(ty);
+    if name == "" { "<scrutinee>" } else { name }
+}
+
+fn arm_pattern_span(arm: MatchArm) -> Span {
+    match arm.pattern {
+        PatConstructor(_, _, span) => span,
+        _ => arm.span
+    }
+}
+
+// ===========================================================================
+// PATH TEXT
+// ===========================================================================
+
+/// A constructor pattern's full path text (`a::X`), the key nested-pattern
+/// desugaring groups arms by, so `a::X(…)` and `b::X(…)` never share a group.
+/// `""` for a pattern that names no constructor.
+pub fn pattern_constructor_path_key(p: Pattern) -> String {
+    match p {
+        PatConstructor(path, _, _) => path_key_text(path),
+        _ => ""
+    }
+}
+
+fn path_key_text(path: Path) -> String {
+    match path {
+        MkPath(segments, _) => segments_joined(segments)
+    }
+}
+
+fn segments_joined(segments: List<Ident>) -> String {
+    match segments {
+        Nil() => "",
+        Cons(id, rest) =>
+            if ident_list_is_empty(rest) {
+                ident_name(id)
+            } else {
+                ident_name(id) ++ "::" ++ segments_joined(rest)
+            }
+    }
+}
+
+fn segments_first_name(segments: List<Ident>) -> String {
+    match segments {
+        Nil() => "",
+        Cons(id, _) => ident_name(id)
+    }
+}
+
+fn segments_last_name(segments: List<Ident>) -> String {
+    match segments {
+        Nil() => "",
+        Cons(id, rest) =>
+            if ident_list_is_empty(rest) {
+                ident_name(id)
+            } else {
+                segments_last_name(rest)
+            }
+    }
+}

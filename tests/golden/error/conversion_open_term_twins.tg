@@ -1,0 +1,33 @@
+// == must-fail twins of the open-term proofs (ADR 29.9.26c AC 2)
+type Lst = Nil | Cons(Nat, Lst)
+
+fn length(l: Lst) -> Nat { match l { Nil => 0, Cons(h, t) => 1 + length(t) } }
+
+fn add(a: Nat, b: Nat) -> Nat { natrec(Nat, b, fn(k: Nat, acc: Nat) => acc + 1, a) }
+
+#[partial]
+fn spin_length(l: Lst) -> Nat { match l { Nil => 0, Cons(h, t) => 1 + spin_length(t) } }
+
+fn same(n: Nat) -> Nat { n }
+
+fn apply(g: Nat -> Nat) -> Nat { let n = 5; g(n) }
+
+// Entering `length` gives 1, not 2: the note names the first differing pair.
+fn length_is_not_two(n: Nat) -> Nat { let _p: Eq<Nat, length(Cons(n, Nil)), 2> = refl; 0 }
+
+// `+` recurses on its right operand, so `0 + k` stays stuck: that needs
+// induction. `same(k)` is `k` after δ; it only makes the proof defer to the
+// discharge, where it is reported beside the others instead of aborting first.
+fn left_zero(k: Nat) -> Nat { let _p: Eq<Nat, 0 + k, same(k)> = refl; 0 }
+
+// Induction is not conversion: `add` recurses on its first argument.
+fn add_zero_right(n: Nat) -> Nat { let _p: Eq<Nat, add(n, 0), n> = refl; 0 }
+
+// A `#[partial]` global stays folded, open argument or not.
+fn partial_is_opaque(n: Nat) -> Nat { let _p: Eq<Nat, spin_length(Cons(n, Nil)), 1> = refl; 0 }
+
+// The capture hole: `apply`'s `let n = 5` must not capture the caller's `n`,
+// so this is `5 + n`, which is not `10`.
+fn captured(n: Nat) -> Nat { let _p: Eq<Nat, apply(|x: Nat| x + n), 10> = refl; 0 }
+
+fn main() -> Nat { 0 }

@@ -1,0 +1,8 @@
+pub use lib_c::Colour;
+
+pub fn paint(c: Colour) -> Nat {
+    match c {
+        Red => 1,
+        Blue => 2,
+    }
+}

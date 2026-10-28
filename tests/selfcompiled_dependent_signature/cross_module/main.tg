@@ -1,0 +1,21 @@
+// ADR 2.10.26f §2.4: a lemma cited from another module keeps its `Pi`, and a
+// generic dependent signature re-stated here with renamed binders (`U`, `y`)
+// compares equal to the imported one (D6's α map).
+
+pub mod lemmas;
+
+use lemmas::{add_zero_right, refl_at};
+
+fn my_refl_at<U>(y: U) -> Eq<U, y, y> { refl }
+
+fn either(b: Bool) -> Nat {
+    let pick = if b { refl_at } else { my_refl_at };
+    let _p: Eq<Nat, 4, 4> = pick(4);
+    0
+}
+
+fn main() -> Nat {
+    let _a: Eq<Nat, 3 + 0, 3> = add_zero_right(3);
+    let _b: Eq<Nat, 5, 5> = refl_at(5);
+    either(true)
+}

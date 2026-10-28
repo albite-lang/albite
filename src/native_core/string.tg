@@ -1,0 +1,37 @@
+// String exports written in Tungsten (ADR 4.10.26n D4, 6.10.26n D1).
+//
+// `string_concat` is exported as the C symbol `tg_native_string_concat`, and
+// `string_concat_owned` as `tg_native_string_concat_owned`
+// (`NATIVE_CORE_EXPORTS`), which a `++` calls when the switch enables their
+// rows. So nothing here may use `++`: it would call the export being defined.
+// The byte-buffer calls are qualified rather than imported: `bytes` is a root
+// of the core's own tree, not of `src/compiler`'s.
+
+/// `left` then `right`, in a fresh allocation: size, two blits, one
+/// conversion. `string_len` counts bytes on both sides. The allocation is
+/// unfilled (ADR 9.10.26n D2): the two blits tile it, which the core's
+/// write-cover rule checks (D3).
+pub fn string_concat(left: String, right: String) -> String {
+    let n = string_len(left);
+    let b = bytes::bytes_new_uninit(n + string_len(right));
+    let b = bytes::bytes_blit_string(b, 0, left);
+    let b = bytes::bytes_blit_string(b, n, right);
+    bytes::bytes_into_string_unchecked(b)
+}
+
+/// `left` then `right`, growing `left`'s own block (6.10.26n D1): the code
+/// generator calls this only when `left` is a dead `++` result, so its block
+/// is the core's and may be `realloc`ed. An empty `left` — a null pointer or
+/// a zero-length literal, neither the allocator's — takes the fresh concat,
+/// as Rust's `tg_string_concat_owned` does. `left` is not read after it is
+/// adopted (D3).
+pub fn string_concat_owned(left: String, right: String) -> String {
+    let n = string_len(left);
+    if n == 0 {
+        string_concat(left, right)
+    } else {
+        let b = bytes::bytes_from_string_grown(left, string_len(right));
+        let b = bytes::bytes_blit_string(b, n, right);
+        bytes::bytes_into_string_unchecked(b)
+    }
+}

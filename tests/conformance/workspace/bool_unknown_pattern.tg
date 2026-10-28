@@ -1,0 +1,7 @@
+// An unresolved constructor pattern over a `Bool` scrutinee (ADR 3.10.26l
+// §2.4, D1): the Bool route's verdict is held to the bootstrap's.
+fn pick(b: Bool) -> Nat {
+    match b { Foo(k) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(true) }

@@ -1,0 +1,35 @@
+// src/compiler/parser/syntax_kind.tg
+// Which syntax error occurred, and its code (ADR 30.9.26h D4/D5).
+//
+// The self-host's Syntax block is E0800–E0899. It sits at a FIXED OFFSET from
+// the bootstrap's E0110–E0117: the kind matching bootstrap E0110+k is
+// E0800+k. The bootstrap's own numbers cannot be reused, because the
+// self-host's range table files E0100–E0199 under name resolution.
+//
+// Only kinds the self-host actually raises are here (29.9.26f D3: every
+// catalogued code is reachable). E0804–E0805 (InvalidExpression,
+// InvalidType) stay reserved until a construction site raises them. Adding a
+// kind means one arm below AND one entry in the bootstrap's
+// `self_hosted_error_catalogue/entries/syntax_and_internal.rs`.
+
+/// The kind of a parse or lex error.
+pub type SyntaxKind =
+    | SyntaxUnexpectedToken
+    | SyntaxUnexpectedEof
+    | SyntaxExpected
+    | SyntaxInvalidPattern
+    | SyntaxReservedKeyword
+    | SyntaxLexical
+
+/// The catalogued code of a syntax kind. A total match, one arm per line, so a
+/// new kind cannot inherit another's code (the `kinds/codes.tg` idiom).
+pub fn syntax_kind_code(kind: SyntaxKind) -> String {
+    match kind {
+        SyntaxUnexpectedToken() => "E0800",
+        SyntaxUnexpectedEof() => "E0801",
+        SyntaxExpected() => "E0802",
+        SyntaxInvalidPattern() => "E0803",
+        SyntaxReservedKeyword() => "E0806",
+        SyntaxLexical() => "E0807"
+    }
+}

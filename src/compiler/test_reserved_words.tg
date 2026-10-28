@@ -1,0 +1,73 @@
+// The self-host's reserved-word list agrees with its lexer (ADR 6.10.26j AC 4).
+//
+// `lexer/reserved.tg` writes the reserved words out as data for the package
+// planner; the lexer decides them with an `if` chain. This file asserts the
+// list's half: every listed word classifies as a keyword, never an
+// identifier. The converse — every word the chain names is listed — cannot be
+// stated in `.tg`, which cannot enumerate an `if` chain, so a bootstrap
+// `#[test]` in `explain/keyword_catalogue.rs` reads both files' literals.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_bool, assert_eq_nat};
+use driver::ffi::{List, Nil, Cons};
+use lexer::token::{TokIdent, TokUnderscore, classify_keyword};
+use lexer::reserved::{reserved_words};
+
+/// Whether `text` lexes as a keyword: neither an identifier nor `_`.
+fn classifies_as_keyword(text: String) -> Bool {
+    match classify_keyword(text) {
+        TokIdent(_) => false,
+        TokUnderscore() => false,
+        _ => true
+    }
+}
+
+/// The listed words that do NOT classify as keywords, in list order.
+fn not_keywords(words: List<String>) -> List<String> {
+    match words {
+        Nil() => Nil,
+        Cons(word, rest) =>
+            if classifies_as_keyword(word) {
+                not_keywords(rest)
+            } else {
+                Cons(word, not_keywords(rest))
+            }
+    }
+}
+
+fn count(words: List<String>) -> Nat {
+    match words {
+        Nil() => 0,
+        Cons(_, rest) => 1 + count(rest)
+    }
+}
+
+// 6.10.26j AC4: every listed word is a keyword to the lexer.
+pub fn test_every_listed_word_classifies_as_a_keyword() -> Unit {
+    assert_eq_nat(count(not_keywords(reserved_words())), 0)
+}
+
+// 6.10.26j AC4: the list is the lexer's 62 words (41 keyword tokens and 21
+// held back, `crate` a token since ADR 6.10.26p, `region` since ADR
+// 9.10.26o), so a word dropped from the list is a count change here.
+pub fn test_the_list_holds_every_reserved_word() -> Unit {
+    assert_eq_nat(count(reserved_words()), 62)
+}
+
+// 6.10.26j AC4: the classifier itself is not vacuous — an ordinary name and
+// `_` are not keywords — so the first test can fail.
+pub fn test_an_identifier_is_not_a_keyword() -> Unit {
+    assert_eq_bool(classifies_as_keyword("geometry"), false);
+    assert_eq_bool(classifies_as_keyword("_"), false);
+    assert_eq_bool(classifies_as_keyword("match"), true);
+    assert_eq_bool(classifies_as_keyword("async"), true)
+}
+
+// 9.10.26o AC2: `region` is a keyword, so no identifier.
+pub fn test_region_is_a_keyword() -> Unit {
+    assert_eq_bool(classifies_as_keyword("region"), true)
+}

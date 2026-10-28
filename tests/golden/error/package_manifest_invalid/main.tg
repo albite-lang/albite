@@ -1,0 +1,2 @@
+// E0120: a package name must be a module identifier (ADR 29.9.26g D2).
+fn main() -> Nat { 0 }

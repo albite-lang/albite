@@ -1,0 +1,2 @@
+// A declared module, not a companion: `double` is private to widget (E0016).
+pub fn probe() -> Nat { widget::double(3) }

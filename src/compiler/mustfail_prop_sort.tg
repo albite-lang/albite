@@ -1,0 +1,24 @@
+// Negative control for test_prop_sort.tg: universe_hierarchy.md Q5's twins
+// (ADR 4.10.26i D7, AC 3). Each definition below must be refused, and
+// `check-mustfail-fixtures` (make/quality/tg-tests.mk) requires the file to
+// fail with its exact error count, so a twin that starts being accepted
+// lowers the count and the gate goes red.
+//
+// Each twin is ALSO asserted by its own code in
+// `bootstrap/src/elaborate/tests/items/sorts/prop_refusal.rs` — E0067, E0002
+// and E0066 — so one failing for another reason is caught there. Q5's fourth
+// twin, `fn g<P: Prop>(h: P) -> P { h }`, is a parse error (type-parameter
+// bounds are not parsed), which would abort the file before any twin below
+// was looked at, so it is pinned only in that Rust file.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+// E0067: a data type declared a proposition.
+type Bad(n: Nat): Prop = Nat
+
+// E0002: the `exists` binder is a term, so used as a type it is unknown.
+type Esc(n: Nat): Prop = exists k: Nat. k
+
+// E0066: no term has type `Prop`.
+fn f(p: Prop) -> Nat { 0 }

@@ -1,0 +1,17 @@
+// src/compiler/parser/exprs/result.tg
+// Parse result types for expression parsing.
+// These types have been migrated to Result<(T, Cursor), ParseError>.
+
+use parser::ast::common::BinOp;
+
+// ===========================================================================
+// OPTION TYPES FOR BINARY OPERATORS
+// ===========================================================================
+
+/// Optional binary operator with precedence.
+pub type MaybeBinOp =
+    | NoBinOp
+    | SomeBinOp(BinOp)
+
+// Re-export cursor_peek_span for convenience (canonical definition is in parser::cursor)
+pub use parser::cursor::cursor_peek_span;

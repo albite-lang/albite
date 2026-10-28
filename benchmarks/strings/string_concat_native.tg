@@ -1,0 +1,51 @@
+// Benchmark: String concatenation through the byte buffer (ADR 4.10.26n P0.3)
+//
+// The `string_concat` workload with every `++` replaced by `native_concat`, the
+// port of `tg_string_concat` written as an ordinary function over 3.10.26n's six
+// `tg_bytes_*` intrinsics, with the CHECKED conversion. It measures what the
+// port costs before the export mechanism exists; the real export (through the
+// shim, unchecked) is measured by building `string_concat.tg` with
+// `ALBITE_NATIVE_CORE=on`. Results: benchmarks/results/4.10.26n.native-concat-cost.md.
+// Usage: ./string_concat_native [repetitions]  (default: 15000)
+
+extern "C" fn tg_argc() -> Nat
+extern "C" fn tg_argv(index: Nat) -> Nat
+extern "C" fn tg_string_to_nat(s: Nat) -> Nat
+
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_blit_string(h: Nat, at: Nat, s: String) -> Nat
+extern "C" fn tg_bytes_into_string(h: Nat) -> String
+
+pub type PNat = PZero | PSucc(PNat)
+
+// Partial (ADR 11.8.26b): a counted loop over a `Nat`, as in `string_concat.tg`.
+#[partial]
+fn from_nat(n: Nat) -> PNat {
+  if n == 0 { PZero } else { PSucc(from_nat(n - 1)) }
+}
+
+/// The port: size, two blits, one checked conversion. No `++`.
+fn native_concat(left: String, right: String) -> String {
+  let n = string_len(left);
+  let h = tg_bytes_new(n + string_len(right));
+  let h = tg_bytes_blit_string(h, 0, left);
+  let h = tg_bytes_blit_string(h, n, right);
+  tg_bytes_into_string(h)
+}
+
+fn repeat(s: String, n: PNat) -> String {
+  match n {
+    PZero() => "",
+    PSucc(p) => native_concat(s, repeat(s, p)),
+  }
+}
+
+fn get_repetitions() -> Nat {
+  if tg_argc() > 1 { tg_string_to_nat(tg_argv(1)) } else { 15000 }
+}
+
+fn main() -> Nat {
+  let n = get_repetitions();
+  let result = repeat("the quick brown fox jumps over the lazy dog!", from_nat(n));
+  string_len(result)
+}

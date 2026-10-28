@@ -1,0 +1,48 @@
+// The byte-compared fixture of the runner-parity gate's records arm (ADR
+// 1.10.26i D8). Under `--format json` and `--format junit`, both runners'
+// streams for this file must be byte-identical once timing is zeroed — not
+// only agree on names, verdicts and exit.
+//
+// One test per thing a record carries: a pass, an assertion diff (the failing
+// record's stderr), markup on stdout (JUnit escaping) and a write to stderr
+// from a passing test (JUnit's `<system-err>`). No NUL and no invalid UTF-8:
+// the self-host frames those as U+FFFD (D3's fallback), a recorded divergence.
+//
+// Expected: test_fails FAILED, the other three ok, exit 1 on both runners.
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_eprintln(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+fn assert_eq_nat(a: Nat, b: Nat) -> Unit { tg_assert_eq_nat(a, b) }
+
+fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+fn eprintln(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_eprintln(c, len);
+    tg_free_string(c)
+}
+
+pub fn test_passes() -> Unit { assert_eq_nat(2 + 2, 4) }
+
+pub fn test_fails() -> Unit { assert_eq_nat(2, 3) }
+
+pub fn test_prints_markup() -> Unit {
+    println("<b>&");
+    assert_eq_nat(1, 1)
+}
+
+pub fn test_writes_stderr() -> Unit {
+    eprintln("a warning on stderr");
+    assert_eq_nat(1, 1)
+}

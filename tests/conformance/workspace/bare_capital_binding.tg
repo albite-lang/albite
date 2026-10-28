@@ -1,0 +1,9 @@
+// A bare capitalised name with no arguments is a binding, not a constructor
+// pattern (ADR 3.10.26l §2.4, D1): both compilers accept it as a catch-all.
+type OptBare = NadaBare | AlgoBare(Nat)
+
+fn pick(o: OptBare) -> Nat {
+    match o { AlgoBare(k) => k, Nope => 0 }
+}
+
+fn main() -> Nat { pick(NadaBare) }

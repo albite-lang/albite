@@ -1,0 +1,5 @@
+// ADR 28.9.26c § 2.4: the Girard-shaped datatype. `U` occurs left of an
+// arrow under a `forall`, so the positivity gate must look through the
+// quantifier. The first positivity golden that contains a `forall`; its
+// positive twin is tests/golden/check/impredicative_field_positive.tg.
+type U = Mk(forall x. (x -> U) -> Void)

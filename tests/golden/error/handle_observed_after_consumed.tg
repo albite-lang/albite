@@ -1,0 +1,36 @@
+// ADR 7.10.26t: an observer after the consumer — the length of a builder
+// whose buffer `to_string` already handed out. Refused (E0092).
+
+pub type StringBuilder = MkStringBuilder(Nat)
+
+extern "C" fn tg_string_builder_new() -> Nat
+extern "C" fn tg_string_builder_push_str(sb: Nat, s: String) -> Nat
+extern "C" fn tg_string_builder_len(sb: Nat) -> Nat
+extern "C" fn tg_string_builder_to_string(sb: Nat) -> String
+
+pub fn string_builder_new() -> StringBuilder {
+    MkStringBuilder(tg_string_builder_new())
+}
+
+pub fn push_str(sb: StringBuilder, s: String) -> StringBuilder {
+    match sb { MkStringBuilder(h) => MkStringBuilder(tg_string_builder_push_str(h, s)) }
+}
+
+// Reads the builder and leaves it live.
+pub fn string_builder_len(sb: StringBuilder) -> Nat {
+    match sb { MkStringBuilder(h) => tg_string_builder_len(h) }
+}
+
+// Consumes the builder: any later use of it aborts.
+pub fn to_string(sb: StringBuilder) -> String {
+    match sb { MkStringBuilder(h) => tg_string_builder_to_string(h) }
+}
+
+fn length_after(sb: StringBuilder) -> Nat {
+    let s = to_string(sb);
+    string_builder_len(sb)
+}
+
+fn main() -> Nat {
+    length_after(push_str(string_builder_new(), "x"))
+}

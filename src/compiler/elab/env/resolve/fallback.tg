@@ -1,0 +1,147 @@
+// src/compiler/elab/env/resolve/fallback.tg
+// The global-table fall-through for bare names (ADR 4.10.26l D2).
+//
+// Each module is elaborated in a slot of its own, so its slot holds only what
+// it defines and imports. Every other module's definitions stay reachable by
+// bare name through the program-wide Signature Collection table, which
+// `build_shared_base_env` seeds into `elab_module_path_global_table()`. The
+// order is the bootstrap's: the module, its imports, then this table.
+//
+// The import walk in `mod.tg` reaches other modules' slots, and a module not
+// yet elaborated is still its layer-2 stub there: a name with handle `0`
+// (`populate_*_stubs`, `env/mod.tg`), which is no type. The `*_is_unelaborated`
+// predicates below let the walk pass over such a stub, so the name falls
+// through to this table instead of resolving at handle `0`.
+
+use elab::ffi::INVALID_HANDLE;
+use elab::env::types::{Env};
+use elab::env::defs::{
+    TypeDefInfo, type_def_list_lookup, type_def_is_stub,
+    ValueDefInfo, value_def_list_lookup,
+    ConstructorInfo, constructor_list_lookup, constructor_list_max_index_plus_one,
+    NoTypeDef, SomeTypeDef,
+    NoValueDef, SomeValueDef,
+    NoConstructor, SomeConstructor
+};
+use elab::env::defs::{
+    MaybeResolvedValue, NoResolvedValue, SomeResolvedValue,
+    MaybeResolvedType, NoResolvedType, SomeResolvedType,
+    ResolvedValue, ResolvedGlobal, ResolvedConstructor, ResolvedLocal,
+    ResolvedType, ResolvedTypeDef, ResolvedTypeVar
+};
+use elab::env::module::{
+    ModuleContents, module_contents_empty,
+    MaybeModuleContents, NoModuleContents, SomeModuleContents,
+    module_map_lookup, elab_module_path_global_table
+};
+
+/// The program-wide table's contents.
+pub fn env_global_table_contents(env: Env) -> ModuleContents {
+    let path = elab_module_path_global_table();
+    match module_map_lookup(env.modules, path) {
+        SomeModuleContents(c) => c,
+        NoModuleContents() => module_contents_empty(path)
+    }
+}
+
+/// Resolve a bare value or constructor name in the global table.
+pub fn env_resolve_value_in_global_table(env: Env, name: String) -> MaybeResolvedValue {
+    let contents = env_global_table_contents(env);
+    match value_def_list_lookup(contents.values, name) {
+        SomeValueDef(def) => SomeResolvedValue(ResolvedGlobal(def.name, def.ty)),
+        NoValueDef() => constructor_in_global_table(contents, name)
+    }
+}
+
+fn constructor_in_global_table(contents: ModuleContents, name: String) -> MaybeResolvedValue {
+    match constructor_list_lookup(contents.constructors.all, name) {
+        SomeConstructor(info) => SomeResolvedValue(ResolvedConstructor(info)),
+        NoConstructor() => NoResolvedValue
+    }
+}
+
+/// Resolve a bare type name in the global table.
+pub fn env_resolve_type_in_global_table(env: Env, name: String) -> MaybeResolvedType {
+    match type_def_list_lookup(env_global_table_contents(env).types, name) {
+        SomeTypeDef(def) => SomeResolvedType(ResolvedTypeDef(def)),
+        NoTypeDef() => NoResolvedType
+    }
+}
+
+/// The global table's copy of what an import resolved to, when it has one.
+///
+/// An import decides WHETHER a name is in scope, and at what visibility; the
+/// definition it resolves to is the Signature Collection table's, as it was
+/// while every module was elaborated as the root. The other module's own
+/// body-elaborated copy of a constructor of a mutually recursive type does not
+/// unify with the signatures the table gave every function (17 `E0001`s on
+/// `main.tg`, ADR 4.10.26l §6), so it is used only for a name the table lacks,
+/// an alias.
+pub fn canonical_resolved_value(env: Env, resolved: ResolvedValue) -> ResolvedValue {
+    match resolved {
+        ResolvedGlobal(def_name, _) => canonical_global_value(env, def_name, resolved),
+        ResolvedConstructor(info) => canonical_constructor(env, info.name, resolved),
+        ResolvedLocal(_, _, _) => resolved
+    }
+}
+
+fn canonical_global_value(env: Env, def_name: String, resolved: ResolvedValue) -> ResolvedValue {
+    match value_def_list_lookup(env_global_table_contents(env).values, def_name) {
+        SomeValueDef(def) => ResolvedGlobal(def.name, def.ty),
+        NoValueDef() => resolved
+    }
+}
+
+fn canonical_constructor(env: Env, name: String, resolved: ResolvedValue) -> ResolvedValue {
+    match constructor_list_lookup(env_global_table_contents(env).constructors.all, name) {
+        SomeConstructor(info) => ResolvedConstructor(info),
+        NoConstructor() => resolved
+    }
+}
+
+/// The type counterpart of `canonical_resolved_value`.
+pub fn canonical_resolved_type(env: Env, resolved: ResolvedType) -> ResolvedType {
+    match resolved {
+        ResolvedTypeDef(def) => canonical_type_def(env, def.name, resolved),
+        ResolvedTypeVar(_) => resolved
+    }
+}
+
+fn canonical_type_def(env: Env, name: String, resolved: ResolvedType) -> ResolvedType {
+    match type_def_list_lookup(env_global_table_contents(env).types, name) {
+        SomeTypeDef(def) => ResolvedTypeDef(def),
+        NoTypeDef() => resolved
+    }
+}
+
+/// How many constructors `parent_type` has: counted in the module's own slot,
+/// else in the global table, where another module's type is.
+pub fn constructor_count_with_fallback(env: Env, own: ModuleContents, parent_type: String) -> Nat {
+    let own_count = constructor_list_max_index_plus_one(own.constructors.all, parent_type);
+    if own_count == 0 {
+        constructor_list_max_index_plus_one(env_global_table_contents(env).constructors.all, parent_type)
+    } else {
+        own_count
+    }
+}
+
+/// A value stub of a module not yet elaborated, or of an undeclared sibling:
+/// no type to resolve to. A real def at handle `0` also matches, which costs
+/// nothing: it falls through to the global table, which holds the same def.
+pub fn value_def_is_unelaborated(def: ValueDefInfo) -> Bool {
+    if def.ty == INVALID_HANDLE() {
+        true
+    } else {
+        def.ty == 0 && def.span.file == ""
+    }
+}
+
+/// A constructor stub: a real constructor always names its parent type.
+pub fn constructor_is_unelaborated(info: ConstructorInfo) -> Bool {
+    info.parent_type == ""
+}
+
+/// A type stub, from the module-info stubs or a collection pass.
+pub fn type_def_is_unelaborated(def: TypeDefInfo) -> Bool {
+    type_def_is_stub(def)
+}

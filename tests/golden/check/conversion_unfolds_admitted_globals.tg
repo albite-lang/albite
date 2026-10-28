@@ -1,0 +1,21 @@
+// == proofs that need δ over total globals check (ADR 28.9.26d AC 1)
+type Lst = Nil | Cons(Nat, Lst)
+
+fn two() -> Nat { 2 }
+
+fn length(l: Lst) -> Nat { match l { Nil => 0, Cons(h, t) => 1 + length(t) } }
+
+theorem two_is_two(): two() == 2 { refl }
+
+theorem length_two(): length(Cons(1, Cons(2, Nil))) == 2 { refl }
+
+// `trans` whose shared endpoint only agrees after unfolding `two`.
+// `trans`'s endpoints are `2` and `two()` — equal only after unfolding `two`.
+theorem two_plain(): 2 == 2 { refl }
+
+theorem via_two(): 2 == 2 { trans(two_plain(), two_is_two()) }
+
+// An ordinary function whose return type is an equality needing δ.
+fn length_one() -> length(Cons(7, Nil)) == 1 { refl }
+
+fn main() -> Nat { 0 }

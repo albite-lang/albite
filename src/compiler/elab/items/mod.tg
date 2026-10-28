@@ -1,0 +1,120 @@
+// src/compiler/elab/items/mod.tg
+// Item elaboration module.
+//
+// This module orchestrates the two-pass item elaboration algorithm:
+// - Pass 1 (Collection): Register types, process imports, collect value signatures
+// - Pass 2 (Elaboration): Elaborate item bodies to Core terms
+//
+// The main entry point is `elaborate_items`, which takes a source file
+// and produces an ElabResult containing all definitions and any errors.
+
+pub mod result;
+pub mod collect;
+pub mod elaborate;
+pub mod imports;
+pub mod per_module;
+pub mod termination;
+pub mod holes;
+pub mod handles;
+
+pub use elab::items::result::*;
+pub use elab::items::collect::*;
+pub use elab::items::elaborate::*;
+pub use elab::items::imports::*;
+pub use elab::items::per_module::*;
+pub use elab::items::termination::*;
+
+use parser::ast::{SourceFile, source_file_items, Item};
+use driver::ffi::{List, Nil, Cons};
+use elab::items::collect::positivity::check_positivity_pass;
+use elab::items::collect::duplicates::{check_duplicate_definitions_pass, items_to_elaborate_after_duplicates};
+
+// ===========================================================================
+// MAIN ENTRY POINT
+// ===========================================================================
+
+/// Elaborate all items in a source file.
+///
+/// This is the main entry point for item elaboration. It:
+/// 1. Runs the collection phase (6 sub-phases)
+/// 2. Runs the elaboration phase (body elaboration)
+/// 3. Returns the final result with definitions and errors
+pub fn elaborate_file(env: Env, file: SourceFile) -> ElabResult {
+    let items = source_file_items(file);
+    let result = elaborate_items(env, items);
+    result
+}
+
+/// Elaborate a list of items.
+///
+/// Two-pass algorithm:
+/// - Pass 1: Collection (types, imports, signatures)
+/// - Pass 2: Elaboration (function/theorem bodies)
+pub fn elaborate_items(env: Env, items: List<Item>) -> ElabResult {
+    let ctx = elab_context_new(env);
+    
+    // Pass 1: Collection
+    let collect_result = collect_items(ctx, items);
+    let ctx2 = collect_result_context(collect_result);
+
+    // The strict-positivity gate, at the point the bootstrap runs it: after the
+    // complete type graph exists and before Deferred-TyVar Resolution rewrites
+    // the cross-references the walker reads (ADR 18.8.26b P3). Beside it, a
+    // name defined twice in the file is refused, and then no body is
+    // elaborated, as in the bootstrap (ADR 13.10.26f D3).
+    let ctx2p = check_positivity_pass(ctx2, items);
+    let ctx2d = check_duplicate_definitions_pass(ctx2p, items);
+
+    // Pass 2: Elaboration
+    let (ctx3, defs) = elaborate_item_bodies(ctx2d, items_to_elaborate_after_duplicates(ctx2p, ctx2d, items));
+    
+    // Build final result
+    let result = elab_result_new(defs, ctx3.errors);
+    result
+}
+
+/// Elaborate items starting from a fresh environment.
+pub fn elaborate_items_fresh(items: List<Item>) -> ElabResult {
+    let env = env_new();
+    elaborate_items(env, items)
+}
+
+/// Elaborate a single file with a fresh environment.
+pub fn elaborate_file_fresh(file: SourceFile) -> ElabResult {
+    let env = env_new();
+    elaborate_file(env, file)
+}
+
+/// Elaborate a list of items and return both the result and the final env.
+///
+/// Used by per-module elaboration (W6.3a) to extract type defs, value sigs,
+/// and constructors from the final env after elaboration.
+pub fn elaborate_items_with_env(env: Env, items: List<Item>) -> (ElabResult, Env) {
+    let ctx = elab_context_new(env);
+    let collect_result = collect_items(ctx, items);
+    let ctx2 = collect_result_context(collect_result);
+    let ctx2p = check_positivity_pass(ctx2, items);
+    let ctx2d = check_duplicate_definitions_pass(ctx2p, items);
+    let (ctx3, defs) = elaborate_item_bodies(ctx2d, items_to_elaborate_after_duplicates(ctx2p, ctx2d, items));
+    let result = elab_result_new(defs, ctx3.errors);
+    (result, ctx3.env)
+}
+
+// ===========================================================================
+// HELPERS
+// ===========================================================================
+
+/// Check if elaboration was successful (no errors).
+pub fn elaboration_successful(result: ElabResult) -> Bool {
+    elab_result_ok(result)
+}
+
+/// Get the number of definitions produced.
+pub fn elaboration_def_count(result: ElabResult) -> Nat {
+    elab_result_def_count(result)
+}
+
+/// Get the number of errors encountered.
+pub fn elaboration_error_count(result: ElabResult) -> Nat {
+    elab_result_error_count(result)
+}

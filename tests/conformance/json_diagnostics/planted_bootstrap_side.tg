@@ -1,0 +1,11 @@
+// ADR 1.10.26h D6: the planted pair's bootstrap side — see the note below.
+fn diverge() -> Void { diverge() }
+
+fn main() -> Nat { 0 }
+
+// Both compilers refuse `diverge` with one termination record of one class
+// (bootstrap E0062, self-host E0710; both `Elaboration`), so the only thing
+// that differs from `planted_selfhost_side.tg` is the blank line above the
+// error there: line 2 here, line 3 there. The register expects exactly that
+// `LocationsDiffer`; a gate whose location comparison is neutered turns the
+// entry Stale. The disk scan skips `planted_*`, so the pair is indexed by name.

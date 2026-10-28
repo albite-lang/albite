@@ -1,0 +1,61 @@
+// src/compiler/elab/exprs/blocks/mutable/rebuild.tg
+// A join's construct rebuilt around its lowered arms (ADR 13.10.26r D3): the
+// same `if`, `if let` or `match`, each arm replaced in order, and a missing
+// `if let` `else` filled by the pass-through arm. Split from `arms.tg` for its
+// function count.
+
+use parser::ast::{
+    Expr, ExprBlock, ExprIf, ExprIfLet, ExprMatch, MatchArm, MaybeExpr, NoExpr, SomeExpr
+};
+use driver::ffi::{List, Nil, Cons};
+use elab::exprs::blocks::mutable::arms::{LoweredArm};
+
+pub fn arm_blocks(arms: List<LoweredArm>) -> List<Expr> {
+    match arms {
+        Nil() => Nil(),
+        Cons(arm, rest) => Cons(ExprBlock(arm.stmts, arm.tail, arm.span), arm_blocks(rest))
+    }
+}
+
+pub fn nth_or(xs: List<Expr>, n: Nat, fallback: Expr) -> Expr {
+    match xs {
+        Nil() => fallback,
+        Cons(x, rest) => if n == 0 { x } else { nth_or(rest, n - 1, fallback) }
+    }
+}
+
+/// The construct with its arms replaced; `pass_through` fills a missing
+/// `if let` `else` when the construct joins.
+pub fn rebuild(e: Expr, bodies: List<Expr>, pass_through: MaybeExpr) -> Expr {
+    match e {
+        ExprIf(cond, then_e, else_e, span) => ExprIf(cond, nth_or(bodies, 0, then_e), nth_or(bodies, 1, else_e), span),
+        ExprIfLet(pat, scrutinee, then_e, other, span) =>
+            ExprIfLet(pat, scrutinee, nth_or(bodies, 0, then_e), rebuild_else(other, bodies, pass_through), span),
+        ExprMatch(scrutinee, arms, span) => ExprMatch(scrutinee, rebuild_arms(arms, bodies), span),
+        _ => nth_or(bodies, 0, e)
+    }
+}
+
+fn rebuild_else(other: MaybeExpr, bodies: List<Expr>, pass_through: MaybeExpr) -> MaybeExpr {
+    match other {
+        NoExpr() => pass_through,
+        SomeExpr(e) => SomeExpr(nth_or(bodies, 1, e))
+    }
+}
+
+fn rebuild_arms(arms: List<MatchArm>, bodies: List<Expr>) -> List<MatchArm> {
+    match arms {
+        Nil() => Nil(),
+        Cons(arm, rest) =>
+            let body = nth_or(bodies, 0, arm.body);
+            let rebuilt: MatchArm = { pattern: arm.pattern, guard: arm.guard, body: body, span: arm.span };
+            Cons(rebuilt, rebuild_arms(rest, drop_first(bodies)))
+    }
+}
+
+pub fn drop_first(xs: List<Expr>) -> List<Expr> {
+    match xs {
+        Nil() => Nil(),
+        Cons(_, rest) => rest
+    }
+}

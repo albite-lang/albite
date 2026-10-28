@@ -1,0 +1,9 @@
+[E0106] Error: cannot assign to `x` inside a region: it is declared outside the region
+   ╭─[tests/golden/error/mut_in_region.tg:5:14]
+   │
+ 5 │     region { x = 5; 1 }
+   │              ───┬──  
+   │                 ╰──── 
+───╯
+
+error: aborting due to 1 error

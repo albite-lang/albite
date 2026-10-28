@@ -1,0 +1,8 @@
+// The `pure` twin of `foreign_call_in_proof.tg` (ADR 3.10.26q AC 6): the
+// evaluator runs `tg_string_compare` deterministically, so both compilers
+// accept a theorem over it.
+extern "C" fn tg_string_compare(a: String, b: String) -> Nat
+
+theorem compare_refl(s: String): tg_string_compare(s, s) == tg_string_compare(s, s) { refl }
+
+fn main() -> Nat { 0 }

@@ -1,0 +1,184 @@
+// Unit tests for the catch-all the self-host pushes into a nested group's
+// inner match (ADR 16.10.26d D1–D3, D5). Every subject is a pure function
+// over hand-built match arms; nothing here parses or elaborates a file. The
+// end-to-end values are `tests/golden/run/nested_catch_all_pushed.tg`.
+//
+// Arms are compared through `shape`, a one-line rendering: `B(X()) => 1`,
+// `_ => let other = q; 9`, `B(__nested) => match __nested { … }`.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::assert_eq_string;
+use driver::util::{nat_to_string, list_is_empty};
+use parser::ast::common::{ident_new, ident_name, ident_list_last, Path, MkPath};
+use parser::ast::{
+    Pattern, PatConstructor, PatVar, PatWildcard, MatchArm,
+    Expr, ExprIntLit, ExprLet, ExprPath, ExprMatch, NoExpr
+};
+use lexer::span::{Span, span_new};
+use elab::exprs::matches::desugar::{desugar_nested_arms, DesugarResult, DesugarOk, DesugarErr};
+use elab::exprs::matches::desugar::inner_arms::{
+    NestedPush, NoPush, Push, group_binder_name, pushed_arm, inner_arms_with_push
+};
+use elab::exprs::matches::arm_reorder::nested_push;
+
+// --- Builders ---------------------------------------------------------------
+
+fn sp() -> Span { span_new(0, 0, "") }
+
+fn path_of(name: String) -> Path { MkPath(Cons(ident_new(name, sp()), Nil), sp()) }
+
+/// `Name(subs…)`
+fn ctor(name: String, subs: List<Pattern>) -> Pattern { PatConstructor(path_of(name), subs, sp()) }
+
+/// `Outer(Inner())`
+fn nested(outer: String, inner: Pattern) -> Pattern { ctor(outer, Cons(inner, Nil)) }
+
+fn arm(pattern: Pattern, n: Nat) -> MatchArm {
+    { pattern: pattern, guard: NoExpr, body: ExprIntLit(n, sp()), span: sp() }
+}
+
+fn var_pat(name: String) -> Pattern { PatVar(ident_new(name, sp())) }
+
+/// `B(X()) => 1, B(Y()) => 2` — a group leaving `Z` out.
+fn partial_group() -> List<MatchArm> {
+    Cons(arm(nested("B", ctor("X", Nil)), 1), Cons(arm(nested("B", ctor("Y", Nil)), 2), Nil))
+}
+
+// --- Shapes -----------------------------------------------------------------
+
+fn path_name(p: Path) -> String {
+    match p { MkPath(ids, _) => ident_name(ident_list_last(ids)) }
+}
+
+fn pattern_shape(p: Pattern) -> String {
+    match p {
+        PatWildcard(_) => "_",
+        PatVar(id) => ident_name(id),
+        PatConstructor(path, subs, _) => path_name(path) ++ "(" ++ patterns_shape(subs) ++ ")",
+        _ => "?"
+    }
+}
+
+fn patterns_shape(ps: List<Pattern>) -> String {
+    match ps {
+        Nil() => "",
+        Cons(p, rest) =>
+            if list_is_empty(rest) { pattern_shape(p) } else { pattern_shape(p) ++ ", " ++ patterns_shape(rest) }
+    }
+}
+
+fn expr_shape(e: Expr) -> String {
+    match e {
+        ExprIntLit(n, _) => nat_to_string(n),
+        ExprPath(p) => path_name(p),
+        ExprLet(pat, _, rhs, body, _) =>
+            "let " ++ pattern_shape(pat) ++ " = " ++ expr_shape(rhs) ++ "; " ++ expr_shape(body),
+        ExprMatch(scrut, arms, _) => "match " ++ expr_shape(scrut) ++ " { " ++ arms_shape(arms) ++ " }",
+        _ => "?"
+    }
+}
+
+fn shape(a: MatchArm) -> String { pattern_shape(a.pattern) ++ " => " ++ expr_shape(a.body) }
+
+fn arms_shape(arms: List<MatchArm>) -> String {
+    match arms {
+        Nil() => "",
+        Cons(a, rest) =>
+            if list_is_empty(rest) { shape(a) } else { shape(a) ++ ", " ++ arms_shape(rest) }
+    }
+}
+
+fn result_shape(r: DesugarResult) -> String {
+    match r {
+        DesugarOk(arms) => arms_shape(arms),
+        DesugarErr(msg, _) => "error: " ++ msg
+    }
+}
+
+fn push_shape(p: NestedPush) -> String {
+    match p {
+        NoPush() => "no push",
+        Push(a, outer, binder) => shape(a) ++ " | outer " ++ outer ++ " | binder " ++ binder
+    }
+}
+
+// --- D2: the pushed arm -----------------------------------------------------
+
+// ADR 16.10.26d AC4: a wildcard catch-all is pushed unchanged.
+pub fn test_a_wildcard_catch_all_is_pushed_unchanged() -> Unit {
+    assert_eq_string(shape(pushed_arm(arm(PatWildcard(sp()), 7), "q")), "_ => 7")
+}
+
+// ADR 16.10.26d AC4: a variable catch-all becomes a wildcard whose body binds
+// its name to the outer scrutinee, not to the inner payload.
+pub fn test_a_variable_catch_all_binds_the_outer_value() -> Unit {
+    assert_eq_string(shape(pushed_arm(arm(var_pat("other"), 9), "q")), "_ => let other = q; 9")
+}
+
+// --- D1: which inner matches receive it --------------------------------------
+
+// ADR 16.10.26d AC4: a group leaving a constructor out ends with the push.
+pub fn test_a_partial_group_ends_with_the_pushed_arm() -> Unit {
+    let push = Push(arm(PatWildcard(sp()), 7), "q", "__nested");
+    assert_eq_string(arms_shape(inner_arms_with_push(partial_group(), push)), "X() => 1, Y() => 2, _ => 7")
+}
+
+// ADR 16.10.26d AC4: no arm is pushed into a group with its own catch-all
+// (`B(m)`), whose inner match would otherwise hold two.
+pub fn test_a_group_with_its_own_catch_all_gets_no_push() -> Unit {
+    let group = Cons(arm(nested("B", ctor("Som", Cons(var_pat("n"), Nil))), 2), Cons(arm(nested("B", var_pat("m")), 5), Nil));
+    let push = Push(arm(PatWildcard(sp()), 7), "q", "__nested");
+    assert_eq_string(arms_shape(inner_arms_with_push(group, push)), "Som(n) => 2, m => 5")
+}
+
+// ADR 16.10.26d AC4: arms with no catch-all push nothing.
+pub fn test_arms_with_no_catch_all_push_nothing() -> Unit {
+    let sorted = Cons(arm(ctor("A", Cons(var_pat("n"), Nil)), 3), partial_group());
+    assert_eq_string(push_shape(nested_push(sorted, "q")), "no push")
+}
+
+// ADR 16.10.26d D5: the catch-all ending the sorted arms is the one pushed.
+pub fn test_the_trailing_catch_all_is_the_push() -> Unit {
+    let sorted = Cons(arm(nested("B", ctor("X", Nil)), 1), Cons(arm(var_pat("other"), 9), Nil));
+    assert_eq_string(push_shape(nested_push(sorted, "q")), "other => 9 | outer q | binder __nested")
+}
+
+// --- D3: one binder per level -----------------------------------------------
+
+// ADR 16.10.26d AC4: `__nested` under a source scrutinee, one `_` longer under
+// a desugar binder.
+pub fn test_the_binder_is_one_per_level() -> Unit {
+    assert_eq_string(group_binder_name("q"), "__nested");
+    assert_eq_string(group_binder_name("_scrut"), "__nested");
+    assert_eq_string(group_binder_name("__nested"), "__nested_");
+    assert_eq_string(group_binder_name("__nested_"), "__nested__")
+}
+
+// --- The desugar end to end ---------------------------------------------------
+
+// ADR 16.10.26d §2: `B(X()) => 1, B(Y()) => 2, other => 9` over `q`.
+pub fn test_the_desugar_pushes_into_the_group() -> Unit {
+    let arms = Cons(arm(nested("B", ctor("X", Nil)), 1), Cons(arm(nested("B", ctor("Y", Nil)), 2), Cons(arm(var_pat("other"), 9), Nil)));
+    assert_eq_string(result_shape(desugar_nested_arms(arms, sp(), nested_push(arms, "q"))),
+        "B(__nested) => match __nested { X() => 1, Y() => 2, _ => let other = q; 9 }, other => 9")
+}
+
+// ADR 16.10.26d D3: one level down, the group binds `__nested_` and the pushed
+// `let` reads the enclosing `__nested`.
+pub fn test_a_deeper_group_reads_its_own_binder() -> Unit {
+    let arms = Cons(arm(nested("Sm", ctor("J", Cons(var_pat("n"), Nil))), 1), Cons(arm(var_pat("x"), 4), Nil));
+    assert_eq_string(result_shape(desugar_nested_arms(arms, sp(), nested_push(arms, "__nested"))),
+        "Sm(__nested_) => match __nested_ { J(n) => 1, _ => let x = __nested; 4 }, x => 4")
+}
+
+// ADR 16.10.26d D1: with no catch-all the inner match is left as it was.
+pub fn test_the_desugar_without_a_catch_all_is_unchanged() -> Unit {
+    let arms = partial_group();
+    assert_eq_string(result_shape(desugar_nested_arms(arms, sp(), nested_push(arms, "q"))),
+        "B(__nested) => match __nested { X() => 1, Y() => 2 }")
+}

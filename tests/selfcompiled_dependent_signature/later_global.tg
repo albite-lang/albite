@@ -1,0 +1,8 @@
+// ADR 2.10.26f §2.4 (30.9.26d D9): a signature citing a global declared
+// below it. It mentions no parameter; its self-host verdict is pinned as found.
+
+fn early() -> Eq<Nat, later(), 0> { refl }
+
+fn later() -> Nat { 0 }
+
+fn main() -> Nat { 0 }

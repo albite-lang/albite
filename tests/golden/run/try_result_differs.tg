@@ -1,0 +1,23 @@
+// Golden test (ADR 13.10.26o AC 3): a `try` whose `Result` differs from the
+// function's. The `try`'s `Err(3)` is matched inside `f`, which returns
+// `Ok(0)`; it never leaves `f` as `f`'s own `Err`, so main prints 0 + 7.
+type Result<T, E> = Ok(T) | Err(E)
+
+fn half(n: Nat) -> Result<Nat, Nat> {
+    if n % 2 == 0 { Ok(n / 2) } else { Err(n) }
+}
+
+fn f(n: Nat) -> Result<Nat, Bool> {
+    let r: Result<Nat, Nat> = try { half(n)? + 10 };
+    match r {
+        Ok(v) => Ok(v),
+        Err(_) => Ok(0)
+    }
+}
+
+fn main() -> Nat {
+    match f(3) {
+        Ok(v) => v + 7,
+        Err(b) => if b { 1 } else { 2 }
+    }
+}

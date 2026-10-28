@@ -1,0 +1,83 @@
+// Warning helpers for relative import/re-export fallback (ADR 10.5.26m).
+//
+// Shared by resolve.tg and reexport_resolve.tg to avoid duplicating
+// the guard + eprintln logic.
+//
+// The text is built by pure renderers that RETURN their lines, and the
+// `warn_*` functions print what they return (ADR 30.9.26i D7). A sibling's
+// re-export pass runs `WarnQuiet`, under which the renderers return nothing:
+// the bootstrap's sibling pass prints nothing, and the two must match.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::modules::path::{ModulePath, module_path_eq, module_path_display};
+use driver::ffi::process::eprintln;
+
+/// Whether a module-info pass may print its relative-path warnings: main's
+/// pass is `WarnLoud`, a workspace sibling's is `WarnQuiet` (D7).
+pub type WarnMode = WarnLoud | WarnQuiet
+
+/// What is warning and whether it may: `kind` is "import" or "re-export".
+/// The mode rides with the kind so no helper reaches six parameters.
+pub type WarnSite = { mode: WarnMode, kind: String }
+
+pub fn warn_site(mode: WarnMode, kind: String) -> WarnSite {
+    { mode: mode, kind: kind }
+}
+
+/// The two lines of a successful child/sibling fallback, or none under
+/// `WarnQuiet`.
+pub fn relative_fallback_lines(site: WarnSite, strategy: String, raw: ModulePath,
+                               resolved: ModulePath, current: ModulePath) -> List<String> {
+    match site.mode {
+        WarnQuiet() => Nil,
+        WarnLoud() =>
+            Cons("warning: relative " ++ site.kind ++ " `" ++ module_path_display(raw)
+                ++ "` resolved via " ++ strategy ++ " as `" ++ module_path_display(resolved)
+                ++ "` from `" ++ module_path_display(current) ++ "`",
+            Cons("  = help: use absolute " ++ site.kind ++ ": `"
+                ++ module_path_display(resolved) ++ "`", Nil))
+    }
+}
+
+/// The two lines of a failed relative lookup (P3b), or none under `WarnQuiet`.
+pub fn relative_failure_lines(site: WarnSite, raw: ModulePath, current: ModulePath) -> List<String> {
+    match site.mode {
+        WarnQuiet() => Nil,
+        WarnLoud() =>
+            Cons("warning: relative " ++ site.kind ++ " `" ++ module_path_display(raw)
+                ++ "` could not be resolved from `" ++ module_path_display(current) ++ "`",
+            Cons("  = help: use absolute " ++ site.kind
+                ++ " rooted at a top-level module (e.g., `parser::`, `elab::`, `driver::`, `lexer::`)", Nil))
+    }
+}
+
+/// Warn if raw != resolved (successful child/sibling fallback), return resolved.
+pub fn warn_relative_fallback(
+    site: WarnSite,
+    strategy: String,
+    raw: ModulePath,
+    resolved: ModulePath,
+    current: ModulePath
+) -> ModulePath {
+    if module_path_eq(raw, resolved) {
+        resolved
+    } else {
+        let _ = print_warning_lines(relative_fallback_lines(site, strategy, raw, resolved, current));
+        resolved
+    }
+}
+
+/// Warn when all lookups fail (P3b), return raw.
+pub fn warn_relative_failure(site: WarnSite, raw: ModulePath, current: ModulePath) -> ModulePath {
+    let _ = print_warning_lines(relative_failure_lines(site, raw, current));
+    raw
+}
+
+fn print_warning_lines(lines: List<String>) -> Unit {
+    match lines {
+        Nil() => {},
+        Cons(line, rest) =>
+            let _ = eprintln(line);
+            print_warning_lines(rest)
+    }
+}

@@ -1,0 +1,176 @@
+// Per-module elaboration types.
+//
+// Types for carrying results between per-module elaboration passes.
+// See ADR 5.5.26b (W6.3a).
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_reverse};
+use driver::modules::path::{ModulePath};
+use elab::ffi::{TypeHandle};
+use elab::env::defs::{TypeDefInfo, ValueDefInfo, ConstructorInfo};
+use elab::items::result::{ElabDef, ElabResult};
+use elab::env::{Env};
+use elab::env::types::{env_current_module_contents};
+use elab::error::{ElabError};
+use elab::env::module::{Import, import_is_reexport};
+use parser::ast::common::{Visibility};
+
+// ===========================================================================
+// PER-MODULE ELABORATION RESULT
+// ===========================================================================
+
+/// Result of elaborating a single module.
+pub type ModuleElabResult = {
+    path: ModulePath,
+    defs: List<ElabDef>,
+    type_defs: List<TypeDefExport>,
+    value_sigs: List<ValueSigExport>,
+    constructor_info: List<ConstructorExport>,
+    /// The module's `pub use` entries (ADR 4.10.26l D1): a private `use` is not
+    /// exported, and a re-exported type brings no constructors with it.
+    reexports: List<Import>,
+    errors: List<ElabError>
+}
+
+// ===========================================================================
+// EXPORT TYPES
+// ===========================================================================
+
+/// Exported type definition from a completed module.
+pub type TypeDefExport = {
+    info: TypeDefInfo,
+    module: ModulePath
+}
+
+/// Create a TypeDefExport.
+pub fn type_def_export_new(info: TypeDefInfo, module: ModulePath) -> TypeDefExport {
+    { info: info, module: module }
+}
+
+/// Exported value signature from a completed module.
+pub type ValueSigExport = {
+    name: String,
+    ty: TypeHandle,
+    module: ModulePath,
+    /// The declared visibility, so another module's private value stays
+    /// private once exported (ADR 4.10.26l D1).
+    visibility: Visibility
+}
+
+/// Create a ValueSigExport.
+pub fn value_sig_export_new(name: String, ty: TypeHandle, module: ModulePath, visibility: Visibility) -> ValueSigExport {
+    { name: name, ty: ty, module: module, visibility: visibility }
+}
+
+/// Exported constructor from a completed module.
+pub type ConstructorExport = {
+    info: ConstructorInfo,
+    module: ModulePath
+}
+
+/// Create a ConstructorExport.
+pub fn constructor_export_new(info: ConstructorInfo, module: ModulePath) -> ConstructorExport {
+    { info: info, module: module }
+}
+
+// ===========================================================================
+// EXPORT WRAPPING HELPERS (shared by combined.tg and mod.tg)
+// ===========================================================================
+
+/// Wrap a list of TypeDefInfo as TypeDefExports for a given module.
+pub fn wrap_type_exports(
+    types: List<TypeDefInfo>, module: ModulePath
+) -> List<TypeDefExport> {
+    list_reverse(wrap_type_exports_acc(types, module, Nil))
+}
+
+fn wrap_type_exports_acc(
+    types: List<TypeDefInfo>, module: ModulePath, acc: List<TypeDefExport>
+) -> List<TypeDefExport> {
+    match types {
+        Nil() => acc,
+        Cons(info, rest) =>
+            wrap_type_exports_acc(rest, module,
+                 Cons(type_def_export_new(info, module), acc))
+    }
+}
+
+/// Wrap a list of ValueDefInfo as ValueSigExports for a given module.
+pub fn wrap_value_exports(
+    values: List<ValueDefInfo>, module: ModulePath
+) -> List<ValueSigExport> {
+    list_reverse(wrap_value_exports_acc(values, module, Nil))
+}
+
+fn wrap_value_exports_acc(
+    values: List<ValueDefInfo>, module: ModulePath, acc: List<ValueSigExport>
+) -> List<ValueSigExport> {
+    match values {
+        Nil() => acc,
+        Cons(info, rest) =>
+            wrap_value_exports_acc(rest, module,
+                 Cons(value_sig_export_new(info.name, info.ty, module, info.visibility), acc))
+    }
+}
+
+/// Wrap a list of ConstructorInfo as ConstructorExports for a given module.
+pub fn wrap_ctor_exports(
+    ctors: List<ConstructorInfo>, module: ModulePath
+) -> List<ConstructorExport> {
+    list_reverse(wrap_ctor_exports_acc(ctors, module, Nil))
+}
+
+fn wrap_ctor_exports_acc(
+    ctors: List<ConstructorInfo>, module: ModulePath, acc: List<ConstructorExport>
+) -> List<ConstructorExport> {
+    match ctors {
+        Nil() => acc,
+        Cons(info, rest) =>
+            wrap_ctor_exports_acc(rest, module,
+                 Cons(constructor_export_new(info, module), acc))
+    }
+}
+
+// ===========================================================================
+// MODULE RESULT BUILDER
+// ===========================================================================
+
+/// Build a ModuleElabResult from elaboration result and final env.
+///
+/// **The current slot is the module's OWN** (ADR 4.10.26l D2): it holds what
+/// the module defines, at the declared visibility, and what it imports. So the
+/// export is its own surface plus its `pub use`s, not the ~2,107 seeded
+/// globals it carried while every module was elaborated as the root: the
+/// narrowing ADR 5.8.26f priced and descoped as an optimisation, made here for
+/// correctness.
+pub fn build_module_result(
+    current_path: ModulePath,
+    elab_result: ElabResult,
+    final_env: Env
+) -> ModuleElabResult {
+    let own_contents = env_current_module_contents(final_env);
+    let type_exports = wrap_type_exports(own_contents.types, current_path);
+    let value_exports = wrap_value_exports(own_contents.values, current_path);
+    let ctor_exports = wrap_ctor_exports(
+        own_contents.constructors.all, current_path
+    );
+    let result: ModuleElabResult = {
+        path: current_path,
+        defs: elab_result.defs,
+        type_defs: type_exports,
+        value_sigs: value_exports,
+        constructor_info: ctor_exports,
+        reexports: public_imports(own_contents.imports.all),
+        errors: elab_result.errors
+    };
+    result
+}
+
+/// The imports a module re-exports: its `pub use`s, never a private `use`.
+pub fn public_imports(imports: List<Import>) -> List<Import> {
+    match imports {
+        Nil() => Nil,
+        Cons(imp, rest) =>
+            if import_is_reexport(imp) { Cons(imp, public_imports(rest)) } else { public_imports(rest) }
+    }
+}

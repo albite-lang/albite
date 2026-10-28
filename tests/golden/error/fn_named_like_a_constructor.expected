@@ -1,0 +1,14 @@
+[E0004] Error: the name `A` is defined multiple times
+   ╭─[tests/golden/error/fn_named_like_a_constructor.tg:5:4]
+   │
+ 4 │ type T = A | B
+   │          ┬  
+   │          ╰── `A` is first defined here
+ 5 │ fn A() -> Nat { 3 }
+   │    ┬  
+   │    ╰── 
+   │ 
+   │ Help: a name is defined once per file; rename or remove one of them
+───╯
+
+error: aborting due to 1 error

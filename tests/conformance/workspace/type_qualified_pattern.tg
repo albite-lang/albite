@@ -1,0 +1,9 @@
+// A type-qualified constructor pattern (ADR 3.10.26l §2.4, D2): accepted by
+// the bootstrap, so the self-host is held to accept it with the same count.
+type OptTyq = NadaTyq | AlgoTyq(Nat)
+
+fn pick(o: OptTyq) -> Nat {
+    match o { OptTyq::AlgoTyq(k) => k, _ => 0 }
+}
+
+fn main() -> Nat { pick(AlgoTyq(1)) }

@@ -1,0 +1,3 @@
+// Workspace fixture root (ADR 30.9.26i §2.5). Its presence stops the walk-up
+// here, so every entry below resolves its siblings in this directory.
+fn main() -> Nat { 0 }

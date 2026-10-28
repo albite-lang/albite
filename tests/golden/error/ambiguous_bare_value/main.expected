@@ -1,0 +1,11 @@
+[E0019] Error: `helper` is ambiguous: 2 definitions are visible here
+   ╭─[tests/golden/error/ambiguous_bare_value/main.tg:8:5]
+   │
+ 8 │     helper(1)
+   │     ───┬──  
+   │        ╰──── 
+   │ 
+   │ Help: qualify it: `x::helper` or `y::helper`, or import one with `use`
+───╯
+
+error: aborting due to 1 error

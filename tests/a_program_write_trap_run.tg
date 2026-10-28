@@ -1,0 +1,35 @@
+// tests/a_program_write_trap_run.tg — ADR 9.10.26f AC 4: a program's `write`
+// and `abort` do not swallow the overflow trap.
+//
+// The program defines both, prints one line, then overflows `Int`. With the
+// definitions spelled apart, the native trap's `write` and `abort` reach libc
+// and the program ends after the print, as the evaluator does: `diff exec`
+// reads two sides that fail with equal stdout as parity. Before 9.10.26f the
+// link joined the trap's calls to these bodies, so the native side carried on
+// past the overflow and printed a second line — a stdout mismatch. The trap's
+// stderr line itself is pinned by the golden
+// tests/golden/compile/a_program_write_does_not_swallow_the_trap.tg.
+
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+pub fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+fn write(fd: Int, buf: Int, len: Int) -> Int { len }
+fn abort() -> Int { 0 }
+
+fn signed_max() -> Int { 9223372036854775807 }
+
+fn main() -> Unit {
+    println("before overflow");
+    let overflowed = signed_max() + write(2, 0, 1) + abort();
+    // Unreachable on both sides; a captured trap would print one of these.
+    if overflowed < 0 { println("wrapped") } else { println("after overflow") }
+}

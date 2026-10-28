@@ -1,0 +1,25 @@
+[E0123] Error: two packages declare the C symbol `tg_x`: package `lib_a` and package `lib_b`
+   ╭─[tests/golden/error/package_extern_collision/albite.toml:6:1]
+   │
+ 6 │ lib_b = { path = "packages/lib_b" }
+   │ ──┬──  
+   │   ╰──── 
+   │ 
+   │ Help: declare `tg_x` once, in one package, and import it from there
+───╯
+note: `tg_x` defined in `lib_a` here
+   ╭─[tests/golden/error/package_extern_collision/packages/lib_a/lib.tg:1:19]
+   │
+ 1 │ pub extern "C" fn tg_x() -> Nat
+   │                   ──┬─  
+   │                     ╰─── `tg_x` defined in `lib_a` here
+───╯
+note: and in `lib_b` here
+   ╭─[tests/golden/error/package_extern_collision/packages/lib_b/lib.tg:1:19]
+   │
+ 1 │ pub extern "C" fn tg_x(n: Nat) -> Nat
+   │                   ──┬─  
+   │                     ╰─── and in `lib_b` here
+───╯
+
+error: aborting due to 1 error

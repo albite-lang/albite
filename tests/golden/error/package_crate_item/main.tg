@@ -1,0 +1,2 @@
+// A library's pub(crate) item stops at its package boundary (D6).
+fn main() -> Nat { lib_a::internal() }

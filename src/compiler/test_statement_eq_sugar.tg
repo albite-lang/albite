@@ -1,0 +1,172 @@
+// The `==` statement sugar on the self-host (ADR 2.10.26f D7, AC 5).
+//
+// A return type or a proposition may open with an identifier or `(` and still
+// be `==` sugar: `fn r(n: Nat) -> n + 0 == n { refl }`. The self-host's
+// `parse_type` reads that as a sum type, so a bounded lookahead decides first,
+// with the bootstrap's terminator set. Each case below is one the bootstrap's
+// `bootstrap/src/parser/tests/eq_sugar.rs` pins, run through the real chain
+// `tokenize → statement_is_eq_sugar`, or `tokenize → parse_file` where the
+// question is what the item parsed to.
+//
+// Tier 5: the classifier is a Bool either way, so only running it can tell a
+// right answer from a wrong one. The must-fail twin is
+// mustfail_statement_eq_sugar.tg, checked by `make check-mustfail-fixtures`.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_bool, assert_eq_nat};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_len};
+use lexer::scanner::{tokenize, lex_result_tokens};
+use parser::lib::{parse_file, file_parse_result_items, file_parse_error_count};
+use parser::cursor::{cursor_new};
+use parser::types::eq_sugar::{statement_is_eq_sugar};
+use parser::ast::{Item, ItemFn, TypeExpr, TyEq, MaybeTypeExpr, SomeTypeExpr, NoTypeExpr, Expr, ExprPath};
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+/// Classify the statement that starts a source string.
+fn classify_statement(src: String) -> Bool {
+    statement_is_eq_sugar(cursor_new(lex_result_tokens(tokenize(src, "t.tg")), "t.tg"))
+}
+
+fn items_of(src: String) -> List<Item> {
+    file_parse_result_items(parse_file(lex_result_tokens(tokenize(src, "t.tg")), "t.tg"))
+}
+
+fn error_count_of(src: String) -> Nat {
+    file_parse_error_count(parse_file(lex_result_tokens(tokenize(src, "t.tg")), "t.tg"))
+}
+
+/// The first item's return type, if it is a function with one.
+fn first_return_type(src: String) -> MaybeTypeExpr {
+    let items: List<Item> = items_of(src);
+    match items {
+        Nil() => NoTypeExpr(),
+        Cons(item, _) => item_return_type(item)
+    }
+}
+
+fn item_return_type(item: Item) -> MaybeTypeExpr {
+    match item {
+        ItemFn(def) => def.return_type,
+        _ => NoTypeExpr()
+    }
+}
+
+/// Whether the first function's return type parsed as `==` sugar.
+fn returns_eq(src: String) -> Bool {
+    match first_return_type(src) {
+        NoTypeExpr() => false,
+        SomeTypeExpr(ty) => is_eq_type(ty)
+    }
+}
+
+fn is_eq_type(ty: TypeExpr) -> Bool {
+    match ty {
+        TyEq(_, _, _) => true,
+        _ => false
+    }
+}
+
+/// Whether the first function's `==` statement has a bare path on its right.
+fn eq_rhs_is_path(src: String) -> Bool {
+    match first_return_type(src) {
+        NoTypeExpr() => false,
+        SomeTypeExpr(ty) => type_rhs_is_path(ty)
+    }
+}
+
+fn type_rhs_is_path(ty: TypeExpr) -> Bool {
+    match ty {
+        TyEq(_, rhs, _) => is_path_expr(rhs),
+        _ => false
+    }
+}
+
+fn is_path_expr(e: Expr) -> Bool {
+    match e {
+        ExprPath(_) => true,
+        _ => false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The classifier
+// ---------------------------------------------------------------------------
+
+// 2.10.26f AC5: the three leading-identifier spellings are sugar.
+pub fn test_leading_identifier_statements_are_sugar() -> Unit {
+    assert_eq_bool(classify_statement("n + 0 == n {"), true);
+    assert_eq_bool(classify_statement("(n + 0) == n {"), true);
+    assert_eq_bool(classify_statement("add(n, 0) + 1 == n {"), true)
+}
+
+pub fn test_types_without_eq_are_types() -> Unit {
+    assert_eq_bool(classify_statement("A + B {"), false);
+    assert_eq_bool(classify_statement("A * B -> C {"), false);
+    assert_eq_bool(classify_statement("Eq<Nat, a, b> {"), false)
+}
+
+pub fn test_each_terminator_stops_the_scan() -> Unit {
+    assert_eq_bool(classify_statement("n + m { } == m"), false);
+    assert_eq_bool(classify_statement("n + m ; n == m"), false);
+    assert_eq_bool(classify_statement("n + m => n == m"), false);
+    assert_eq_bool(classify_statement("n + m where n == m"), false);
+    assert_eq_bool(classify_statement("n + m fn g() == m"), false);
+    assert_eq_bool(classify_statement("n + m"), false)
+}
+
+pub fn test_a_nested_eq_is_an_operands() -> Unit {
+    assert_eq_bool(classify_statement("f(a == b) {"), false);
+    assert_eq_bool(classify_statement("n ) == m"), false);
+    assert_eq_bool(classify_statement("({ }) == m {"), true)
+}
+
+pub fn test_pipe_and_as_are_scanned_past() -> Unit {
+    assert_eq_bool(classify_statement("x as Nat == n {"), true);
+    assert_eq_bool(classify_statement("(|a| a) == n {"), true)
+}
+
+pub fn test_only_an_identifier_or_paren_starts_a_scan() -> Unit {
+    assert_eq_bool(classify_statement("0 == n {"), false);
+    assert_eq_bool(classify_statement(""), false)
+}
+
+// An axiom has no body, so the next item's keyword is what ends its scan.
+// Classifier-level only: parsing a whole axiom item on the evaluator stops at
+// a representation mismatch (`Fst` of a sum) unrelated to the sugar.
+pub fn test_an_axiom_proposition_ends_at_the_next_item() -> Unit {
+    assert_eq_bool(classify_statement("A + B fn g(n: Nat) -> Bool { n == n }"), false);
+    assert_eq_bool(classify_statement("A + B pub fn g(n: Nat) -> Bool { n == n }"), false);
+    assert_eq_bool(classify_statement("A + B axiom b(n: Nat): n == n"), false);
+    assert_eq_bool(classify_statement("A + B #[partial] fn g() -> Bool { 0 == 0 }"), false)
+}
+
+// ---------------------------------------------------------------------------
+// The parse
+// ---------------------------------------------------------------------------
+
+pub fn test_a_sugar_statement_parses_and_stops_at_the_body() -> Unit {
+    let src = "fn r(n: Nat) -> n + 0 == n { refl }";
+    assert_eq_nat(error_count_of(src), 0);
+    assert_eq_bool(returns_eq(src), true)
+}
+
+pub fn test_the_body_brace_never_opens_a_named_record() -> Unit {
+    let src = "fn f(x: Nat) -> x == Some { refl }\nfn g() -> Nat { 0 }";
+    assert_eq_nat(error_count_of(src), 0);
+    assert_eq_nat(list_len(items_of(src)), 2);
+    assert_eq_bool(eq_rhs_is_path(src), true)
+}
+
+pub fn test_a_plain_return_type_is_unchanged() -> Unit {
+    let src = "fn f(a: Nat) -> Eq<Nat, a, a> { refl }";
+    assert_eq_nat(error_count_of(src), 0);
+    assert_eq_bool(returns_eq(src), false)
+}

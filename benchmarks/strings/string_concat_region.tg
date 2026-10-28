@@ -1,0 +1,47 @@
+// Benchmark: string_concat with each chunk inside a region (ADR 13.10.26q D7)
+//
+// The same repeated concatenation as string_concat.tg, split into chunks of
+// 100 repetitions. Each chunk builds its 4400-byte string in a region — every
+// intermediate string is garbage — and the region's value, the String, is
+// copied out and measured after the release, so the copy-out is on the
+// measured path. The record compares it against this file with `region`
+// removed (benchmarks/results/13.10.26q.region-copy-out-rss.md).
+// Default: 150 chunks of 100 reps of a 44-char string. Checksum = 660000.
+// Usage: ./string_concat_region [chunks]  (default: 150)
+
+extern "C" fn tg_argc() -> Nat
+extern "C" fn tg_argv(index: Nat) -> Nat
+extern "C" fn tg_string_to_nat(s: Nat) -> Nat
+
+pub type PNat = PZero | PSucc(PNat)
+
+fn from_nat(n: Nat) -> PNat {
+  if n == 0 { PZero } else { PSucc(from_nat(n - 1)) }
+}
+
+fn repeat(s: String, n: PNat) -> String {
+  match n {
+    PZero() => "",
+    PSucc(p) => s ++ repeat(s, p),
+  }
+}
+
+fn chunk() -> Nat {
+  let built = region { repeat("the quick brown fox jumps over the lazy dog!", from_nat(100)) };
+  string_len(built)
+}
+
+fn chunks(n: PNat, acc: Nat) -> Nat {
+  match n {
+    PZero() => acc,
+    PSucc(p) => chunks(p, acc + chunk()),
+  }
+}
+
+fn get_chunks() -> Nat {
+  if tg_argc() > 1 { tg_string_to_nat(tg_argv(1)) } else { 150 }
+}
+
+fn main() -> Nat {
+  chunks(from_nat(get_chunks()), 0)
+}

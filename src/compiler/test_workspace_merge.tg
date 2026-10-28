@@ -1,0 +1,298 @@
+// Unit tests for the self-host's workspace siblings (ADR 30.9.26i AC 1–3).
+// Every subject is a pure function over hand-built values: nothing here lists
+// a directory or parses a file. The container proves those (AC 5–8).
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::{assert_eq_bool, assert_eq_string, assert_eq_nat};
+use driver::util::{Option, Some, None, string_eq, string_join, list_len, starts_with};
+use parser::ast::common::{Visibility, VisPublic, VisPrivate};
+use driver::modules::path::{ModulePath, module_path_root, module_path_single, module_path_new,
+                            module_path_eq, module_path_display};
+use driver::modules::info::{
+    ModuleInfo, ModuleRegInfo, ModuleRegistryEntry, VisibilityEntry, ModuleFileEntry, ItemModuleEntry,
+    module_info_empty, module_info_register_module, module_info_register_item,
+    module_info_get_module, module_item_names_empty, module_item_names_add_value
+};
+use driver::modules::workspace::{sort_paths_bytewise};
+use driver::modules::workspace::paths::{normalize_file_path, same_file, next_probe_dir, already_parsed};
+use driver::modules::workspace::merge::{merge_module_info};
+use driver::modules::build::warn::{
+    WarnLoud, WarnQuiet, warn_site, relative_fallback_lines, relative_failure_lines
+};
+use elab::env::{env_new, populate_module_info};
+use elab::env::module::path::{elab_module_path_new};
+use elab::items::imports::lookup::{lookup_in_module};
+
+// --- Builders and probes ---------------------------------------------------
+
+/// `info` plus a module at `path` from `file` defining one value, `value`.
+fn with_module(info: ModuleInfo, path: ModulePath, value: String, file: String,
+               vis: Visibility) -> ModuleInfo {
+    let no_parent: Option<ModulePath> = None;
+    let reg: ModuleRegInfo = {
+        path: path,
+        contents: module_item_names_add_value(module_item_names_empty(), value),
+        visibility: vis,
+        parent: no_parent
+    };
+    module_info_register_item(module_info_register_module(info, reg, file), value, path)
+}
+
+fn single(path: ModulePath, value: String, file: String) -> ModuleInfo {
+    with_module(module_info_empty(), path, value, file, VisPublic)
+}
+
+fn has_value(info: ModuleInfo, path: ModulePath, value: String) -> Bool {
+    match module_info_get_module(info, path) {
+        None() => false,
+        Some(names) => names_contain(names.values, value)
+    }
+}
+
+fn names_contain(names: List<String>, wanted: String) -> Bool {
+    match names {
+        Nil() => false,
+        Cons(n, rest) => string_eq(n, wanted) || names_contain(rest, wanted)
+    }
+}
+
+fn registry_count(entries: List<ModuleRegistryEntry>, path: ModulePath) -> Nat {
+    match entries {
+        Nil() => 0,
+        Cons(entry, rest) =>
+            let (p, _) = entry;
+            (if module_path_eq(p, path) { 1 } else { 0 }) + registry_count(rest, path)
+    }
+}
+
+/// What a first-match reader sees for item `name`: its module, or `<none>`.
+fn item_path(entries: List<ItemModuleEntry>, name: String) -> String {
+    match entries {
+        Nil() => "<none>",
+        Cons(entry, rest) =>
+            let (n, path) = entry;
+            if string_eq(n, name) { module_path_display(path) } else { item_path(rest, name) }
+    }
+}
+
+fn first_file(entries: List<ModuleFileEntry>, path: ModulePath) -> String {
+    match entries {
+        Nil() => "<none>",
+        Cons(entry, rest) =>
+            let (p, file) = entry;
+            if module_path_eq(p, path) { file } else { first_file(rest, path) }
+    }
+}
+
+fn first_vis_is_public(entries: List<VisibilityEntry>, path: ModulePath) -> Bool {
+    match entries {
+        Nil() => false,
+        Cons(entry, rest) =>
+            let (p, vis, _) = entry;
+            if module_path_eq(p, path) { workspace_vis_is_public(vis) } else { first_vis_is_public(rest, path) }
+    }
+}
+
+fn workspace_vis_is_public(vis: Visibility) -> Bool {
+    match vis {
+        VisPublic() => true,
+        _ => false
+    }
+}
+
+fn probe(dir: String, parent: Option<String>) -> String {
+    match next_probe_dir(dir, parent) {
+        None() => "<stop>",
+        Some(next) => next
+    }
+}
+
+fn no_parent_dir() -> Option<String> {
+    let nothing: Option<String> = None;
+    nothing
+}
+
+fn lexer_path() -> ModulePath { module_path_single("lexer") }
+
+/// Main's `lexer` and a sibling's, from different files: only the key rule decides.
+fn clash_merged() -> ModuleInfo {
+    let main = with_module(module_info_empty(), lexer_path(), "main_val", "lexer.tg", VisPublic);
+    let sibling = with_module(module_info_empty(), lexer_path(), "sib_val", "sub/lexer.tg", VisPrivate);
+    merge_module_info(main, sibling)
+}
+
+// --- AC 1: the merge keeps main on every clash (D2) ------------------------
+
+pub fn test_merge_keeps_main_module_on_path_clash() -> Unit {
+    let merged = clash_merged();
+    assert_eq_bool(has_value(merged, lexer_path(), "main_val"), true);
+    assert_eq_bool(has_value(merged, lexer_path(), "sib_val"), false);
+    assert_eq_nat(registry_count(merged.modules, lexer_path()), 1)
+}
+
+pub fn test_merge_keeps_main_item_on_name_clash() -> Unit {
+    let main = single(module_path_single("a"), "shared", "a.tg");
+    let sibling = single(module_path_single("b"), "shared", "b.tg");
+    let merged = merge_module_info(main, sibling);
+    assert_eq_string(item_path(merged.item_modules, "shared"), "a");
+    assert_eq_nat(list_len(merged.item_modules), 1)
+}
+
+pub fn test_merge_keeps_main_visibility_and_file() -> Unit {
+    let merged = clash_merged();
+    assert_eq_bool(first_vis_is_public(merged.module_visibility, lexer_path()), true);
+    assert_eq_string(first_file(merged.module_files, lexer_path()), "lexer.tg");
+    assert_eq_nat(list_len(merged.module_visibility), 1);
+    assert_eq_nat(list_len(merged.module_files), 1)
+}
+
+pub fn test_merge_adds_sibling_only_entries() -> Unit {
+    let main = single(lexer_path(), "main_val", "lexer.tg");
+    let util = module_path_single("util");
+    let merged = merge_module_info(main, single(util, "double", "util.tg"));
+    assert_eq_bool(has_value(merged, util, "double"), true);
+    assert_eq_string(item_path(merged.item_modules, "double"), "util");
+    assert_eq_bool(first_vis_is_public(merged.module_visibility, util), true);
+    assert_eq_string(first_file(merged.module_files, util), "util.tg");
+    assert_eq_nat(list_len(merged.modules), 2)
+}
+
+pub fn test_merge_empty_fallback_is_identity() -> Unit {
+    let main = with_module(single(lexer_path(), "main_val", "lexer.tg"),
+                           module_path_single("util"), "double", "util.tg", VisPrivate);
+    let merged = merge_module_info(main, module_info_empty());
+    assert_eq_nat(list_len(merged.modules), list_len(main.modules));
+    assert_eq_nat(list_len(merged.item_modules), list_len(main.item_modules));
+    assert_eq_nat(list_len(merged.module_visibility), list_len(main.module_visibility));
+    assert_eq_nat(list_len(merged.module_files), list_len(main.module_files));
+    assert_eq_bool(has_value(merged, module_path_single("util"), "double"), true)
+}
+
+pub fn test_merge_first_sibling_wins() -> Unit {
+    let util = module_path_single("util");
+    let main = single(lexer_path(), "main_val", "lexer.tg");
+    let first = single(util, "one", "a/util.tg");
+    let second = single(util, "two", "b/util.tg");
+    let merged = merge_module_info(merge_module_info(main, first), second);
+    assert_eq_bool(has_value(merged, util, "one"), true);
+    assert_eq_bool(has_value(merged, util, "two"), false);
+    assert_eq_string(first_file(merged.module_files, util), "a/util.tg");
+    assert_eq_nat(registry_count(merged.modules, util), 1)
+}
+
+/// `register_modules_from_info` inserts in order and a later insert REPLACES:
+/// under a plain append the sibling's stub was the one left standing.
+pub fn test_populated_map_holds_main_stub_on_clash() -> Unit {
+    let env = populate_module_info(env_new(), clash_merged());
+    let lexer = elab_module_path_new(Cons("lexer", Nil));
+    assert_eq_bool(lookup_in_module(env, lexer, "main_val"), true);
+    assert_eq_bool(lookup_in_module(env, lexer, "sib_val"), false)
+}
+
+// --- AC 2: a file main owns is main's module, however spelled (D3, D4) ----
+
+pub fn test_normalize_file_path_cases() -> Unit {
+    assert_eq_string(normalize_file_path("./driver/mod.tg"), "driver/mod.tg");
+    assert_eq_string(normalize_file_path("driver//mod.tg"), "driver/mod.tg");
+    assert_eq_string(normalize_file_path("driver/./mod.tg"), "driver/mod.tg");
+    assert_eq_string(normalize_file_path("driver/util/../mod.tg"), "driver/mod.tg");
+    assert_eq_string(normalize_file_path("../x/./y.tg"), "../x/y.tg");
+    assert_eq_string(normalize_file_path("/a/../../b.tg"), "/b.tg");
+    assert_eq_string(normalize_file_path("./"), ".");
+    assert_eq_bool(same_file("./main.tg", "main.tg"), true);
+    assert_eq_bool(same_file("sub/main.tg", "main.tg"), false)
+}
+
+pub fn test_normalize_is_idempotent() -> Unit {
+    let once = normalize_file_path("./a//b/../c/./d.tg");
+    assert_eq_string(once, "a/c/d.tg");
+    assert_eq_string(normalize_file_path(once), once);
+    let up = normalize_file_path("../../x.tg");
+    assert_eq_string(normalize_file_path(up), up)
+}
+
+pub fn test_merge_drops_module_whose_file_main_owns() -> Unit {
+    let driver = module_path_single("driver");
+    let main = single(driver, "main_driver_fn", "driver/mod.tg");
+    let test_x = module_path_single("test_x");
+    let test_x_driver = module_path_new(Cons("test_x", Cons("driver", Nil)));
+    let sibling = with_module(single(test_x, "x_fn", "test_x.tg"),
+                              test_x_driver, "drv_only", "./driver/mod.tg", VisPublic);
+    let merged = merge_module_info(main, sibling);
+    assert_eq_nat(registry_count(merged.modules, test_x_driver), 0);
+    assert_eq_string(item_path(merged.item_modules, "drv_only"), "<none>");
+    assert_eq_string(first_file(merged.module_files, test_x_driver), "<none>");
+    assert_eq_bool(first_vis_is_public(merged.module_visibility, test_x_driver), false);
+    assert_eq_bool(has_value(merged, test_x, "x_fn"), true);
+    assert_eq_string(item_path(merged.item_modules, "x_fn"), "test_x")
+}
+
+pub fn test_merge_keeps_module_with_new_file() -> Unit {
+    let main = single(module_path_root(), "main", "main.tg");
+    let util = module_path_single("util");
+    let merged = merge_module_info(main, single(util, "double", "./util.tg"));
+    assert_eq_nat(registry_count(merged.modules, util), 1);
+    assert_eq_string(first_file(merged.module_files, util), "./util.tg")
+}
+
+// --- AC 3: walk-up step, pruning, order and warnings, decided purely -------
+
+pub fn test_next_probe_dir_continues_at_dot() -> Unit {
+    assert_eq_string(probe("sub", no_parent_dir()), ".");
+    assert_eq_string(probe("sub", Some("")), ".")
+}
+
+pub fn test_next_probe_dir_stops_at_dot_and_root() -> Unit {
+    assert_eq_string(probe(".", no_parent_dir()), "<stop>");
+    assert_eq_string(probe(".", Some("..")), "<stop>");
+    assert_eq_string(probe("/", no_parent_dir()), "<stop>");
+    assert_eq_string(probe("/", Some("/")), "<stop>");
+    assert_eq_string(probe("a", Some("a")), "<stop>")
+}
+
+pub fn test_next_probe_dir_follows_parent() -> Unit {
+    assert_eq_string(probe("a/b", Some("a")), "a");
+    assert_eq_string(probe("/a", Some("/")), "/")
+}
+
+pub fn test_already_parsed_matches_normalised_spelling() -> Unit {
+    let known = Cons(normalize_file_path("driver/mod.tg"), Nil);
+    assert_eq_bool(already_parsed("./driver/mod.tg", known), true);
+    assert_eq_bool(already_parsed("driver//mod.tg", known), true);
+    assert_eq_bool(already_parsed("util.tg", known), false);
+    assert_eq_bool(already_parsed("driver/mod.tg", Nil), false)
+}
+
+pub fn test_siblings_sort_bytewise() -> Unit {
+    let sorted = sort_paths_bytewise(Cons("main.tg", Cons("driver/mod.tg", Cons("codegen/mod.tg", Nil))));
+    assert_eq_string(string_join(sorted, ","), "codegen/mod.tg,driver/mod.tg,main.tg");
+    assert_eq_string(string_join(sort_paths_bytewise(Cons("b", Cons("a", Cons("b", Nil)))), ","), "a,b,b")
+}
+
+pub fn test_quiet_mode_renders_no_reexport_warning() -> Unit {
+    let site = warn_site(WarnQuiet, "re-export");
+    let raw = module_path_single("nosuch");
+    let here = module_path_single("broken_reexport");
+    assert_eq_nat(list_len(relative_failure_lines(site, raw, here)), 0);
+    assert_eq_nat(list_len(relative_fallback_lines(site, "child", raw, raw, here)), 0)
+}
+
+pub fn test_loud_mode_renders_two_lines() -> Unit {
+    let site = warn_site(WarnLoud, "re-export");
+    let raw = module_path_single("nosuch");
+    let here = module_path_single("broken_reexport");
+    let failure = relative_failure_lines(site, raw, here);
+    assert_eq_nat(list_len(failure), 2);
+    assert_eq_string(string_join(failure, "|"),
+        "warning: relative re-export `nosuch` could not be resolved from `broken_reexport`|"
+        ++ "  = help: use absolute re-export rooted at a top-level module (e.g., `parser::`, `elab::`, `driver::`, `lexer::`)");
+    let fallback = relative_fallback_lines(site, "child", raw, module_path_single("child"), here);
+    assert_eq_nat(list_len(fallback), 2);
+    assert_eq_bool(starts_with(string_join(fallback, "|"),
+        "warning: relative re-export `nosuch` resolved via child as `child` from `broken_reexport`"), true)
+}

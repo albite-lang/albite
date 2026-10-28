@@ -1,0 +1,8 @@
+// ADR 4.10.26i D7 (Q7): a statement family and its first lemma. The bootstrap
+// accepts it and the kernel admits `le_refl`; tungsten1 has no sorts, `exists`
+// or families yet (roadmap.4.10.26c D4), so it refuses — a refusal on the
+// self-host's side, never an acceptance, recorded by the battery row.
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+
+pub theorem le_refl(n: Nat) -> Le<n, n> { (0, refl) }

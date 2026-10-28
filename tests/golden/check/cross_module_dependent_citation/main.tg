@@ -1,0 +1,16 @@
+// A lemma cited from another module (ADR 30.9.26d P0 (i)): the imported
+// signature arrives with its `Pi`, so the citation substitutes the argument —
+// cold, and warm from the IR cache after the IR_SCHEMA_VERSION bump.
+
+pub mod lemmas;
+
+use lemmas::add_zero_left;
+
+fn cited() -> Bool {
+    let _p: Eq<Nat, 0 + 3, 3> = add_zero_left(3);
+    true
+}
+
+fn cited_at_the_wrong_argument() -> Unit {
+    expect_error({ let _q: Eq<Nat, 0 + 4, 4> = add_zero_left(3); 0 }, "E0010")
+}

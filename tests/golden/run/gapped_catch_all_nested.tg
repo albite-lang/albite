@@ -1,0 +1,14 @@
+// ADR 13.10.26k AC2/AC3: a gapped catch-all beside a constructor whose arms
+// are nested. The desugar collapses `B`'s two arms into one, and padding
+// counts that group once: 7 * 10000 + 102 * 10 + 7 = 71027.
+
+type M = Som(Nat) | Non
+type P = A(Nat) | B(M) | C(Nat)
+
+fn f(q: P) -> Nat {
+    match q { B(Som(n)) => 100 + n, B(Non()) => 50, _ => 7 }
+}
+
+fn main() -> Nat {
+    f(A(1)) * 10000 + f(B(Som(2))) * 10 + f(C(3))
+}

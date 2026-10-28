@@ -1,0 +1,300 @@
+// src/compiler/elab/exprs/mod.tg
+// Expression elaboration: bidirectional type checking (synth + check).
+//
+// synth: Synthesize (infer) the type of an expression
+// check: Verify an expression has an expected type
+//
+// State is threaded functionally via (Env, TermHandle, TypeHandle) returns.
+
+// Submodule declarations
+pub mod forms;
+pub mod bind;
+pub mod apply;
+pub mod control;
+pub mod blocks;
+pub mod matches;
+pub mod records;
+
+pub use elab::exprs::forms::result::*;
+pub use elab::exprs::forms::compare::*;
+
+use lexer::span::Span;
+use parser::ast::{
+    Expr, ExprPath, ExprIntLit, ExprBoolLit, ExprStringLit, ExprUnit,
+    ExprLambda, ExprApp, ExprTypeApp, ExprBinary, ExprUnary,
+    ExprLet, ExprLetElse, ExprIfLet, ExprIfLetChain, ExprBlock, ExprIf, ExprMatch, ExprTuple, ExprRecordLit, ExprNamedRecord,
+    ExprField, ExprAnnot, ExprParen, ExprHave, ExprShow, ExprAssume,
+    ExprRefl, ExprSubst, ExprSym, ExprTrans, ExprCong, ExprNatInd, ExprNatRec,
+    Motive, MotiveLambda, MotiveExpr,
+    ExprSorry, ExprReturn, ExprTry, ExprTryBlock, ExprRegion, ExprError,
+    MaybeExpr, NoExpr, SomeExpr,
+    MatchArm,
+    PatWildcard,
+    expr_span,
+    LambdaParam,
+    Path, MkPath, Ident, ident_name
+};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{
+    TermHandle, TypeHandle, INVALID_HANDLE,
+    tg_types_equal, tg_cstr_eq,
+    tg_type_is_forall, tg_type_get_forall_var, tg_type_get_forall_body,
+    tg_type_is_sum, tg_type_get_sum_left, tg_type_get_sum_right,
+    tg_type_is_arrow, tg_type_get_arrow_domain, tg_type_get_arrow_codomain,
+    tg_type_is_product, tg_type_get_product_left, tg_type_get_product_right,
+    tg_type_is_tyvar, tg_type_get_tyvar_name,
+    tg_type_is_mu, tg_type_get_mu_body,
+    tg_type_substitute, tg_term_type_app,
+    is_type_error
+};
+
+// Import from submodules
+use elab::exprs::forms::literals::{
+    synth_int_lit, synth_bool_lit, synth_string_lit, synth_unit, synth_sorry
+};
+use elab::exprs::bind::vars::synth_path;
+
+use elab::exprs::bind::synth_let::{synth_let};
+use elab::exprs::bind::lambda::{synth_lambda, check_lambda};
+use elab::exprs::bind::let_check::{check_let};
+use elab::exprs::bind::{SynthLetCont, CheckLetCont};
+use elab::exprs::apply::app::synth_app;
+use elab::exprs::apply::app::type_app::synth_type_app;
+use elab::exprs::apply::operators::{synth_binary, synth_unary};
+use elab::exprs::apply::operators::int_literals::{check_default};
+use elab::exprs::control::{synth_if, check_if, synth_return, synth_return_unit, IfBranches, synth_region, check_region};
+use elab::exprs::blocks::{synth_block_lowered, check_block_lowered};
+use elab::exprs::forms::tuples::{synth_tuple, check_tuple};
+use elab::exprs::matches::{synth_match, check_match};
+use elab::exprs::records::{synth_record_lit, check_record_lit, synth_named_record, synth_field, get_structural_type, deep_types_equal};
+use elab::exprs::forms::proofs::{synth_refl, check_refl, synth_have, synth_show, synth_assume, HaveParts};
+use elab::exprs::forms::equality::{synth_subst, synth_sym, synth_trans, synth_cong};
+use elab::exprs::forms::induction::{synth_natind, synth_natrec};
+use elab::exprs::forms::annot::synth_annot;
+use elab::exprs::control::try_expr::synth_try_full;
+use elab::exprs::control::let_else::build_let_else_match;
+use elab::exprs::control::if_let::build_if_let_match;
+use elab::exprs::control::if_let::build_if_let_chain_match;
+
+// ===========================================================================
+// MAIN ENTRY POINTS
+// ===========================================================================
+
+/// Synthesize the type of an expression.
+/// Returns (Env, TermHandle, TypeHandle) on success.
+pub fn synth(env: Env, expr: Expr) -> ElabExprResult {
+    match expr {
+        // Literals - can always synthesize
+        ExprIntLit(n, span) => synth_int_lit(env, n, span),
+        ExprBoolLit(b, span) => synth_bool_lit(env, b, span),
+        ExprStringLit(s, span) => synth_string_lit(env, s, span),
+        ExprUnit(span) => synth_unit(env, span),
+        
+        // Variables - look up in environment
+        ExprPath(path) => synth_path(env, path),
+        
+        // Let bindings - synthesize RHS, bind, synthesize body
+        ExprLet(pat, ty_annot, rhs, body, span) =>
+            let cont: SynthLetCont = { body: body, span: span };
+            synth_let(env, pat, ty_annot, rhs, cont),
+        
+        // Lambda - requires annotation in synth mode
+        ExprLambda(params, body, span) =>
+            synth_lambda(env, params, body, span),
+        
+        // Application - synthesize function, check arguments
+        ExprApp(func, args, span) => synth_app(env, func, args, span),
+        
+        // Type application - instantiate forall
+        ExprTypeApp(inner, type_args, span) =>
+            synth_type_app(env, inner, type_args, span),
+        
+        // Binary operators - depends on operator
+        ExprBinary(op, left, right, span) =>
+            synth_binary(env, op, left, right, span),
+        
+        // Unary operators
+        ExprUnary(op, operand, span) => synth_unary(env, op, operand, span),
+        
+        // If-then-else - synthesize from branches
+        ExprIf(cond, then_e, else_e, span) =>
+            synth_if(env, cond, then_e, else_e, span),
+        
+        // Block - synthesize final expression
+        ExprBlock(stmts, final_expr, span) =>
+            synth_block_lowered(env, stmts, final_expr, span),
+        
+        // Annotation - has explicit type
+        ExprAnnot(inner, ty, span) => synth_annot(env, inner, ty, span),
+        
+        // Parentheses - transparent
+        ExprParen(inner, span) => synth(env, inner),
+        
+        // --- Match expressions (3C-5) ---
+        ExprMatch(scrutinee, arms, span) =>
+            synth_match(env, scrutinee, arms, span),
+        
+        // --- Tuples (3C-5) ---
+        ExprTuple(elems, span) =>
+            synth_tuple(env, elems, span),
+        
+        // --- Record literals and field access (3C-5) ---
+        ExprRecordLit(spread, fields, span) =>
+            synth_record_lit(env, spread, fields, span),
+        ExprNamedRecord(name, spread, fields, span) =>
+            synth_named_record(env, name, spread, fields, span),
+        ExprField(base, field, span) =>
+            synth_field(env, base, field, span),
+        
+        // --- Proof terms (3C-5) ---
+        ExprHave(name, prop, proof, body, span) =>
+            let parts: HaveParts = { name: name, prop: prop, proof: proof, body: body };
+            synth_have(env, parts, span),
+        ExprShow(prop, proof, span) =>
+            synth_show(env, prop, proof, span),
+        ExprAssume(name, prop, body, span) =>
+            synth_assume(env, name, prop, body, span),
+        ExprRefl(span) =>
+            synth_refl(env, span),
+        ExprSubst(proof, motive, witness, span) =>
+            synth_subst(env, proof, motive, witness, span),
+        ExprSym(proof, span) =>
+            synth_sym(env, proof, span),
+        ExprTrans(h1, h2, span) =>
+            synth_trans(env, h1, h2, span),
+        ExprCong(f, proof, span) =>
+            synth_cong(env, f, proof, span),
+        ExprNatInd(motive, base, step, n, span) =>
+            synth_natind(env, motive, base, step, n, span),
+        ExprNatRec(ty, base, step, n, span) =>
+            synth_natrec(env, ty, base, step, n, span),
+        ExprSorry(span) => synth_sorry(env, span),
+        
+        // Return - elaborate value and check against expected return type
+        ExprReturn(maybe_value, span) =>
+            match maybe_value {
+                SomeExpr(value) => synth_return(env, value, span),
+                NoExpr => synth_return_unit(env, span)
+            },
+        
+        // Try operator — desugar expr? into case + return (ADR 13.5.26e)
+        ExprTry(inner, span) =>
+            synth_try_full(env, inner, span),
+        
+        // Try block — try { body } wraps result in Ok (ADR 15.5.26d)
+        ExprTryBlock(body, span) =>
+            synth_try_block(env, body, span),
+        ExprRegion(body, span) => synth_region(env, body, span),
+        
+        // Let-else — desugar to match (ADR 13.5.26f)
+        ExprLetElse(pat, ty, value, else_expr, body, span) =>
+            let match_expr = build_let_else_match(pat, value, else_expr, body, span);
+            synth(env, match_expr),
+        
+        // If-let — desugar to match (ADR 14.5.26e)
+        ExprIfLet(pat, init, body, maybe_else, span) =>
+            let match_expr = build_if_let_match(pat, init, body, maybe_else, span);
+            synth(env, match_expr),
+        
+        // If-let chain — desugar to nested match/if (ADR 15.5.26d)
+        ExprIfLetChain(conditions, body, maybe_else, span) =>
+            let match_expr = build_if_let_chain_match(conditions, body, maybe_else, span);
+            synth(env, match_expr),
+        
+        // Error recovery
+        ExprError(span) =>
+            ElabExprErr(elab_expr_error_internal("parse error in expression", span))
+    }
+}
+
+/// Check that an expression has the expected type.
+/// Returns (Env, TermHandle, TypeHandle) where TypeHandle equals expected.
+pub fn check(env: Env, expr: Expr, expected: TypeHandle) -> ElabExprResult {
+    
+    // Early check: if expected is INVALID, don't cascade errors
+    if expected == INVALID_HANDLE {
+        let span = expr_span(expr);
+        ElabExprErr(elab_expr_error_cascade(span))
+    // TypeError (poison): skip checking, still synthesize independently.
+    // The root cause error was already reported where the TypeError originated.
+    } else if is_type_error(expected) {
+        synth(env, expr)
+    } else {
+    
+    let _ = env.depth; // force a read
+    match expr {
+        // Lambda - use expected type for parameter
+        ExprLambda(params, body, span) =>
+            check_lambda(env, params, body, expected, span),
+        
+        // If - check both branches against expected
+        ExprIf(cond, then_e, else_e, span) =>
+            let branches: IfBranches = { cond: cond, then_e: then_e, else_e: else_e };
+            check_if(env, branches, expected, span),
+        
+        // Block - check final expression against expected
+        ExprBlock(stmts, final_expr, span) =>
+            check_block_lowered(env, stmts, final_expr, expected, span),
+        
+        // Parentheses - transparent
+        ExprParen(inner, span) => check(env, inner, expected),
+        
+        // Match - check all arms against expected (3C-5)
+        ExprMatch(scrutinee, arms, span) =>
+            check_match(env, scrutinee, arms, expected, span),
+        
+        // Tuple - check elements against product type (3C-5)
+        ExprTuple(elems, span) =>
+            check_tuple(env, elems, expected, span),
+        
+        // Let - propagate expected type to body
+        ExprLet(pat, ty_annot, rhs, body, span) =>
+            let cont: CheckLetCont = { body: body, expected: expected, span: span };
+            check_let(env, pat, ty_annot, rhs, cont),
+        
+        // Record literal - check against expected record type (3C-5)
+        ExprRecordLit(spread, fields, span) =>
+            check_record_lit(env, spread, fields, expected, span),
+        
+        // Refl - check against expected equality type (3C-5)
+        ExprRefl(span) =>
+            check_refl(env, expected, span),
+        
+        // Return - type is ⊥, unifies with any expected type (ADR 13.5.26d)
+        ExprReturn(maybe_value, span) =>
+            match maybe_value {
+                SomeExpr(value) => synth_return(env, value, span),
+                NoExpr => synth_return_unit(env, span)
+            },
+        
+        // Try operator — desugar expr? into case + return (ADR 13.5.26e)
+        ExprTry(inner, span) =>
+            synth_try_full(env, inner, span),
+        
+        // Try block — try { body } wraps result in Ok (ADR 15.5.26d)
+        ExprTryBlock(body, span) =>
+            check_try_block(env, body, expected, span),
+        ExprRegion(body, span) => check_region(env, body, expected, span),
+        
+        // Let-else — desugar to match (ADR 13.5.26f)
+        ExprLetElse(pat, ty, value, else_expr, body, span) =>
+            let match_expr = build_let_else_match(pat, value, else_expr, body, span);
+            check(env, match_expr, expected),
+        
+        // If-let — desugar to match (ADR 14.5.26e)
+        ExprIfLet(pat, init, body, maybe_else, span) =>
+            let match_expr = build_if_let_match(pat, init, body, maybe_else, span);
+            check(env, match_expr, expected),
+        
+        // If-let chain — desugar to nested match/if (ADR 15.5.26d)
+        ExprIfLetChain(conditions, body, maybe_else, span) =>
+            let match_expr = build_if_let_chain_match(conditions, body, maybe_else, span);
+            check(env, match_expr, expected),
+
+        // Default: the numeric arms against Int/Nat (ADR 14.9.26c), else
+        // synthesize and compare — operators/int_literals.tg
+        _ => check_default(env, expr, expected)
+    }
+    }
+}
+

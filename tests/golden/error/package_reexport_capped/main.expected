@@ -1,0 +1,9 @@
+[E0016] Error: function `internal` is private (defined in `lib_a::core`) and cannot be accessed from `<root>`
+   ╭─[tests/golden/error/package_reexport_capped/main.tg:4:20]
+   │
+ 4 │ fn main() -> Nat { internal() }
+   │                    ────┬───  
+   │                        ╰───── 
+───╯
+
+error: aborting due to 1 error

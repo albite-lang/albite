@@ -1,0 +1,8 @@
+// == a theorem may not depend on a call to foreign code (ADR 3.10.26c AC4)
+// The checker never runs `tg_type_nat`, so `refl` would equate two calls
+// that `albite test` shows return 0 and then 1.
+extern "C" fn tg_type_nat() -> Nat
+
+theorem handles_equal(): tg_type_nat() == tg_type_nat() { refl }
+
+fn main() -> Nat { 0 }

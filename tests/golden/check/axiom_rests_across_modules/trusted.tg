@@ -1,0 +1,3 @@
+// The axiom `main.tg` cites (ADR 16.10.26g).
+
+pub axiom ax(): Void

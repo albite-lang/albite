@@ -1,0 +1,9 @@
+// A bare `Shut` pattern (ADR 2.10.26g §2.4): the bootstrap reads it as a
+// binder, not a sibling use, so the verdict is recorded rather than held.
+use boxes::{Shut};
+
+fn pick(scrutinee: Nat) -> Nat {
+    match scrutinee { Shut => 1, _ => 0 }
+}
+
+fn main() -> Nat { pick(1) }

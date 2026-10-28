@@ -1,0 +1,121 @@
+// src/compiler/elab/exprs/bind/vars/ctor_payload.tg
+// The binders and payload of a constructor's Core term (ADR 3.9.26e).
+//
+// A constructor's TYPE is curried — `A -> B -> T` (`product_to_curried_arrow`
+// in constructors.tg) — and every call site applies it one argument at a time.
+// Its TERM used to be one lambda over the whole payload product,
+// `λx:(A × B). fold (inj x)`, so `C2(9, N2)` elaborated to
+// `App(App(λx. …, 9), N2)`, which reduces to `App(fold (inj 9), N2)` and sticks.
+// The term now follows the type: one binder per field, and the innermost body
+// builds the payload from them,
+//
+//     λ_ctor_field_0. λ_ctor_field_1. fold (inj (_ctor_field_0, _ctor_field_1))
+//
+// **The payload is RIGHT-nested** (ADR 1.8.26b D1), the same product
+// `projection_path.tg` destructures, and each binder's type is read through
+// that module's chain — so construction and destructuring cannot disagree about
+// which field sits where. Three fields is where left- and right-nesting stop
+// coinciding, which is why the suite asserts one, two and three.
+//
+// The binder names cannot capture anything: the lambda chain's body is the
+// injection and fold of the payload alone, which introduce no binders and
+// mention no variable but these.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::util::nat_to_string;
+use elab::ffi::{
+    TermHandle, TypeHandle,
+    tg_term_abs, tg_term_pair, tg_term_var_named,
+    tg_type_is_mu, tg_type_get_mu_var, tg_type_substitute,
+    tg_string_to_cstr
+};
+use elab::exprs::matches::patterns::projection_path::{
+    product_field_projection, product_field_type
+};
+
+/// How a constructor's payload nests its field binders. `CtorPayloadLast` is
+/// the final field — a one-field payload is that field alone — and
+/// `CtorPayloadPair(f, rest)` is the product `(f, rest)`.
+pub type CtorPayloadShape =
+    | CtorPayloadLast(String)
+    | CtorPayloadPair(String, CtorPayloadShape)
+
+/// The binder names of an `arity`-field constructor, in field order.
+pub fn ctor_field_binder_names(arity: Nat) -> List<String> {
+    ctor_field_binder_names_from(0, arity)
+}
+
+// Partial (ADR 3.9.26e): `index + 1` climbs towards `arity` rather than
+// descending on a subterm — a measure recursion over a Nat. Executable
+// compiler code that no proof reaches; E0063 fires if that ever changes.
+#[partial]
+fn ctor_field_binder_names_from(index: Nat, arity: Nat) -> List<String> {
+    if index >= arity {
+        let none_left: List<String> = Nil;
+        none_left
+    } else {
+        Cons("_ctor_field_" ++ nat_to_string(index), ctor_field_binder_names_from(index + 1, arity))
+    }
+}
+
+/// The right-nested payload over `first` and the fields after it:
+/// `[a, b, c]` is `(a, (b, c))`, never `((a, b), c)`.
+pub fn ctor_payload_shape(first: String, rest: List<String>) -> CtorPayloadShape {
+    match rest {
+        Nil() => CtorPayloadLast(first),
+        Cons(next, more) => CtorPayloadPair(first, ctor_payload_shape(next, more))
+    }
+}
+
+/// The Core term a payload shape describes, each field its binder's variable.
+pub fn build_ctor_payload_term(shape: CtorPayloadShape) -> TermHandle {
+    match shape {
+        CtorPayloadLast(name) => ctor_field_var(name),
+        CtorPayloadPair(name, rest) =>
+            tg_term_pair(ctor_field_var(name), build_ctor_payload_term(rest))
+    }
+}
+
+fn ctor_field_var(name: String) -> TermHandle {
+    tg_term_var_named(tg_string_to_cstr(name))
+}
+
+/// The constructor a binder chain is built for: its right-nested field
+/// product, its field count and the ADT it builds.
+pub type CtorFields = { field_types: TypeHandle, arity: Nat, result_type: TypeHandle }
+
+/// Wrap `body` in one lambda per binder, outermost first, binder `index` typed
+/// as field `index` of the payload product with the ADT's μ self-reference
+/// substituted — the parameter types `product_to_curried_arrow` gives the
+/// constructor's arrow, in the same order.
+pub fn wrap_ctor_field_binders(
+    names: List<String>,
+    index: Nat,
+    fields: CtorFields,
+    body: TermHandle
+) -> TermHandle {
+    match names {
+        Nil() => body,
+        Cons(name, rest) => {
+            let steps = product_field_projection(index, fields.arity);
+            let field_ty = product_field_type(fields.field_types, steps);
+            let param_ty = substitute_mu_self_ref(field_ty, fields.result_type);
+            let inner = wrap_ctor_field_binders(rest, index + 1, fields, body);
+            tg_term_abs(tg_string_to_cstr(name), param_ty, inner)
+        }
+    }
+}
+
+/// Substitute mu self-references in a field type.
+/// When a field type contains TyVar("X") where "X" is the mu-bound variable
+/// of the enclosing recursive type, replace it with the actual Mu type.
+/// This is necessary because field types are expressed inside the Mu body,
+/// but constructor parameter types are outside it.
+pub fn substitute_mu_self_ref(field_ty: TypeHandle, result_type: TypeHandle) -> TypeHandle {
+    if tg_type_is_mu(result_type) {
+        let mu_var = tg_type_get_mu_var(result_type);
+        tg_type_substitute(field_ty, mu_var, result_type)
+    } else {
+        field_ty
+    }
+}

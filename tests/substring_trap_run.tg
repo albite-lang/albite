@@ -1,0 +1,41 @@
+// tests/substring_trap_run.tg — ADR 16.10.26h AC 5, the substring cut trap
+//
+// A cut whose start or end lands inside a multi-byte character traps on
+// every reader, with the one operand-free line
+// `error: substring cuts inside a character`. A program traps at most once
+// and `tungsten diff exec` passes no argv, so `make check-substring-trap`
+// stamps out one copy per case with `cut_case()` rewritten (the
+// `SUBSTRING_TRAP_CASE` marker below), as `check-bytes-parity` does. Each case
+// prints a line, then cuts; the `no trap` line must never appear.
+//
+// `naïve café` is twelve bytes and `ï` is bytes 2..4. The cases: 0 the end
+// inside (`(0, 3)`), 1 the start inside (`(3, 2)`), 2 both (`(3, 8)`).
+
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+pub fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+fn cut_case() -> Nat { 0 } // SUBSTRING_TRAP_CASE
+
+/// The cut `case` names; returns only if nothing trapped.
+fn cut(case: Nat) -> String {
+    let naive = "naïve café";
+    if case == 0 { substring(naive, 0, 3) }
+    else if case == 1 { substring(naive, 3, 2) }
+    else { substring(naive, 3, 8) }
+}
+
+fn main() -> Unit {
+    println("before the cut");
+    let survived = cut(cut_case());
+    // Unreachable on both sides; a backend that let the cut through prints it.
+    println("no trap " ++ survived)
+}

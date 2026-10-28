@@ -1,0 +1,8 @@
+// == a theorem over a registry `pure` extern still checks (ADR 3.10.26c AC5)
+// `tg_string_compare` is one the evaluator runs deterministically, so it is
+// the one kind of foreign call a proof may depend on.
+extern "C" fn tg_string_compare(a: String, b: String) -> Nat
+
+theorem compare_refl(s: String): tg_string_compare(s, s) == tg_string_compare(s, s) { refl }
+
+fn main() -> Nat { 0 }

@@ -1,0 +1,8 @@
+// ADR 2.10.26f D11: a dependent function does not unify with a pattern arrow,
+// so `B` cannot be inferred from it.
+
+fn add_zero_right(n: Nat) -> Eq<Nat, n + 0, n> { refl }
+
+fn app<A, B>(f: A -> B, a: A) -> B { f(a) }
+
+fn main() -> Nat { let _r = app(add_zero_right, 3); 0 }

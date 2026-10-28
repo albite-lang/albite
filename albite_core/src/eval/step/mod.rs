@@ -1,0 +1,323 @@
+//! Standard small-step evaluator (without environment)
+//!
+//! This module provides the standard small-step call-by-value evaluator
+//! that works on closed terms. Global references are stuck - for programs
+//! with global definitions, use the environment-based evaluator instead.
+
+mod handlers;
+
+use crate::terms::Term;
+
+use super::helpers::{step_binary_bool, step_binary_nat, step_binary_nat_compare};
+use super::StepResult;
+
+use handlers::{
+    step_adt_match, step_annot, step_app, step_bool_not, step_case, step_fst, step_if, step_let,
+    step_natind, step_natrec, step_pair, step_snd, step_str_char_at, step_str_concat, step_str_eq,
+    step_str_len, step_str_substring, step_subst, step_tyapp, step_unfold,
+};
+
+/// Shared with the environment stepper, so both count the same units.
+pub(in crate::eval) use handlers::{byte_at, byte_substring};
+
+// ============================================================================
+// step - Standard small-step evaluator
+// ============================================================================
+
+/// Perform one step of call-by-value evaluation
+///
+/// This is the standard small-step evaluator that works on closed terms.
+/// Global references are stuck; use [`super::env::step_with_env`] for
+/// environment-based evaluation.
+#[must_use]
+pub fn step(term: &Term) -> StepResult {
+    match term {
+        // Values
+        Term::Lambda(_, _, _)
+        | Term::TyAbs(_, _)
+        | Term::True
+        | Term::False
+        | Term::Unit
+        | Term::Zero
+        | Term::NatLit(_)
+        | Term::IntLit(_)
+        | Term::StringLit(_) => StepResult::Value,
+
+        // Signed integers: a trap is Stuck here — the legacy stepper has no
+        // env to record the reason on (ADR 14.9.26c; use `eval_with_env`).
+        Term::IntBin(..) | Term::IntNeg(_) | Term::NatToInt(_) | Term::IntToNat(_) => {
+            step_int(term)
+        }
+
+        // Stuck terms (open/unresolvable)
+        Term::Var(_)
+        | Term::Global(_)
+        | Term::Sorry
+        | Term::ExternCall(_, _)
+        | Term::RefNew(_)
+        | Term::RefGet(_)
+        | Term::RefSet(_, _) => StepResult::Stuck,
+
+        // Evaluate-to-value wrappers
+        Term::Succ(t) => step_eval_to_value(t, Term::succ),
+        Term::Inl(ty, t) => step_eval_to_value(t, |t_new| Term::inl(ty.clone(), t_new)),
+        Term::Inr(ty, t) => step_eval_to_value(t, |t_new| Term::inr(ty.clone(), t_new)),
+        Term::Refl(ty, t) => step_eval_to_value(t, |t_new| Term::refl(ty.clone(), t_new)),
+        Term::Fold(ty, t) => step_eval_to_value(t, |t_new| Term::fold(ty.clone(), t_new)),
+        Term::AdtConstruct(adt_ty, idx, payload) => step_eval_to_value(payload, |p_new| {
+            Term::adt_construct(adt_ty.clone(), *idx, p_new)
+        }),
+
+        // Evaluate-then-stuck wrapper
+        Term::Absurd(ty, t) => step_eval_then(t, |t_new| Term::absurd(ty.clone(), t_new)),
+
+        // Core lambda calculus, products, sums, proof/recursion
+        Term::App(..)
+        | Term::Let(..)
+        | Term::If(..)
+        | Term::TyApp(..)
+        | Term::Annot(..)
+        | Term::Fix(..)
+        | Term::Pair(..)
+        | Term::Fst(_)
+        | Term::Snd(_)
+        | Term::Case(..)
+        | Term::NatRec(..)
+        | Term::NatInd(..)
+        | Term::Subst(..)
+        | Term::Unfold(..) => step_core(term),
+
+        // String operations
+        Term::StrConcat(..)
+        | Term::StrLen(_)
+        | Term::StrEq(..)
+        | Term::StrCharAt(..)
+        | Term::StrSubstring(..) => step_string(term),
+
+        // Arithmetic and boolean operations
+        Term::NatAdd(..)
+        | Term::NatSub(..)
+        | Term::NatMul(..)
+        | Term::NatDiv(..)
+        | Term::NatMod(..)
+        | Term::NatEq(..)
+        | Term::NatLt(..)
+        | Term::NatLe(..)
+        | Term::NatGt(..)
+        | Term::NatGe(..)
+        | Term::BoolAnd(..)
+        | Term::BoolOr(..)
+        | Term::BoolNot(_) => step_arith_bool(term),
+
+        // ADT match
+        Term::AdtMatch(scrut, arms) => step_adt_match(scrut, arms),
+
+        // Span wrapper: strip and step inner term
+        Term::Spanned(inner, _) => step(inner),
+
+        // Return: evaluate inner, then unwind to the nearest call frame
+        Term::Return(t) => step_return(t),
+
+        // Call frame: the function boundary a `Returned` stops at (ADR 13.10.26n D3)
+        Term::CallFrame(body) => step_call_frame(body),
+
+        // Region: steps to its body (ADR 9.10.26o D3)
+        Term::Region(_, body) => StepResult::Stepped((**body).clone()),
+    }
+}
+
+/// Step a Return term: once the inner value is ready, the `return` is abrupt
+/// and reports `Returned` (ADR 13.10.26n D2) for the enclosing rules to pass
+/// up, rather than stripping where it stands.
+fn step_return(t: &Term) -> StepResult {
+    if t.is_value() {
+        return StepResult::Returned(t.clone());
+    }
+    match step(t) {
+        StepResult::Stepped(t_new) => StepResult::Stepped(Term::early_return(t_new)),
+        StepResult::Value => StepResult::Returned(t.clone()),
+        other @ (StepResult::Stuck | StepResult::Returned(_)) => other,
+    }
+}
+
+/// Step a call frame (ADR 13.10.26n D3): a `Returned(v)` from the body is
+/// caught as `v`, a finished body is the frame's value, and any other step
+/// stays inside the frame.
+fn step_call_frame(body: &Term) -> StepResult {
+    if body.is_value() {
+        return StepResult::Stepped(body.clone());
+    }
+    match step(body) {
+        StepResult::Stepped(next) => StepResult::Stepped(Term::call_frame(next)),
+        StepResult::Returned(value) => StepResult::Stepped(value),
+        StepResult::Value => StepResult::Stepped(body.clone()),
+        StepResult::Stuck => StepResult::Stuck,
+    }
+}
+
+// ============================================================================
+// Category sub-dispatchers
+// ============================================================================
+
+/// Core term forms: application, let, if, fix, products, sums, proof/recursion.
+fn step_core(term: &Term) -> StepResult {
+    match term {
+        Term::App(t1, t2) => step_app(t1, t2),
+        Term::Let(x, _, def, body) => step_let(term, x, def, body),
+        Term::If(cond, then_, else_) => step_if(cond, then_, else_),
+        Term::TyApp(t, ty) => step_tyapp(t, ty),
+        Term::Annot(t, _) => step_annot(t),
+        Term::Fix(f, ty, body) => {
+            let fix_term = Term::Fix(f.clone(), ty.clone(), body.clone());
+            StepResult::Stepped(body.substitute(f, &fix_term))
+        }
+        Term::Pair(t1, t2) => step_pair(t1, t2),
+        Term::Fst(t) => step_fst(t),
+        Term::Snd(t) => step_snd(t),
+        Term::Case(scrut, x, left, y, right) => step_case(scrut, x, left, y, right),
+        Term::NatRec(ty, z, s, n) => step_natrec(ty, z, s, n),
+        Term::NatInd(binder, m, z, s, n) => step_natind((binder, m), z, s, n),
+        Term::Subst(ty, motive, eq, proof) => step_subst(ty, motive, eq, proof),
+        Term::Unfold(ty, t) => step_unfold(t, ty),
+        _ => unreachable!("step_core called with non-core term"),
+    }
+}
+
+/// String operation steps.
+fn step_string(term: &Term) -> StepResult {
+    match term {
+        Term::StrConcat(t1, t2) => step_str_concat(t1, t2),
+        Term::StrLen(t) => step_str_len(t),
+        Term::StrEq(t1, t2) => step_str_eq(t1, t2),
+        Term::StrCharAt(s, idx) => step_str_char_at(s, idx),
+        Term::StrSubstring(s, start, len) => step_str_substring(s, start, len),
+        _ => unreachable!("step_string called with non-string term"),
+    }
+}
+
+#[allow(clippy::unnecessary_wraps)] // Reason: `step_binary_nat`'s operator type
+fn nat_truncated_sub(minuend: usize, subtrahend: usize) -> Option<usize> {
+    Some(minuend.saturating_sub(subtrahend))
+}
+
+/// 9.10.26g's zero rule: `n / 0` is `0`.
+#[allow(clippy::unnecessary_wraps)] // Reason: `step_binary_nat`'s operator type
+fn nat_div_by_zero_is_zero(dividend: usize, divisor: usize) -> Option<usize> {
+    Some(dividend.checked_div(divisor).unwrap_or(0))
+}
+
+/// 9.10.26g's zero rule: `n % 0` is `0`.
+#[allow(clippy::unnecessary_wraps)] // Reason: `step_binary_nat`'s operator type
+fn nat_mod_by_zero_is_zero(dividend: usize, divisor: usize) -> Option<usize> {
+    Some(dividend.checked_rem(divisor).unwrap_or(0))
+}
+
+/// Arithmetic and boolean operation steps.
+fn step_arith_bool(term: &Term) -> StepResult {
+    match term {
+        // ADR 13.10.26e D2: `+`/`*` past the largest Nat are stuck, not
+        // saturated; `-` is truncated subtraction, the language's definition.
+        Term::NatAdd(t1, t2) => step_binary_nat(t1, t2, usize::checked_add, Term::nat_add),
+        Term::NatSub(t1, t2) => step_binary_nat(t1, t2, nat_truncated_sub, Term::nat_sub),
+        Term::NatMul(t1, t2) => step_binary_nat(t1, t2, usize::checked_mul, Term::nat_mul),
+        Term::NatDiv(t1, t2) => step_binary_nat(t1, t2, nat_div_by_zero_is_zero, Term::nat_div),
+        Term::NatMod(t1, t2) => step_binary_nat(t1, t2, nat_mod_by_zero_is_zero, Term::nat_mod),
+        Term::NatEq(t1, t2) => step_binary_nat_compare(t1, t2, |a, b| a == b, Term::nat_eq),
+        Term::NatLt(t1, t2) => step_binary_nat_compare(t1, t2, |a, b| a < b, Term::nat_lt),
+        Term::NatLe(t1, t2) => step_binary_nat_compare(t1, t2, |a, b| a <= b, Term::nat_le),
+        Term::NatGt(t1, t2) => step_binary_nat_compare(t1, t2, |a, b| a > b, Term::nat_gt),
+        Term::NatGe(t1, t2) => step_binary_nat_compare(t1, t2, |a, b| a >= b, Term::nat_ge),
+        Term::BoolAnd(t1, t2) => step_binary_bool(t1, t2, |a, b| a && b, Term::bool_and),
+        Term::BoolOr(t1, t2) => step_binary_bool(t1, t2, |a, b| a || b, Term::bool_or),
+        Term::BoolNot(t) => step_bool_not(t),
+        _ => unreachable!("step_arith_bool called with non-arith/bool term"),
+    }
+}
+
+/// Signed-integer steps: operands to values, then the shared checked table
+/// (`int_ops::apply_int_bin`); a trap is `Stuck` with no env to record on.
+fn step_int(term: &Term) -> StepResult {
+    use crate::eval::env::handlers::int_ops::{int_to_nat, nat_to_int, negate};
+    match term {
+        Term::IntBin(op, a, b) => step_binary_int(*op, a, b),
+        Term::IntNeg(a) => step_unary_int(a, Term::int_neg, negate),
+        Term::NatToInt(a) => step_unary_int(a, Term::nat_to_int, nat_to_int),
+        Term::IntToNat(a) => step_unary_int(a, Term::int_to_nat, int_to_nat),
+        _ => unreachable!("step_int called with a non-Int term"),
+    }
+}
+
+fn step_binary_int(op: crate::terms::IntBinOp, a: &Term, b: &Term) -> StepResult {
+    use crate::eval::env::handlers::int_ops::apply_int_bin;
+    if let Some(r) = step_operand(a, |a2| Term::int_bin(op, a2, b.clone())) {
+        return r;
+    }
+    if let Some(r) = step_operand(b, |b2| Term::int_bin(op, a.clone(), b2)) {
+        return r;
+    }
+    match (a, b) {
+        (Term::IntLit(x), Term::IntLit(y)) => {
+            apply_int_bin(op, *x, *y).map_or(StepResult::Stuck, StepResult::Stepped)
+        }
+        _ => StepResult::Stuck,
+    }
+}
+
+fn step_unary_int(
+    a: &Term,
+    rebuild: fn(Term) -> Term,
+    apply: fn(&Term) -> Result<Term, crate::eval::env::IntTrapKind>,
+) -> StepResult {
+    if let Some(r) = step_operand(a, rebuild) {
+        return r;
+    }
+    apply(a).map_or(StepResult::Stuck, StepResult::Stepped)
+}
+
+/// Step one operand toward a value, rebuilding the node around it; `None`
+/// when it already is one.
+fn step_operand(operand: &Term, rebuild: impl FnOnce(Term) -> Term) -> Option<StepResult> {
+    if operand.is_value() {
+        return None;
+    }
+    match step(operand) {
+        StepResult::Stepped(next) => Some(StepResult::Stepped(rebuild(next))),
+        other @ (StepResult::Stuck | StepResult::Returned(_)) => Some(other),
+        StepResult::Value => None,
+    }
+}
+
+// ============================================================================
+// Small shared helpers for common step patterns
+// ============================================================================
+
+/// Evaluate a sub-term; if it's stuck, return Stuck; if it's a value, return Stuck
+/// (no further projection possible from a non-matching value).
+fn step_eval_then(t: &Term, wrap: impl FnOnce(Term) -> Term) -> StepResult {
+    if t.is_value() {
+        StepResult::Stuck
+    } else {
+        match step(t) {
+            StepResult::Stepped(t_new) => StepResult::Stepped(wrap(t_new)),
+            StepResult::Returned(value) => StepResult::Returned(value),
+            StepResult::Stuck | StepResult::Value => StepResult::Stuck,
+        }
+    }
+}
+
+/// Evaluate a sub-term to a value. Once it's a value, the whole term is a value.
+fn step_eval_to_value(t: &Term, wrap: impl FnOnce(Term) -> Term) -> StepResult {
+    if t.is_value() {
+        StepResult::Value
+    } else {
+        match step(t) {
+            StepResult::Stepped(t_new) => StepResult::Stepped(wrap(t_new)),
+            other @ (StepResult::Stuck | StepResult::Returned(_)) => other,
+            StepResult::Value => StepResult::Value,
+        }
+    }
+}
+
+// Tests
+#[cfg(test)]
+pub(in crate::eval) mod tests;

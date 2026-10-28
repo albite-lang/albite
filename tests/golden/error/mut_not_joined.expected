@@ -1,0 +1,9 @@
+[E0104] Error: cannot assign to `x` here: only an `if`, `match` or block statement hands an assignment back to later code
+   ╭─[tests/golden/error/mut_not_joined.tg:8:18]
+   │
+ 8 │     let y = id({ x = 2; 3 });
+   │                  ───┬──  
+   │                     ╰──── 
+───╯
+
+error: aborting due to 1 error

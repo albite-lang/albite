@@ -1,0 +1,9 @@
+[E0120] Error: invalid `albite.toml`: package name `my-project` is not a module identifier (`[a-z_][a-z0-9_]*`)
+   ╭─[tests/golden/error/package_manifest_invalid/albite.toml:2:1]
+   │
+ 2 │ name = "my-project"
+   │ ──┬─  
+   │   ╰─── 
+───╯
+
+error: aborting due to 1 error

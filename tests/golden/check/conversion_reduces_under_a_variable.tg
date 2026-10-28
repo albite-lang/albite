@@ -1,0 +1,34 @@
+// == open-term proofs reduce under a variable (ADR 29.9.26c AC 1)
+type Lst = Nil | Cons(Nat, Lst)
+
+fn length(l: Lst) -> Nat { match l { Nil => 0, Cons(h, t) => 1 + length(t) } }
+
+// `natrec` recurses on its FIRST argument, so `add(0, n)` computes and
+// `add(n, 0)` does not (its must-fail twin is in error/conversion_open_term_twins).
+fn add(a: Nat, b: Nat) -> Nat { natrec(Nat, b, fn(k: Nat, acc: Nat) => acc + 1, a) }
+
+fn pick(n: Nat, m: Nat) -> Nat { if m == 0 { 0 } else { n } }
+
+// δ enters `length` through an argument that carries the open `n`.
+fn length_of_one(n: Nat) -> Nat { let _p: Eq<Nat, length(Cons(n, Nil)), 1> = refl; 0 }
+
+// `+` computes on its right operand: `k + 0 ≡ k`, `k + 1 ≡ succ(k)`.
+fn right_zero(k: Nat) -> Nat { let _p: Eq<Nat, k + 0, k> = refl; 0 }
+
+fn succ_right_zero(k: Nat) -> Nat { let _p: Eq<Nat, (k + 1) + 0, (k + 0) + 1> = refl; 0 }
+
+// ι on a numeral scrutinee, with an open non-scrutinee argument.
+fn add_zero_left(n: Nat) -> Nat { let _p: Eq<Nat, add(0, n), n> = refl; 0 }
+
+// A closed comparison computes beside an open argument.
+fn closed_guard(k: Nat) -> Nat { let _p: Eq<Nat, pick(k, 0), 0> = refl; 0 }
+
+// `trans`'s shared endpoints are `k + 0` and `k`: equal only by the `+` rule.
+fn via_right_zero(k: Nat) -> Nat {
+    let a: Eq<Nat, k, k + 0> = refl;
+    let b: Eq<Nat, k, k> = refl;
+    let _p: Eq<Nat, k, k> = trans(a, b);
+    0
+}
+
+fn main() -> Nat { 0 }

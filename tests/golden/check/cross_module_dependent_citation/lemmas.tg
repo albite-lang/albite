@@ -1,0 +1,6 @@
+// A lemma stated by a dependent signature, exported for citation elsewhere
+// (ADR 30.9.26d P0 (i)).
+
+pub fn add_zero_left(n: Nat) -> Eq<Nat, 0 + n, n> {
+    natind(|k: Nat| Eq<Nat, 0 + k, k>, refl, fn(k: Nat, ih) => cong(|x: Nat| x + 1, ih), n)
+}

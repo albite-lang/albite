@@ -1,0 +1,255 @@
+// src/compiler/elab/items/termination/mod.tg
+// Registration half of the termination mirror (ADR 19.8.26d §2.3).
+//
+// The soundness RULE is not mirrored here. Both compilers call one
+// `termination::analyze_with_carried` in `albite_core`; what crosses this
+// seam is the definition environment the rule runs over.
+//
+// ## Where the two halves are read
+//
+// A definition's ANNOTATIONS and ROLE come from its `Item`, during Body
+// Elaboration — `#[partial]` / `#[decreasing(arg)]` and whether the item is a
+// theorem, lemma or axiom. Its TYPE and TERM come from the `ElabDef` the same
+// elaboration produced, and are read once the whole module tree is done, which
+// is the only point at which imported and freshly elaborated definitions are
+// in one set. That is the bootstrap's reason for running its gate there too.
+//
+// ## Why the definition list is walked three times
+//
+// Once to declare (names only), once to reduce, once to retain. The protocol
+// and the measurement behind it are in `elab/ffi/termination.tg`; the short
+// version is that holding every definition's whole elaborated body live at
+// once cost +587 MiB, and the analysis needs a real term only inside a
+// recursive component.
+//
+// What this file can get wrong is the ENVIRONMENT, not the verdict — and a
+// lost definition is a program that passes termination only because its
+// offending recursion never arrived. Every extern therefore returns Bool and
+// every helper threads that Bool, so a mid-stream failure is neither invisible
+// nor folded away by a later success.
+
+pub mod report;
+pub mod type_graph;
+
+pub use elab::items::termination::report::*;
+pub use elab::items::termination::type_graph::*;
+
+use parser::ast::{
+    Item, ItemFn, ItemTheorem, ItemLemma, ItemAxiom, ident_name,
+    Param, TypeExpr, TyPath, TyApp, path_item_name
+};
+use parser::ast::nodes::attributes::{attribute_list_has, attribute_list_arg};
+use parser::ast::nodes::items::{item_attributes};
+use parser::option::{Option, None, Some};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{
+    tg_string_to_cstr,
+    tg_termination_reset, tg_termination_note_item, tg_termination_declare,
+    tg_termination_add_def, tg_termination_plan, tg_termination_check,
+    tg_termination_note_param_type
+};
+use elab::items::result::{ElabDef};
+
+// ===========================================================================
+// PASS BOUNDARY
+// ===========================================================================
+
+/// Start a fresh definition environment for one whole-program elaboration.
+pub fn termination_begin_program() -> Unit {
+    tg_termination_reset()
+}
+// ===========================================================================
+// PER-ITEM NOTES
+// ===========================================================================
+
+/// Note one item's attributes and proof-relevance.
+///
+/// Called for every item during Body Elaboration, not only the annotated ones:
+/// the registry keys on name and last-write-wins, so re-entering an item
+/// overwrites rather than duplicates, and an item that never becomes an
+/// `ElabDef` is simply never declared and so never read.
+///
+/// The four kinds that make a definition proof-relevant are the four the
+/// bootstrap's `record_termination_meta` matches on — theorem, lemma and axiom
+/// are proofs; a function is executable.
+pub fn termination_note_item(item: Item) -> Bool {
+    let name = termination_item_name(item);
+    if name == "" {
+        true
+    } else {
+        let attrs = item_attributes(item);
+        let noted = tg_termination_note_item(
+            tg_string_to_cstr(name),
+            attribute_list_has(attrs, "partial"),
+            termination_decreasing_cstr(attribute_list_arg(attrs, "decreasing")),
+            termination_item_is_proof(item)
+        );
+        termination_note_params(name, termination_item_params(item), 0, noted)
+    }
+}
+
+/// The value parameters an item declares, in the order its Core `Lambda`s bind
+/// them.
+fn termination_item_params(item: Item) -> List<Param> {
+    match item {
+        ItemFn(f) => f.params,
+        ItemTheorem(t) => t.params,
+        ItemLemma(t) => t.params,
+        _ => Nil()
+    }
+}
+
+/// Note each parameter's declared type name (ADR 3.9.26f), threading the
+/// failure-keeping Bool like the streams below.
+///
+/// A parameter whose annotation names no type — a tuple, an arrow — is skipped
+/// but still COUNTED: `position` is the Lambda index, and skipping the count
+/// would pin a later parameter's name on the wrong binder.
+fn termination_note_params(name: String, params: List<Param>, position: Nat, ok: Bool) -> Bool {
+    match params {
+        Nil() => ok,
+        Cons(param, rest) => {
+            let type_name = termination_type_head_name(param.ty);
+            let noted = if type_name == "" {
+                true
+            } else {
+                tg_termination_note_param_type(
+                    tg_string_to_cstr(name), position, tg_string_to_cstr(type_name)
+                )
+            };
+            termination_note_params(name, rest, position + 1, termination_both_ok(ok, noted))
+        }
+    }
+}
+
+/// The type name an annotation's head spells, or `""` for one with no name.
+///
+/// `List<UseTree>` answers `List`, never `UseTree`: the binder's type is the
+/// application's, and naming it after an argument would make a list a root.
+pub fn termination_type_head_name(ty: TypeExpr) -> String {
+    match ty {
+        TyPath(path) => ident_name(path_item_name(path)),
+        TyApp(base, _, _) => termination_type_head_name(base),
+        _ => ""
+    }
+}
+
+/// The name a definition is registered under, or `""` for an item that
+/// produces no definition.
+fn termination_item_name(item: Item) -> String {
+    match item {
+        ItemFn(f) => ident_name(f.name),
+        ItemTheorem(t) => ident_name(t.name),
+        ItemLemma(t) => ident_name(t.name),
+        ItemAxiom(a) => ident_name(a.name),
+        _ => ""
+    }
+}
+
+/// Whether the item is proof-relevant. The distinction is the whole point of
+/// taint: a partial constant is welcome in executable code and inadmissible in
+/// a proof.
+fn termination_item_is_proof(item: Item) -> Bool {
+    match item {
+        ItemTheorem(_) => true,
+        ItemLemma(_) => true,
+        ItemAxiom(_) => true,
+        _ => false
+    }
+}
+
+/// The `#[decreasing(arg)]` parameter as a C string, or NULL when absent.
+///
+/// A null pointer rather than `INVALID_HANDLE`: this argument is a string
+/// address, not an arena index, so address 0 cannot be mistaken for a real
+/// value the way handle 0 can.
+fn termination_decreasing_cstr(arg: Option<Ident>) -> Nat {
+    match arg {
+        None => 0,
+        Some(ident) => tg_string_to_cstr(ident_name(ident))
+    }
+}
+
+// ===========================================================================
+// THE THREE STREAMS
+// ===========================================================================
+
+/// Whether this compiler mirrors the DESCENT half of the termination gate.
+///
+/// **True since ADR 3.9.26f**, which closed the last of two gaps between what
+/// this compiler hands the shared engine and what the bootstrap does:
+///
+/// - **Payload projections** (ADR 21.8.26a, 282 → 10). A multi-field
+///   constructor pattern once left its arm variables free in the Core term, so
+///   descent could relate none of them to the decreasing root.
+/// - **Structurally encoded roots** (ADR 3.9.26f, 10 → 0). This encoder
+///   μ-wraps a type only when a field names it directly, so a cluster member
+///   such as `MaybeExpr` reaches the engine as `(Unit + Expr)`, which Phase 1
+///   refuses as a root. `termination_note_params` now sends each parameter's
+///   declared type name alongside it, and the seam names the binder back for
+///   exactly the types the bootstrap encodes nominally.
+///
+/// Flipping this back to `false` retains nothing, and E0710 stops being
+/// mirrored; the taint half (E0711) never depended on it.
+pub fn termination_mirrors_descent() -> Bool { true }
+
+/// Declare, reduce, plan, retain and check the whole program's definitions.
+///
+/// Returns the rejection count; the rejections themselves are read back
+/// through `report.tg`.
+pub fn termination_check_program(defs: List<ElabDef>) -> Nat {
+    let declared = termination_declare_all(defs, true);
+    let reduced = termination_stream_all(defs, declared);
+    let planned = tg_termination_plan(termination_mirrors_descent());
+    // Nothing planned means nothing to retain, so the second stream is skipped
+    // rather than run for its side effects — which is the whole saving of the
+    // taint-only configuration.
+    let retained = if planned == 0 {
+        reduced
+    } else {
+        termination_stream_all(defs, reduced)
+    };
+    if retained {
+        tg_termination_check()
+    } else {
+        // A stream that lost a definition cannot be checked into a verdict:
+        // the missing one is exactly the definition whose absence makes the
+        // rest look admissible. Report nothing and let the protocol error the
+        // externs recorded stand.
+        0
+    }
+}
+
+/// Declare every definition name, fixing the node set before any reduction.
+fn termination_declare_all(defs: List<ElabDef>, ok: Bool) -> Bool {
+    match defs {
+        Nil() => ok,
+        Cons(def, rest) => {
+            let declared = tg_termination_declare(tg_string_to_cstr(def.name));
+            termination_declare_all(rest, termination_both_ok(ok, declared))
+        }
+    }
+}
+
+/// Offer every definition's payload, in whichever phase the registry is in.
+fn termination_stream_all(defs: List<ElabDef>, ok: Bool) -> Bool {
+    match defs {
+        Nil() => ok,
+        Cons(def, rest) => {
+            let added = tg_termination_add_def(
+                tg_string_to_cstr(def.name), def.ty, def.term
+            );
+            termination_stream_all(rest, termination_both_ok(ok, added))
+        }
+    }
+}
+
+/// Whether BOTH protocol calls succeeded — the failure-keeping fold the
+/// streams thread.
+///
+/// Named for what the answer means rather than for its place in a sequence, and
+/// matching `positivity_both_ok` next door: a `false` from either side
+/// survives, so a lost definition cannot be folded away by a later success.
+pub fn termination_both_ok(ok_so_far: Bool, ok_now: Bool) -> Bool {
+    ok_so_far && ok_now
+}

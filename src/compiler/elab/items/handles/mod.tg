@@ -1,0 +1,24 @@
+// src/compiler/elab/items/handles/mod.tg
+// Affine resource handles, B4.1 (ADR 7.10.26t): a `StringBuilder` or a
+// `Bytes` is used at most once on every path through a function — the
+// self-host's half of the check the bootstrap runs in
+// `bootstrap/src/elaborate/handles/`.
+//
+// Both compilers read the PARSED tree, not Core: elaboration erases the
+// handle's wrapper, and a parsed body is the one representation in which the
+// two front ends agree form for form, so they raise the same refusals at the
+// same spans (M8). The refusals are E0720 / E0721 here and E0092 / E0093 in
+// the bootstrap, with the same sentences.
+
+pub mod declarations;
+pub mod state;
+pub mod walk;
+pub mod report;
+pub mod regions;
+pub mod assign;
+
+pub use elab::items::handles::declarations::*;
+pub use elab::items::handles::state::*;
+pub use elab::items::handles::walk::*;
+pub use elab::items::handles::report::*;
+pub use elab::items::handles::regions::*;

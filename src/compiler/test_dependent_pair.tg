@@ -1,0 +1,66 @@
+// A statement can say there exists a witness (ADR 4.10.26h AC 3).
+//
+// `exists k: Nat. B` is a dependent pair: its proof is a witness paired with
+// evidence for `B` at that witness. A tuple checked against it checks its
+// first element against `Nat` and its second against the body with the
+// witness substituted, so `(0, refl)` proves `exists k: Nat. n + k == n`
+// because `n + 0` computes to `n`. Every typed `let` below is an E0010 if a
+// citation returned anything but the statement as written.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The binder refusals stop signature collection for the whole file, so they
+// live in `bootstrap/src/elaborate/tests/items/sorts/`; the must-fail twin
+// is `mustfail_dependent_pair.tg`, checked by `make check-mustfail-fixtures`.
+//
+// The `let` annotations spell `Eq<…>` because statement sugar is not read in
+// an annotation; `exists` itself is a type atom, so it parses anywhere.
+
+// ── The lemmas ──────────────────────────────────────────────────────────────
+
+// Zero leaves `n` unchanged.
+pub theorem dep_pair_zero_witness(n: Nat) -> exists k: Nat. n + k == n {
+    (0, refl)
+}
+
+// A witness that is not `0`: one more is the successor.
+pub theorem dep_pair_succ_witness(n: Nat) -> exists k: Nat. n + k == n + 1 {
+    (1, refl)
+}
+
+// The witness may be any term of the binder type, here the parameter itself.
+pub theorem dep_pair_double_witness(n: Nat) -> exists k: Nat. k == n + 0 {
+    (n, refl)
+}
+
+// ── Each lemma is cited by name ─────────────────────────────────────────────
+
+fn test_a_zero_witness_is_cited() -> Unit {
+    let _p: exists k: Nat. Eq<Nat, 3 + k, 3> = dep_pair_zero_witness(3);
+    ()
+}
+
+fn test_a_nonzero_witness_is_cited() -> Unit {
+    let _p: exists k: Nat. Eq<Nat, 5 + k, 5 + 1> = dep_pair_succ_witness(5);
+    ()
+}
+
+fn test_a_parameter_witness_is_cited() -> Unit {
+    let _p: exists j: Nat. Eq<Nat, j, 2 + 0> = dep_pair_double_witness(2);
+    ()
+}
+
+// The type a citation synthesises reads as `exists`, never as a product; the
+// `Eq` arguments print in the driver's Core form.
+fn test_a_citation_displays_as_exists() -> Unit {
+    expect_type(dep_pair_zero_witness(3), "exists k: Nat. Eq<Nat, NatAdd(Succ(Succ(Succ(Zero))), Var(\"k\")), Succ(Succ(Succ(Zero)))>")
+}
+
+// ── A wrong citation is refused ─────────────────────────────────────────────
+
+fn test_a_citation_at_the_wrong_argument_is_refused() -> Unit {
+    expect_error({ let _p: exists k: Nat. Eq<Nat, 4 + k, 4> = dep_pair_zero_witness(3); 0 }, "E0010")
+}
+
+fn test_an_exists_is_not_a_tuple_of_the_same_parts() -> Unit {
+    expect_error({ let _p: (Nat, Eq<Nat, 3 + 0, 3>) = dep_pair_zero_witness(3); 0 }, "E0010")
+}

@@ -1,0 +1,9 @@
+[E0092] Error: handle `sb` is used after it was consumed, in `twice`
+    ╭─[tests/golden/error/handle_used_after_consumed.tg:31:22]
+    │
+ 31 │     let b = push_str(sb, "y");
+    │                      ─┬  
+    │                       ╰── 
+────╯
+
+error: aborting due to 1 error

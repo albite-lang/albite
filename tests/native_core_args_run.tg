@@ -1,0 +1,58 @@
+// tests/native_core_args_run.tg — ADR 7.10.26r D5, the argument init's battery
+//
+// Prints the argument count, then each argument on its own line, through
+// Rust's readers `tg_argc`/`tg_argv`. Those read the store the init
+// published, so this is what tells the two inits apart: Rust's
+// `tg_init_args_c` under `off`, the core's `tg_native_init_args_c` under
+// `all`. `make check-native-core-args` builds it both ways, runs each build on
+// the same argument sets, and compares each stdout with the expected rendering
+// and with the other's. The evaluator executes neither reader, so this is
+// native against native, never `diff exec`.
+
+extern "C" fn tg_argc() -> Nat
+extern "C" fn tg_argv(index: Nat) -> Nat
+extern "C" fn tg_cstring_to_string(s: Nat) -> String
+extern "C" fn tg_free_string(s: Nat) -> Unit
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+
+pub fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+fn digit(d: Nat) -> String {
+    if d == 0 { "0" } else if d == 1 { "1" } else if d == 2 { "2" }
+    else if d == 3 { "3" } else if d == 4 { "4" } else if d == 5 { "5" }
+    else if d == 6 { "6" } else if d == 7 { "7" } else if d == 8 { "8" }
+    else { "9" }
+}
+
+/// Render a Nat in decimal.
+#[partial]
+fn nat_to_string(n: Nat) -> String {
+    if n < 10 { digit(n) } else { nat_to_string(n / 10) ++ digit(n % 10) }
+}
+
+/// Print arguments `index` to `count - 1`, one per line. Argument 0 is the
+/// program's path, which differs between the two builds, so it is skipped.
+#[partial]
+fn print_args(index: Nat, count: Nat) -> Unit {
+    if index < count {
+        let raw = tg_argv(index);
+        println(tg_cstring_to_string(raw));
+        tg_free_string(raw);
+        print_args(index + 1, count)
+    } else {
+        ()
+    }
+}
+
+fn main() -> Unit {
+    let count = tg_argc();
+    println(nat_to_string(count));
+    print_args(1, count)
+}

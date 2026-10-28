@@ -1,0 +1,2 @@
+use app_util::g;
+pub fn f() -> Nat { g() }

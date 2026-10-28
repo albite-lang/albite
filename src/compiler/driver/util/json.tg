@@ -1,0 +1,148 @@
+// src/compiler/driver/util/json.tg
+// A generic JSON / JSONL writer (ADR 30.9.26h D7).
+//
+// Knows nothing about diagnostics: `elab::error::render::json` builds the
+// schema-1 records on top of it, and T12's self-host slice can import it
+// unchanged. Values are built as already-serialised JSON text, so an object is
+// a list of `json_field`s and an array a list of values.
+//
+// Every name is `json_`-prefixed: both compilers key values on the BARE name,
+// so a generic `escape` or `object` here would be an E0016 somewhere else.
+//
+// EVALUATOR. Only `string_char_at_internal`, `string_len` and the StringBuilder
+// wrappers are reached, all in `albite info eval externs`, so the cost-5
+// suite `test_json_writer.tg` executes every assertion.
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::types::{string_len, string_char_at_internal};
+use driver::ffi::builder::{StringBuilder, string_builder_new, push_str, push_char, to_string};
+use driver::util::strings::convert::{nat_to_string};
+use driver::util::strings::scalars::{utf8_width, utf8_scalar_at};
+
+// ===========================================================================
+// ESCAPING (RFC 8259, as serde_json writes it)
+// ===========================================================================
+
+/// Escape `s` for the inside of a JSON string literal: `"` and `\` get a
+/// backslash, `\n` `\r` `\t` `\b` `\f` their short forms, any other byte
+/// below 0x20 `\u00XX`, and everything else — UTF-8 multi-byte sequences
+/// included — passes through.
+pub fn json_escape(s: String) -> String {
+    to_string(json_escape_into(string_builder_new(), s, 0, string_len(s)))
+}
+
+// Partial (ADR 11.8.26b): `i` ascends toward `len` — a measure recursion,
+// deferred to v2.1. Executable compiler code no proof reaches; E0063 guards it.
+#[partial]
+fn json_escape_into(sb: StringBuilder, s: String, i: Nat, len: Nat) -> StringBuilder {
+    if i >= len {
+        sb
+    } else {
+        let width = utf8_width(string_char_at_internal(s, i));
+        let scalar = utf8_scalar_at(s, i, width);
+        json_escape_into(json_push_escaped(sb, scalar), s, i + width, len)
+    }
+}
+
+/// Push one scalar, escaped if RFC 8259 requires it.
+fn json_push_escaped(sb: StringBuilder, c: Nat) -> StringBuilder {
+    if c == 34 {
+        push_str(sb, "\\\"")
+    } else if c == 92 {
+        push_str(sb, "\\\\")
+    } else if c < 32 {
+        push_str(sb, json_control_escape(c))
+    } else {
+        push_char(sb, c)
+    }
+}
+
+/// The escape for a control byte: a short form where one exists, else
+/// `\u00XX` with lowercase hex, which is what serde_json emits.
+pub fn json_control_escape(c: Nat) -> String {
+    if c == 10 {
+        "\\n"
+    } else if c == 13 {
+        "\\r"
+    } else if c == 9 {
+        "\\t"
+    } else if c == 8 {
+        "\\b"
+    } else if c == 12 {
+        "\\f"
+    } else {
+        "\\u00" ++ json_hex_digit(c / 16) ++ json_hex_digit(c % 16)
+    }
+}
+
+fn json_hex_digit(d: Nat) -> String {
+    if d < 10 {
+        nat_to_string(d)
+    } else if d == 10 {
+        "a"
+    } else if d == 11 {
+        "b"
+    } else if d == 12 {
+        "c"
+    } else if d == 13 {
+        "d"
+    } else if d == 14 {
+        "e"
+    } else {
+        "f"
+    }
+}
+
+// ===========================================================================
+// VALUES
+// ===========================================================================
+
+/// A JSON string value.
+pub fn json_string(s: String) -> String {
+    "\"" ++ json_escape(s) ++ "\""
+}
+
+/// A JSON number from a Nat.
+pub fn json_nat(n: Nat) -> String {
+    nat_to_string(n)
+}
+
+/// The JSON `null` literal.
+pub fn json_null() -> String {
+    "null"
+}
+
+/// `"name":value`, for `json_object`.
+pub fn json_field(name: String, value: String) -> String {
+    json_string(name) ++ ":" ++ value
+}
+
+/// An object from already-serialised fields, in the order given.
+pub fn json_object(fields: List<String>) -> String {
+    "{" ++ json_join_commas(fields) ++ "}"
+}
+
+/// An array from already-serialised values, in the order given.
+pub fn json_array(items: List<String>) -> String {
+    "[" ++ json_join_commas(items) ++ "]"
+}
+
+/// One JSONL line: the value and exactly one `\n`. Write it with `print`,
+/// not `println`, or the line gains a second terminator.
+pub fn json_line(value: String) -> String {
+    value ++ "\n"
+}
+
+fn json_join_commas(parts: List<String>) -> String {
+    match parts {
+        Nil() => "",
+        Cons(first, rest) => first ++ json_join_rest(rest)
+    }
+}
+
+fn json_join_rest(parts: List<String>) -> String {
+    match parts {
+        Nil() => "",
+        Cons(next, rest) => "," ++ next ++ json_join_rest(rest)
+    }
+}

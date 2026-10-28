@@ -1,0 +1,9 @@
+[E0082] Error: `cases` does not apply to the goal `Eq Tri[Lo | Mid(Nat) | Hi] t t`: no arm for `Mid`
+   ╭─[tests/golden/error/tactic_cases_missing_arm.tg:5:48]
+   │
+ 5 │ theorem tri_refl(t: Tri) -> Eq<Tri, t, t> by { cases t { Lo => refl, Hi => refl } }
+   │                                                ─────────────────┬────────────────  
+   │                                                                 ╰────────────────── 
+───╯
+
+error: aborting due to 1 error

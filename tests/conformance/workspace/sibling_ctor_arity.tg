@@ -1,0 +1,8 @@
+// A sibling's constructor given too many arguments (ADR 2.10.26g §2.4): the
+// bootstrap raises its arity error before any constructor lookup.
+use boxes::{MkBox};
+
+fn main() -> Nat {
+    let _boxed = MkBox(1, 2);
+    0
+}

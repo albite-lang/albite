@@ -1,0 +1,77 @@
+// src/compiler/driver/cli/format.tg
+// The `--error-format` value (ADR 30.9.26h D8), and `test --format`'s
+// (ADR 1.10.26i D1).
+//
+// A leaf of its own so `options/state.tg` can hold it without importing
+// `driver::cli` (which imports `options`, a cycle), and so neither of the two
+// files at their size cap has to grow. The value is threaded as a parameter to
+// the render entry points — the self-host has no thread-local idiom, and a
+// parameter is testable.
+
+use driver::util::{Result, Ok, Err, string_eq};
+
+/// How diagnostics are written: human text on stderr, or schema-1 JSONL
+/// records on stdout.
+pub type ErrorFormat =
+    | FormatHuman
+    | FormatJson
+
+/// Read an `--error-format` value. Anything but `human` or `json` is refused
+/// with the value itself, for the CLI error — never a silent default.
+pub fn error_format_from_flag(value: String) -> Result<ErrorFormat, String> {
+    if string_eq(value, "human") {
+        Ok(FormatHuman)
+    } else if string_eq(value, "json") {
+        Ok(FormatJson)
+    } else {
+        Err(value)
+    }
+}
+
+/// How `test` reports its results (ADR 1.10.26i D1): the harness's human
+/// lines, schema-1 JSONL records, or one JUnit XML document — the machine two
+/// on stdout.
+pub type TestFormat =
+    | TestFormatHuman
+    | TestFormatJson
+    | TestFormatJunit
+
+/// Read a `test --format` value. Anything else is refused with the value
+/// itself, for the CLI error — never a silent default.
+pub fn test_format_from_flag(value: String) -> Result<TestFormat, String> {
+    if string_eq(value, "human") {
+        Ok(TestFormatHuman)
+    } else if string_eq(value, "json") {
+        Ok(TestFormatJson)
+    } else if string_eq(value, "junit") {
+        Ok(TestFormatJunit)
+    } else {
+        Err(value)
+    }
+}
+
+/// Does this format capture the harness's output into records?
+pub fn test_format_is_machine(format: TestFormat) -> Bool {
+    match format {
+        TestFormatHuman() => false,
+        TestFormatJson() => true,
+        TestFormatJunit() => true
+    }
+}
+
+/// How `test` renders a lex, parse or elaboration diagnostic in `format`:
+/// as records only in JSON. JUnit keeps them human, on stderr (D6).
+pub fn error_format_for_test(format: TestFormat) -> ErrorFormat {
+    match format {
+        TestFormatJson() => FormatJson,
+        _ => FormatHuman
+    }
+}
+
+/// Is this the JSON format? For the render arms' `if`.
+pub fn error_format_is_json(format: ErrorFormat) -> Bool {
+    match format {
+        FormatHuman() => false,
+        FormatJson() => true
+    }
+}

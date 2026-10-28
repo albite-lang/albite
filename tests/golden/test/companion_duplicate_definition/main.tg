@@ -1,0 +1,6 @@
+// ADR 2.10.26j AC 5: a companion shares its module's scope, so redefining a
+// name the module defines is refused with E0004 at the companion's line, a
+// note at this file's — rather than the second definition silently winning.
+fn helper() -> Nat { 1 }
+
+fn main() -> Nat { helper() }

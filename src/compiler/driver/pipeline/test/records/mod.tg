@@ -1,0 +1,84 @@
+// src/compiler/driver/pipeline/test/records/mod.tg
+// `albite1 test --format json|junit` (ADR 1.10.26i): the harness frames each
+// test's result, the driver captures the frames and renders them here.
+//
+//   frames.tg      reading the frames file back (D3)
+//   json.tg        a frame as a schema-1 record, and the summary (D4)
+//   junit.tg       the JUnit document (D5)
+//   xml_escape.tg  its escaping (D5)
+//   stop.tg        every early exit's stdout text (D6)
+//
+// Everything in those five is pure. The effectful edge — the three `print`s
+// a machine-format run makes — is the handful of functions below, so the
+// renderers stay assertable on the evaluator (`test_test_records.tg`).
+
+pub mod frames;
+pub mod json;
+pub mod junit;
+pub mod xml_escape;
+pub mod stop;
+
+use driver::ffi::{eprintln, print, List, Nil, Cons};
+use driver::util::{Option, Some, None};
+use driver::util::json::{json_line};
+use driver::cli::format::{TestFormat, TestFormatHuman, TestFormatJson, TestFormatJunit};
+use elab::error::{ElabError, SourceInfo, source_for_error, json_elab_error_record};
+use elab::error::render::colors::{colorize_bold, ColorRed};
+use driver::pipeline::test::records::frames::{TestFrame};
+use driver::pipeline::test::records::json::{json_test_summary, json_duration_sum};
+use driver::pipeline::test::records::junit::{junit_document};
+use driver::pipeline::test::records::stop::{
+    records_json_lines, records_runner_stop_text, records_empty_run_text,
+    records_diagnostics_stop_text
+};
+
+/// A finished run's whole stdout: one record per frame then the summary, or
+/// one document. Empty in human mode, whose harness already printed its lines.
+pub fn render_frames(format: TestFormat, frames: List<TestFrame>, entry: String) -> String {
+    match format {
+        TestFormatHuman() => "",
+        TestFormatJson() =>
+            records_json_lines(frames, entry) ++ json_line(json_test_summary(frames)),
+        TestFormatJunit() =>
+            junit_document(frames, entry, json_duration_sum(frames)) ++ "\n"
+    }
+}
+
+/// Report a runner failure: `error: <message>` on stderr in human mode, or
+/// the stop's records on stdout in a machine one (D6). `frames` are those
+/// collected before the stop — `Nil` for every stop before the harness ran.
+pub fn report_runner_stop(format: TestFormat, frames: List<TestFrame>, message: String,
+                          entry: String, use_color: Bool) -> Unit {
+    match records_runner_stop_text(format, frames, message, entry) {
+        Some(text) => print(text),
+        None() => eprintln(colorize_bold("error", ColorRed, use_color) ++ ": " ++ message)
+    }
+}
+
+/// Print a machine format's empty-run report; nothing in human mode.
+pub fn report_empty_run(format: TestFormat, entry: String) -> Unit {
+    match records_empty_run_text(format, entry) {
+        Some(text) => print(text),
+        None() => ()
+    }
+}
+
+/// Print a machine format's diagnostics-stop addition; nothing otherwise.
+pub fn report_diagnostics_stop(format: TestFormat, entry: String) -> Unit {
+    match records_diagnostics_stop_text(format, entry) {
+        Some(text) => print(text),
+        None() => ()
+    }
+}
+
+/// One schema-1 record per elaboration error, on stdout — `check`'s JSON arm,
+/// for `test --format json` (D6).
+pub fn print_elab_error_json_lines(errors: List<ElabError>, sources: List<SourceInfo>) -> Unit {
+    match errors {
+        Nil() => (),
+        Cons(err, rest) => {
+            print(json_line(json_elab_error_record(err, source_for_error(sources, err))));
+            print_elab_error_json_lines(rest, sources)
+        }
+    }
+}

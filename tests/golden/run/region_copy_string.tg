@@ -1,0 +1,27 @@
+// Golden test (ADR 13.10.26q D6): a region's String value is copied out
+// before the region is released — once from one region, and through two
+// nested regions, where the inner copy lands in the outer region and is
+// copied again at its exit. `make check-region-copy-out` runs it natively
+// with each released chunk poisoned, so a missed copy reads garbage.
+fn shout(s: String) -> String {
+    s ++ "!"
+}
+
+fn once() -> String {
+    region { shout("abc" ++ "def") }
+}
+
+fn nested() -> String {
+    region {
+        let inner = region { "in" ++ "ner" };
+        shout(inner ++ "-outer")
+    }
+}
+
+fn main() -> Nat {
+    let a = once();
+    let b = nested();
+    let ok_a = if a == "abcdef!" { 1 } else { 0 };
+    let ok_b = if b == "inner-outer!" { 10 } else { 0 };
+    ok_a + ok_b + string_len(a) * 100 + string_len(b) * 10000
+}

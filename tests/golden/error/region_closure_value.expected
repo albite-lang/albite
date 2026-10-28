@@ -1,0 +1,9 @@
+[E0094] Error: a region's value must be first-order data, found `(Nat → Nat)`
+   ╭─[tests/golden/error/region_closure_value.tg:3:13]
+   │
+ 3 │     let g = region { |x: Nat| x };
+   │             ──────────┬──────────  
+   │                       ╰──────────── 
+───╯
+
+error: aborting due to 1 error

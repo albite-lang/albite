@@ -1,0 +1,14 @@
+[E0004] Error: the name `T` is defined multiple times
+   ╭─[tests/golden/error/duplicate_type_in_file.tg:4:6]
+   │
+ 3 │ type T = A | B
+   │      ┬  
+   │      ╰── `T` is first defined here
+ 4 │ type T = C(Nat)
+   │      ┬  
+   │      ╰── 
+   │ 
+   │ Help: a name is defined once per file; rename or remove one of them
+───╯
+
+error: aborting due to 1 error

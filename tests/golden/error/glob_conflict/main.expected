@@ -1,0 +1,12 @@
+warning: Signature Collection global collection failed with 1 error; cross-module imports may not resolve.
+  first error: error[E0018]: `collide` is imported from both `mod_a::*` and `mod_b::*` (at 154..162)
+  hint: run `albite doctor check module signature-collection <file>` for details
+[E0018] Error: `collide` is imported from both `mod_a::*` and `mod_b::*`
+   ╭─[tests/golden/error/glob_conflict/main.tg:8:5]
+   │
+ 8 │ use mod_b::*;
+   │     ────┬───  
+   │         ╰───── 
+───╯
+
+error: aborting due to 1 error

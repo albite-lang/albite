@@ -1,0 +1,9 @@
+[E0082] Error: `intro` does not apply to the goal `Eq Nat n n`: the goal is not a function type
+   ╭─[tests/golden/error/tactic_not_applicable.tg:3:46]
+   │
+ 3 │ theorem n_is_n(n: Nat) -> Eq<Nat, n, n> by { intro h; refl }
+   │                                              ───┬───  
+   │                                                 ╰───── 
+───╯
+
+error: aborting due to 1 error

@@ -1,0 +1,124 @@
+// src/compiler/elab/error/list.tg
+// List types and operations for errors, strings, and suggestions.
+
+use lexer::span::Span;
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_len, list_is_empty, list_reverse, list_append, string_eq};
+use elab::error::kinds::{ElabErrorKind, error_kind_code};
+use elab::error::expected::{MaybeExpectedBecause, NoExpectedBecause};
+use parser::ast::common::{MaybeString, NoString, SomeString};
+
+// ===========================================================================
+// STRING LIST OPERATIONS
+// ===========================================================================
+
+/// Join a string list with a separator.
+pub fn string_list_join(list: List<String>, sep: String) -> String {
+    match list {
+        Nil() => "",
+        Cons(s, rest) => match rest {
+            Nil() => s,
+            Cons(_, _) => s ++ sep ++ string_list_join(rest, sep)
+        }
+    }
+}
+
+// ===========================================================================
+// SUGGESTION
+// ===========================================================================
+
+/// A suggestion for fixing an error.
+pub type Suggestion = {
+    span: Span,
+    replacement: String,
+    message: String
+}
+
+/// Create a suggestion.
+pub fn suggestion_new(span: Span, replacement: String, message: String) -> Suggestion {
+    { span: span, replacement: replacement, message: message }
+}
+
+// SuggestionList is now List<Suggestion> using driver::ffi::{List, Nil, Cons}
+
+// ===========================================================================
+// ELAB ERROR TYPE
+// ===========================================================================
+
+/// An elaboration error with full context.
+pub type ElabError = {
+    kind: ElabErrorKind,
+    span: Span,
+    notes: List<String>,
+    suggestions: List<Suggestion>,
+    help: MaybeString,
+    expected_because: MaybeExpectedBecause
+}
+
+// ElabErrorList is now List<ElabError> using driver::ffi::{List, Nil, Cons}
+// Helper functions use generic versions from driver::util:
+//   - list_len<T> replaces elab_error_list_len
+//   - list_is_empty<T> replaces elab_error_list_is_empty
+//   - list_append<T> replaces elab_error_list_append
+//   - list_reverse<T> replaces elab_error_list_reverse
+
+// ===========================================================================
+// ERROR DEDUPLICATION
+// ===========================================================================
+
+/// Deduplicate errors by `(start, end, file, code)`: the first error at each
+/// key is kept.
+///
+/// This is the bootstrap's key (`rendering/dedup.rs`, 7.8.26d D4), adopted by
+/// ADR 30.9.26h D2. Keyed on the span alone, two errors in DIFFERENT files at
+/// the same offsets collapsed into one — a real error lost the moment a
+/// per-file source made both renderable.
+pub fn errors_deduplicate(list: List<ElabError>) -> List<ElabError> {
+    errors_deduplicate_acc(list, Nil, DedupSeenEmpty)
+}
+
+/// The keys already kept: a span (start, end, file) and a code.
+type DedupSeen =
+    | DedupSeenEmpty
+    | DedupSeenCons(Span, String, DedupSeen)
+
+/// Has an error with this span and code already been kept?
+fn dedup_seen_contains(seen: DedupSeen, span: Span, code: String) -> Bool {
+    match seen {
+        DedupSeenEmpty() => false,
+        DedupSeenCons(s, c, rest) =>
+            if dedup_keys_equal(s, c, span, code) {
+                true
+            } else {
+                dedup_seen_contains(rest, span, code)
+            }
+    }
+}
+
+/// Do two `(start, end, file, code)` keys agree?
+fn dedup_keys_equal(a: Span, a_code: String, b: Span, b_code: String) -> Bool {
+    a.start == b.start && a.end == b.end && string_eq(a.file, b.file) && string_eq(a_code, b_code)
+}
+
+/// Accumulator-based deduplication.
+fn errors_deduplicate_acc(
+    list: List<ElabError>,
+    acc: List<ElabError>,
+    seen: DedupSeen
+) -> List<ElabError> {
+    match list {
+        Nil() => list_reverse(acc),
+        Cons(err, rest) =>
+            if dedup_seen_contains(seen, err.span, error_kind_code(err.kind)) {
+                // Skip duplicate
+                errors_deduplicate_acc(rest, acc, seen)
+            } else {
+                // Keep this error
+                errors_deduplicate_acc(
+                    rest,
+                    Cons(err, acc),
+                    DedupSeenCons(err.span, error_kind_code(err.kind), seen)
+                )
+            }
+    }
+}

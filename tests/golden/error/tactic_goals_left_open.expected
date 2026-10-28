@@ -1,0 +1,9 @@
+[E0083] Error: the `by` block ends with 1 unsolved goal(s): h : Eq Nat n zero ⊢ Eq Nat n zero
+   ╭─[tests/golden/error/tactic_goals_left_open.tg:3:56]
+   │
+ 3 │ theorem keep(n: Nat) -> Eq<Nat, n, 0> -> Eq<Nat, n, 0> by { intro h }
+   │                                                        ───────┬──────  
+   │                                                               ╰──────── 
+───╯
+
+error: aborting due to 1 error

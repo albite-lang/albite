@@ -1,0 +1,66 @@
+// tests/bytes_trap_run.tg — ADR 3.10.26n AC 5 trap battery
+//
+// Eight refusals, one per run. `tungsten diff exec` passes no argv, and a
+// program traps at most once, so `make check-bytes-parity` stamps out one copy
+// per case with `trap_case()` rewritten (the `BYTES_TRAP_CASE` marker below)
+// and runs `diff exec` on each. Every case prints a line first, then traps.
+// `diff exec` classifies two sides that both fail at run time with equal
+// stdout as parity; the recipe also requires the `before` line and refuses a
+// `no trap` line, so a backend that let the call through fails the gate even
+// when both sides agree.
+//
+// The cases: 0 an index equal to the length, 1 an index of 2^63, 2 a byte of
+// 256, 3 a blit at u64::MAX, 4 a blit one byte too long, 5 `new` at
+// u64::MAX, 6 a use after conversion, 7 a conversion of invalid UTF-8.
+
+extern "C" fn tg_println(s: Nat, len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_string_len_internal(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+extern "C" fn tg_bytes_new(len: Nat) -> Nat
+extern "C" fn tg_bytes_len(h: Nat) -> Nat
+extern "C" fn tg_bytes_get(h: Nat, i: Nat) -> Nat
+extern "C" fn tg_bytes_set(h: Nat, i: Nat, v: Nat) -> Nat
+extern "C" fn tg_bytes_blit_string(h: Nat, at: Nat, s: String) -> Nat
+extern "C" fn tg_bytes_into_string(h: Nat) -> String
+
+pub fn println(s: String) -> Unit {
+    let c = tg_string_to_cstring(s);
+    let len = tg_string_len_internal(s);
+    tg_println(c, len);
+    tg_free_string(c)
+}
+
+fn trap_case() -> Nat { 0 } // BYTES_TRAP_CASE
+
+fn two_to_the_63() -> Nat { 9223372036854775808 }
+
+fn u64_max() -> Nat { 18446744073709551615 }
+
+/// Run the refusal `case` names; returns only if nothing trapped.
+fn refuse(case: Nat) -> Nat {
+    let h = tg_bytes_new(4);
+    if case == 0 { tg_bytes_get(h, 4) }
+    else if case == 1 { tg_bytes_get(h, two_to_the_63()) }
+    else if case == 2 { tg_bytes_set(h, 0, 256) }
+    else if case == 3 { tg_bytes_blit_string(h, u64_max(), "a") }
+    else if case == 4 { tg_bytes_blit_string(h, 2, "abc") }
+    else if case == 5 { tg_bytes_new(u64_max()) }
+    else if case == 6 {
+        let text = tg_bytes_into_string(h);
+        tg_bytes_len(h) + tg_string_len_internal(text)
+    }
+    else {
+        // 0xC3 opens a two-byte scalar that the following 0x00 does not continue.
+        let h = tg_bytes_set(h, 0, 195);
+        tg_string_len_internal(tg_bytes_into_string(h))
+    }
+}
+
+fn main() -> Unit {
+    println("before the refusal");
+    let survived = refuse(trap_case());
+    // Unreachable on both sides; a backend that let the call through prints it.
+    if survived == 0 { println("no trap") } else { println("no trap") }
+}

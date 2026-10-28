@@ -1,0 +1,217 @@
+// Value Collection: value signature collection.
+//
+// Collects function, theorem, axiom, and extern signatures.
+// All types are fully elaborated at this point, so signatures
+// can reference any type.
+
+use parser::ast::{
+    Item, ItemFn, ItemType, ItemTypeAlias, ItemTheorem, ItemLemma,
+    ItemAxiom, ItemExtern, ItemMod, ItemUse, ItemError,
+    FunctionDef, TheoremDef, AxiomDef, ExternFnDef,
+    ExternParam,
+    TypeExpr, TyUnit,
+    NoTypeExpr, SomeTypeExpr,
+    Visibility,
+    Ident, ident_name
+};
+use driver::ffi::{List, Nil, Cons};
+use elab::ffi::{
+    TypeHandle,
+    tg_type_arrow, type_error_handle
+};
+use lexer::span::{Span};
+use elab::env::{
+    Env, env_register_value,
+    ValueDefInfo, value_def_info_new
+};
+use elab::types::{
+    ElabTypeResult, ElabTypeOk, ElabTypeErr, ElabTypeError, elab_type
+};
+use elab::cir::{
+    CodegenType, CTArrow
+};
+use elab::items::result::{
+    ElabContext, elab_context_with_env, elab_context_add_error,
+    elab_context_add_type_error
+};
+use elab::items::collect::types::helpers::{push_type_params, pop_type_params};
+use elab::items::collect::signature::{build_fn_type, build_signature_type, wrap_foralls};
+
+// ===========================================================================
+// VALUE COLLECTION: COLLECT VALUE SIGNATURES
+// ===========================================================================
+
+/// Collect function, theorem, and extern signatures.
+/// All types are now fully elaborated, so signatures can reference any type.
+pub fn collect_values(ctx: ElabContext, items: List<Item>) -> ElabContext {
+    match items {
+        Nil() => {
+            ctx
+        },
+        Cons(item, rest) => {
+            let ctx2 = collect_value_signature(ctx, item);
+            collect_values(ctx2, rest)
+        }
+    }
+}
+
+/// Collect a value signature from an item.
+fn collect_value_signature(ctx: ElabContext, item: Item) -> ElabContext {
+    match item {
+        ItemFn(def) => {
+            collect_fn_signature(ctx, def)
+        },
+        ItemTheorem(def) => {
+            collect_theorem_signature(ctx, def, "theorem")
+        },
+        ItemLemma(def) => {
+            collect_theorem_signature(ctx, def, "lemma")
+        },
+        ItemAxiom(def) => {
+            collect_axiom_signature(ctx, def)
+        },
+        ItemExtern(def) => collect_extern_signature(ctx, def),
+        _ => {
+            ctx  // Not a value definition
+        }
+    }
+}
+
+/// Collect a function signature.
+fn collect_fn_signature(ctx: ElabContext, def: FunctionDef) -> ElabContext {
+    let fn_name = ident_name(def.name);
+    
+    // Push type parameters
+    let ctx2 = push_type_params(ctx, def.type_params);
+    
+    // Build the function type from parameters and return type
+    match build_fn_type(ctx2, def.params, def.return_type, def.span) {
+        ElabTypeErr(err) => {
+            let ctx3 = record_failed_signature(ctx2, err, poisoned_value(fn_name, def.vis, def.span));
+            pop_type_params(ctx3, def.type_params)
+        },
+        ElabTypeOk(fn_type, _) => {
+            // Wrap in foralls for type parameters
+            let final_type = wrap_foralls(fn_type, def.type_params);
+            // Register the value
+            let info = value_def_info_new(fn_name, final_type, def.vis, def.span);
+            let env3 = env_register_value(ctx2.env, info);
+            let ctx3 = elab_context_with_env(ctx2, env3);
+            pop_type_params(ctx3, def.type_params)
+        }
+    }
+}
+
+/// Collect a theorem or lemma signature. Its parameters are bound before the
+/// proposition is elaborated, so the proposition may name them (ADR 2.10.26f D2).
+fn collect_theorem_signature(ctx: ElabContext, def: TheoremDef, kind: String) -> ElabContext {
+    let ctx2 = push_type_params(ctx, def.type_params);
+    collect_theorem_with_prop(ctx2, def, ident_name(def.name))
+}
+
+fn collect_theorem_with_prop(ctx: ElabContext, def: TheoremDef, thm_name: String) -> ElabContext {
+    match build_signature_type(ctx.env, def.params, def.prop) {
+        ElabTypeErr(err) =>
+            let ctx2 = record_failed_signature(ctx, err, poisoned_value(thm_name, def.vis, def.span));
+            pop_type_params(ctx2, def.type_params),
+        ElabTypeOk(thm_type, _) =>
+            let final_type = wrap_foralls(thm_type, def.type_params);
+            let info = value_def_info_new(thm_name, final_type, def.vis, def.span);
+            let env2 = env_register_value(ctx.env, info);
+            let ctx2 = elab_context_with_env(ctx, env2);
+            pop_type_params(ctx2, def.type_params)
+    }
+}
+
+/// Collect an axiom signature; parameters bind first, as for a theorem.
+fn collect_axiom_signature(ctx: ElabContext, def: AxiomDef) -> ElabContext {
+    let ctx2 = push_type_params(ctx, def.type_params);
+    collect_axiom_with_prop(ctx2, def, ident_name(def.name))
+}
+
+fn collect_axiom_with_prop(ctx: ElabContext, def: AxiomDef, axiom_name: String) -> ElabContext {
+    match build_signature_type(ctx.env, def.params, def.prop) {
+        ElabTypeErr(err) =>
+            let ctx2 = record_failed_signature(ctx, err, poisoned_value(axiom_name, def.vis, def.span));
+            pop_type_params(ctx2, def.type_params),
+        ElabTypeOk(axiom_type, _) =>
+            let final_type = wrap_foralls(axiom_type, def.type_params);
+            let info = value_def_info_new(axiom_name, final_type, def.vis, def.span);
+            let env2 = env_register_value(ctx.env, info);
+            let ctx2 = elab_context_with_env(ctx, env2);
+            pop_type_params(ctx2, def.type_params)
+    }
+}
+
+/// Collect an extern function signature.
+fn collect_extern_signature(ctx: ElabContext, def: ExternFnDef) -> ElabContext {
+    let fn_name = ident_name(def.name);
+    
+    // Build extern function type from params and return type
+    // Unwrap optional return type - default to unit
+    let ret_type = match def.return_type {
+        SomeTypeExpr(t) => t,
+        NoTypeExpr() => TyUnit(def.span)
+    };
+    match build_extern_fn_type(ctx.env, def.params, ret_type) {
+        ElabTypeErr(err) =>
+            record_failed_signature(ctx, err, poisoned_value(fn_name, def.vis, def.span)),
+        ElabTypeOk(fn_type, _) =>
+            let info = value_def_info_new(fn_name, fn_type, def.vis, def.span);
+            let env2 = env_register_value(ctx.env, info);
+            elab_context_with_env(ctx, env2)
+    }
+}
+
+/// A value whose signature failed: its error is recorded and its name is
+/// still registered, at the poison type `info` carries, so a use resolves and
+/// stays silent. The bootstrap reports a signature fault once, at the
+/// signature, for a function, theorem, axiom or extern alike (ADR 14.8.26g;
+/// 7.10.26g D2). `info` is built by the caller, so a test can inject a handle
+/// in place of `type_error_handle()`, an extern the evaluator cannot run.
+pub fn record_failed_signature(ctx: ElabContext, err: ElabTypeError, info: ValueDefInfo) -> ElabContext {
+    let ctx2 = elab_context_add_type_error(ctx, err);
+    elab_context_with_env(ctx2, env_register_value(ctx2.env, info))
+}
+
+fn poisoned_value(name: String, vis: Visibility, span: Span) -> ValueDefInfo {
+    value_def_info_new(name, type_error_handle(), vis, span)
+}
+
+/// Build extern function type.
+fn build_extern_fn_type(env: Env, params: List<ExternParam>, ret: TypeExpr) -> ElabTypeResult {
+    match elab_type(env, ret) {
+        ElabTypeErr(e) => ElabTypeErr(e),
+        ElabTypeOk(ret_handle, ret_ct) =>
+            build_extern_arrow_chain(env, params, ret_handle, ret_ct)
+    }
+}
+
+/// Build arrow chain for extern params.
+// Partial (ADR 11.8.26b): argument rebuilt, not a subterm — deferred to v2.1.
+#[partial]
+fn build_extern_arrow_chain(env: Env, params: List<ExternParam>, ret: TypeHandle, ret_ct: CodegenType) -> ElabTypeResult {
+    match params {
+        Nil() => ElabTypeOk(ret, ret_ct),
+        Cons(param, rest) =>
+            build_extern_arrow_param(env, param, rest, ret, ret_ct)
+    }
+}
+
+fn build_extern_arrow_param(env: Env, param: ExternParam, rest: List<ExternParam>, ret: TypeHandle, ret_ct: CodegenType) -> ElabTypeResult {
+    match build_extern_arrow_chain(env, rest, ret, ret_ct) {
+        ElabTypeErr(e) => ElabTypeErr(e),
+        ElabTypeOk(rest_type, rest_ct) =>
+            build_extern_arrow_type(env, param, rest_type, rest_ct)
+    }
+}
+
+fn build_extern_arrow_type(env: Env, param: ExternParam, rest_type: TypeHandle, rest_ct: CodegenType) -> ElabTypeResult {
+    match elab_type(env, param.ty) {
+        ElabTypeErr(e) => ElabTypeErr(e),
+        ElabTypeOk(param_type, param_ct) =>
+            let arrow = tg_type_arrow(param_type, rest_type);
+            let arrow_ct = CTArrow(param_ct, rest_ct);
+            ElabTypeOk(arrow, arrow_ct)
+    }
+}

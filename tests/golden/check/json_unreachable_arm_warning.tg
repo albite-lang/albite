@@ -1,0 +1,5 @@
+// Golden test (ADR 28.9.26e): a warning-only run in schema-1 JSON exits 0;
+// the record carries a spanned note and help.
+fn f(n: Int) -> Nat {
+    match n { 1 => 1, 1 => 2, _ => 3 }
+}

@@ -1,0 +1,135 @@
+// Unit tests for the self-host's error codes across the item boundary (ADR
+// 2.10.26i): the boundary keeps the code an expression or type error already
+// carried (AC 1, D2), and the poison-cascade record is dropped behind a cause
+// and reported as internal without one (AC 2, D4).
+//
+// Cost 5: every subject is a pure function over injected values — an error
+// list and an `ElabExprError` literal instead of an `ElabContext`, whose `Env`
+// is arena-backed — so `--assertion-census` proves each comparison ran. The
+// context helpers are one-line wrappers over `record_expr_error` and
+// `record_type_error`, which is what these tests exercise.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_string, assert_eq_nat, assert_eq_bool};
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_len};
+use lexer::span::{Span, span_new};
+use elab::error::{
+    ElabError, ErrCoded, error_kind_code, error_kind_message,
+    elab_error_coded, elab_error_internal
+};
+use elab::exprs::forms::result::{
+    ElabExprError, elab_expr_error_coded, elab_expr_error_internal,
+    elab_expr_error_mirror, elab_expr_error_cascade
+};
+use elab::types::result_types::{elab_type_error_coded};
+use elab::items::result::{cascade_is_quiet, record_expr_error, record_type_error};
+use elab::exprs::apply::expect_error::{expect_error_mismatch_message};
+
+fn here() -> Span {
+    span_new(3, 9, "t.tg")
+}
+
+/// The code of the newest error in a list, or "<none>" for an empty one.
+fn newest_code(errors: List<ElabError>) -> String {
+    match errors {
+        Nil => "<none>",
+        Cons(err, _) => error_kind_code(err.kind)
+    }
+}
+
+/// The message of the newest error in a list, or "<none>" for an empty one.
+fn newest_message(errors: List<ElabError>) -> String {
+    match errors {
+        Nil => "<none>",
+        Cons(err, _) => error_kind_message(err.kind)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AC 1: the boundary keeps the code and the message (D2)
+// ---------------------------------------------------------------------------
+
+// 2.10.26i AC1: ErrCoded reports the code it carries.
+pub fn test_coded_error_keeps_its_code() -> Unit {
+    assert_eq_string(error_kind_code(ErrCoded("E0101", "unknown value: x")), "E0101");
+    assert_eq_string(error_kind_code(elab_error_coded("m", here(), "E0308").kind), "E0308")
+}
+
+// 2.10.26i AC1: ErrCoded renders its message byte for byte.
+pub fn test_coded_error_keeps_its_message() -> Unit {
+    assert_eq_string(error_kind_message(ErrCoded("E0101", "unknown value: x")), "unknown value: x");
+    assert_eq_string(error_kind_message(elab_error_coded("unknown type: T", here(), "E0100").kind), "unknown type: T")
+}
+
+// 2.10.26i AC1: an empty code is still the visible catch-all, not a blank.
+pub fn test_uncoded_error_is_the_catch_all() -> Unit {
+    let err = elab_error_coded("stray", here(), "");
+    assert_eq_string(error_kind_code(err.kind), "E0999");
+    assert_eq_string(error_kind_message(err.kind), "stray")
+}
+
+// 2.10.26i AC1: an expression error reaches the item list with its code.
+pub fn test_expr_error_crosses_with_its_code() -> Unit {
+    let errors = record_expr_error(Nil, elab_expr_error_coded("type mismatch", here(), "E0001"));
+    assert_eq_nat(list_len(errors), 1);
+    assert_eq_string(newest_code(errors), "E0001");
+    assert_eq_string(newest_message(errors), "type mismatch")
+}
+
+// 2.10.26i AC1: a type error reaches the item list with its code.
+pub fn test_type_error_crosses_with_its_code() -> Unit {
+    let errors = record_type_error(Nil, elab_type_error_coded("unknown type: Foo", here(), "E0100"));
+    assert_eq_nat(list_len(errors), 1);
+    assert_eq_string(newest_code(errors), "E0100");
+    assert_eq_string(newest_message(errors), "unknown type: Foo")
+}
+
+// 2.10.26i AC1 must-fail twin: the old route (and the internal one) is the
+// catch-all, so a boundary wired back to it fails the two crossing tests.
+pub fn test_internal_error_is_the_catch_all() -> Unit {
+    assert_eq_string(error_kind_code(elab_error_internal("type mismatch", here()).kind), "E0999");
+    assert_eq_string(elab_expr_error_internal("internal: x", here()).code, "E0999")
+}
+
+// 2.10.26i AC1 (D5): a mirror of the bootstrap's catch-all keeps its message.
+pub fn test_mirror_error_keeps_its_message() -> Unit {
+    let err = elab_expr_error_mirror("expect_type: expected 2 arguments, found 0", here());
+    assert_eq_string(err.code, "E0999");
+    assert_eq_string(err.message, "expect_type: expected 2 arguments, found 0")
+}
+
+// ---------------------------------------------------------------------------
+// AC 2: the cascade is dropped behind a cause, reported without one (D4)
+// ---------------------------------------------------------------------------
+
+// 2.10.26i AC2: a cascade behind a recorded error adds nothing.
+pub fn test_cascade_behind_an_error_is_dropped() -> Unit {
+    let cause = record_expr_error(Nil, elab_expr_error_coded("unknown value: n", here(), "E0101"));
+    assert_eq_bool(cascade_is_quiet(cause), true);
+    let after = record_expr_error(cause, elab_expr_error_cascade(here()));
+    assert_eq_nat(list_len(after), 1);
+    assert_eq_string(newest_code(after), "E0101")
+}
+
+// 2.10.26i AC2: a cascade with no recorded cause is an internal fault.
+pub fn test_lone_cascade_is_reported_as_internal() -> Unit {
+    let none: List<ElabError> = Nil;
+    assert_eq_bool(cascade_is_quiet(none), false);
+    let after = record_expr_error(none, elab_expr_error_cascade(here()));
+    assert_eq_nat(list_len(after), 1);
+    assert_eq_string(newest_code(after), "E0999");
+    assert_eq_string(newest_message(after), "cannot check against invalid type (cascading error)")
+}
+
+// 2.10.26i AC2: expect_error never prints the marker as a code.
+pub fn test_cascade_marker_is_never_printed_as_a_code() -> Unit {
+    let msg = expect_error_mismatch_message("E0010", elab_expr_error_cascade(here()));
+    assert_eq_string(msg, "expect_error: expected error E0010, but got unstructured error\n  actual error: cannot check against invalid type (cascading error)");
+    let coded = expect_error_mismatch_message("E0010", elab_expr_error_coded("type mismatch", here(), "E0001"));
+    assert_eq_string(coded, "expect_error: expected error E0010, but got E0001\n  actual error: type mismatch")
+}

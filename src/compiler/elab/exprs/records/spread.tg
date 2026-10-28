@@ -1,0 +1,242 @@
+// src/compiler/elab/exprs/records/spread.tg
+// Named record spread elaboration (ADR 13.5.26i).
+//
+// Handles `TypeName { ...spread, field: value }` syntax.
+// Projects missing fields from the spread base at their canonical index.
+
+use lexer::span::Span;
+use parser::ast::{Ident, ident_name, FieldInit};
+use parser::ast::nodes::Expr;
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_is_empty, list_len};
+use elab::ffi::{
+    TermHandle, TypeHandle,
+    tg_term_pair,
+    tg_type_is_product, tg_type_get_product_left, tg_type_get_product_right
+};
+use elab::env::{Env, RecordFieldInfo, MaybeRecordField, NoRecordField, SomeRecordField,
+    record_field_at_index};
+use elab::exprs::forms::result::{ElabExprResult, ElabExprOk, ElabExprErr, elab_expr_error_internal, TermInfo};
+use elab::exprs::records::deep_eq::get_structural_type;
+use elab::exprs::records::named::{DupFieldResult, NoDupField, SomeDupField, find_duplicate_field,
+    UserFieldResult, SomeUserField, NoUserField, find_user_field};
+use elab::exprs::records::projection::{FieldSlot, project_record_field};
+use elab::exprs::check;
+use elab::cir::{CodegenIR, CIRPair};
+
+// ===========================================================================
+// NAMED RECORD SPREAD
+// ===========================================================================
+
+/// Input arguments for named spread elaboration.
+pub type SpreadArgs = { spread_expr: Expr, fields: List<FieldInit>, def_fields: List<RecordFieldInfo>, expected: TypeHandle }
+
+/// Elaborate a named record with spread: `TypeName { ...spread, field: value }`.
+///
+/// 1. Check for duplicate explicit fields
+/// 2. Check spread expression against expected record type
+/// 3. Walk def fields in canonical order: use explicit value or project from spread
+///
+/// TODO(AC6): Wrap spread term in a `tg_term_let` binding to guarantee single
+/// evaluation at runtime. Currently the spread TermInfo handle is projected
+/// directly, which is correct in a pure language but would duplicate evaluation
+/// if side effects are ever added. The bootstrap elaborator already wraps in
+/// `Term::let_in`. Deferring because the self-hosted compiler doesn't yet produce running binaries
+/// and threading CodegenType through the spread pipeline is non-trivial.
+pub fn synth_named_spread(env: Env, args: SpreadArgs, span: Span) -> ElabExprResult {
+    match find_duplicate_field(args.fields) {
+        SomeDupField(dup_name) =>
+            ElabExprErr(elab_expr_error_coded("duplicate field in named record constructor", span, "E0303")),
+        NoDupField() =>
+            match check(env, args.spread_expr, args.expected) {
+                ElabExprErr(e) => ElabExprErr(e),
+                ElabExprOk(env2, spread_term, _, spread_cir) =>
+                    let structural = get_structural_type(env2, args.expected);
+                    let base: TermInfo = { term: spread_term, ty: structural, cir: spread_cir };
+                    let ctx: SpreadCtx = {
+                        base: base,
+                        user_fields: args.fields,
+                        def_fields: args.def_fields,
+                        arity: list_len(args.def_fields),
+                        span: span
+                    };
+                    synth_spread_finalize(env2, ctx, args.def_fields, structural, args.expected)
+            }
+    }
+}
+
+fn synth_spread_finalize(
+    env: Env, ctx: SpreadCtx,
+    def_fields: List<RecordFieldInfo>,
+    structural: TypeHandle, expected: TypeHandle
+) -> ElabExprResult {
+    match build_spread_record(env, ctx, def_fields, structural, 0) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, term, _, cir) =>
+            ElabExprOk(env2, term, expected, cir)
+    }
+}
+
+/// Loop-invariant context for spread record building.
+///
+/// `arity` is the definition's field count, which is what tells a projection out
+/// of `base` whether the index it was handed is the last field (ADR 4.9.26b).
+/// The walk below already counts fields; the projection used to re-derive the
+/// answer from the residual type, and got it wrong for a product-valued tail.
+///
+/// `def_fields` is the WHOLE field list, kept here so each step can resolve the
+/// field it is building by that field's own `index` (ADR 7.9.26b D1). The walk
+/// below also consumes the list as it descends, but only to count how far it
+/// has gone — the list is newest-first, so its head is never the field the
+/// current step is building.
+type SpreadCtx = {
+    base: TermInfo,
+    user_fields: List<FieldInit>,
+    def_fields: List<RecordFieldInfo>,
+    arity: Nat,
+    span: Span
+}
+
+/// The one step of the walk currently being built: what is left of the field
+/// list, the residual structural type, and the canonical index.
+type SpreadStep = { rest_defs: List<RecordFieldInfo>, structural_ty: TypeHandle, index: Nat }
+
+/// Product decomposition for a mid-field in spread record building.
+type SpreadFieldState = {
+    rest_defs: List<RecordFieldInfo>,
+    left_ty: TypeHandle,
+    right_ty: TypeHandle,
+    structural_ty: TypeHandle,
+    index: Nat
+}
+
+/// Build a record by walking definition fields in canonical index order.
+/// For each field: if user provides it, check the explicit value;
+/// otherwise project from the spread base at the appropriate index.
+///
+/// `def_fields` is consumed only as a **counter** — one cons cell per field
+/// built, so `list_is_empty(rest_defs)` says "this is the last field". Its head
+/// is deliberately discarded: the list is newest-first, so the head names field
+/// `n-1-index`, and reading a name off it assigned each user-supplied field to
+/// its mirror image (ADR 7.9.26b).
+fn build_spread_record(
+    env: Env,
+    ctx: SpreadCtx,
+    def_fields: List<RecordFieldInfo>,
+    structural_ty: TypeHandle,
+    index: Nat
+) -> ElabExprResult {
+    match def_fields {
+        Nil() =>
+            ElabExprErr(elab_expr_error_internal("internal: no fields to process", ctx.span)),
+        Cons(_, rest_defs) =>
+            let step: SpreadStep = { rest_defs: rest_defs, structural_ty: structural_ty, index: index };
+            build_spread_at_index(env, ctx, step)
+    }
+}
+
+/// Resolve the field this step builds by its own `index`, then dispatch.
+fn build_spread_at_index(env: Env, ctx: SpreadCtx, step: SpreadStep) -> ElabExprResult {
+    match record_field_at_index(ctx.def_fields, step.index) {
+        NoRecordField() =>
+            ElabExprErr(elab_expr_error_internal(
+                "internal: record field list has no field at this index",
+                ctx.span
+            )),
+        SomeRecordField(def) =>
+            build_spread_field(env, ctx, def, step)
+    }
+}
+
+fn build_spread_field(
+    env: Env, ctx: SpreadCtx,
+    def: RecordFieldInfo, step: SpreadStep
+) -> ElabExprResult {
+    if list_is_empty(step.rest_defs) {
+        build_spread_last_field(env, ctx, def, step.structural_ty, step.index)
+    } else if tg_type_is_product(step.structural_ty) {
+        let fs: SpreadFieldState = {
+            rest_defs: step.rest_defs,
+            left_ty: tg_type_get_product_left(step.structural_ty),
+            right_ty: tg_type_get_product_right(step.structural_ty),
+            structural_ty: step.structural_ty,
+            index: step.index
+        };
+        build_spread_mid_resolve(env, ctx, def, fs)
+    } else {
+        ElabExprErr(elab_expr_error_internal(
+            "internal: expected product type for record field",
+            ctx.span
+        ))
+    }
+}
+
+fn build_spread_last_field(
+    env: Env,
+    ctx: SpreadCtx,
+    def: RecordFieldInfo,
+    structural_ty: TypeHandle,
+    index: Nat
+) -> ElabExprResult {
+    match find_user_field(ctx.user_fields, def.name) {
+        SomeUserField(user_field) =>
+            check(env, user_field.value, structural_ty),
+        NoUserField() =>
+            let slot: FieldSlot = { index: index, arity: ctx.arity };
+            project_record_field(env, ctx.base, slot, structural_ty, ctx.span)
+    }
+}
+
+fn build_spread_mid_resolve(
+    env: Env, ctx: SpreadCtx,
+    def: RecordFieldInfo, fs: SpreadFieldState
+) -> ElabExprResult {
+    match find_user_field(ctx.user_fields, def.name) {
+        SomeUserField(user_field) =>
+            build_spread_explicit(env, ctx, user_field, fs),
+        NoUserField() =>
+            build_spread_projected(env, ctx, fs)
+    }
+}
+
+fn build_spread_explicit(
+    env: Env, ctx: SpreadCtx,
+    user_field: FieldInit, fs: SpreadFieldState
+) -> ElabExprResult {
+    match check(env, user_field.value, fs.left_ty) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, left_term, _, left_cir) =>
+            build_spread_rest(env2, ctx, left_term, left_cir, fs)
+    }
+}
+
+fn build_spread_projected(
+    env: Env, ctx: SpreadCtx,
+    fs: SpreadFieldState
+) -> ElabExprResult {
+    let slot: FieldSlot = { index: fs.index, arity: ctx.arity };
+    match project_record_field(env, ctx.base, slot, fs.left_ty, ctx.span) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, left_term, _, left_cir) =>
+            build_spread_rest(env2, ctx, left_term, left_cir, fs)
+    }
+}
+
+fn build_spread_rest(
+    env: Env, ctx: SpreadCtx,
+    left_term: TermHandle, left_cir: CodegenIR,
+    fs: SpreadFieldState
+) -> ElabExprResult {
+    match build_spread_record(env, ctx, fs.rest_defs, fs.right_ty, fs.index + 1) {
+        ElabExprErr(e) => ElabExprErr(e),
+        ElabExprOk(env2, right_term, _, right_cir) =>
+            let pair = tg_term_pair(left_term, right_term);
+            let pair_cir = CIRPair(left_cir, right_cir);
+            ElabExprOk(env2, pair, fs.structural_ty, pair_cir)
+    }
+}
+
+// Spread projection now lives in `projection.tg` (ADR 4.9.26b P2): this file's
+// own walk asked "is the base still a product?" where it meant "is this the last
+// field?", so a `..base` spread over a record with a product-valued tail copied
+// the tail's first half into the tail's slot.

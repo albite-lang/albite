@@ -1,0 +1,91 @@
+// `region { e }` in the self-hosted front end (ADR 9.10.26o D8, AC 2).
+//
+// Every assertion runs the real chain `tokenize → parse_file`, and reads the
+// parsed body back: a region that silently parsed as something else would
+// still parse without error, so only the node's shape can tell.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_bool, assert_eq_nat};
+use driver::ffi::{List, Nil, Cons};
+use lexer::scanner::{tokenize, lex_result_tokens};
+use parser::lib::{parse_file, file_parse_result_items, file_parse_error_count};
+use parser::ast::{Item, ItemFn, Expr, ExprRegion, ExprBlock, ExprUnit, MaybeExpr, NoExpr, SomeExpr};
+use lexer::span::{span_empty};
+
+fn items_of(src: String) -> List<Item> {
+    let toks = lex_result_tokens(tokenize(src, "t.tg"));
+    file_parse_result_items(parse_file(toks, "t.tg"))
+}
+
+fn error_count_of(src: String) -> Nat {
+    let toks = lex_result_tokens(tokenize(src, "t.tg"));
+    file_parse_error_count(parse_file(toks, "t.tg"))
+}
+
+fn unit_expr() -> Expr {
+    ExprUnit(span_empty(0, "t.tg"))
+}
+
+fn maybe_or_unit(m: MaybeExpr) -> Expr {
+    match m {
+        SomeExpr(e) => e,
+        NoExpr => unit_expr()
+    }
+}
+
+/// A block's tail expression, or the expression itself.
+fn block_tail(e: Expr) -> Expr {
+    match e {
+        ExprBlock(_, tail, _) => maybe_or_unit(tail),
+        other => other
+    }
+}
+
+/// The tail expression of the first function's body block.
+fn first_tail(src: String) -> Expr {
+    let items: List<Item> = items_of(src);
+    match items {
+        Cons(item, _) => match item {
+            ItemFn(f) => block_tail(f.body),
+            _ => unit_expr()
+        },
+        Nil() => unit_expr()
+    }
+}
+
+fn is_region(e: Expr) -> Bool {
+    match e {
+        ExprRegion(_, _) => true,
+        _ => false
+    }
+}
+
+/// The body of a region, or the expression itself.
+fn region_body(e: Expr) -> Expr {
+    match e {
+        ExprRegion(body, _) => body,
+        other => other
+    }
+}
+
+// 9.10.26o AC2: `region { e }` parses to a region node around its block.
+pub fn test_a_region_parses_to_a_region_node() -> Unit {
+    let src = "fn f() -> Nat { region { 1 } }";
+    assert_eq_nat(error_count_of(src), 0);
+    assert_eq_bool(is_region(first_tail(src)), true)
+}
+
+// 9.10.26o AC2: a region nests.
+pub fn test_a_region_nests() -> Unit {
+    let tail = first_tail("fn f() -> Nat { region { region { 1 } } }");
+    assert_eq_bool(is_region(tail), true);
+    assert_eq_bool(is_region(block_tail(region_body(tail))), true)
+}
+
+// That `region` is no identifier is `test_reserved_words.tg`'s
+// `test_region_is_a_keyword`: a parse that fails recovers through paths the
+// evaluator cannot run.

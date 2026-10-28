@@ -1,0 +1,7 @@
+// A `fn` named like a constructor shares the value namespace with it, so it
+// is E0004 at the `fn` (ADR 13.10.26f AC 3). Before it, the `fn` silently
+// shadowed the constructor.
+type T = A | B
+fn A() -> Nat { 3 }
+
+fn main() -> Nat { 0 }

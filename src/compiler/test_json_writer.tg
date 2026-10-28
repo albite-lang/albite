@@ -1,0 +1,109 @@
+// Unit tests for the generic JSON writer (ADR 30.9.26h AC 4) and the
+// evaluator-executable scalar copy it and the `--flag=value` split share.
+//
+// Cost 5: every assertion compares a serialised string. The writer reaches
+// only `tg_string_char_at_internal`, `tg_string_len_internal` and the
+// StringBuilder externs, all of which the evaluator executes, so
+// `--assertion-census` proves each comparison ran rather than going Stuck.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_string, assert_eq_nat, assert_eq_bool};
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::builder::{string_builder_new, push_char, to_string};
+use driver::util::json::{
+    json_escape, json_control_escape, json_string, json_nat, json_null,
+    json_field, json_object, json_array, json_line
+};
+use driver::util::strings::scalars::{
+    string_copy_range, utf8_width, utf8_scalar_at, utf8_is_scalar_start
+};
+
+/// A one-scalar string, built without a literal escape the lexer may not know.
+fn scalar_string(code: Nat) -> String {
+    to_string(push_char(string_builder_new(), code))
+}
+
+// ---------------------------------------------------------------------------
+// AC 4: escaping, as serde_json writes it
+// ---------------------------------------------------------------------------
+
+// 30.9.26h AC4: each RFC 8259 escape, a control byte as \u00XX, and UTF-8
+// passing through untouched.
+pub fn test_json_escape_table() -> Unit {
+    assert_eq_string(json_escape("a\"b"), "a\\\"b");
+    assert_eq_string(json_escape("a\\b"), "a\\\\b");
+    assert_eq_string(json_escape("a\nb"), "a\\nb");
+    assert_eq_string(json_escape("a\rb"), "a\\rb");
+    assert_eq_string(json_escape("a\tb"), "a\\tb");
+    assert_eq_string(json_escape(scalar_string(8)), "\\b");
+    assert_eq_string(json_escape(scalar_string(12)), "\\f");
+    assert_eq_string(json_escape(scalar_string(1)), "\\u0001");
+    assert_eq_string(json_escape(scalar_string(31)), "\\u001f");
+    assert_eq_string(json_escape(scalar_string(27)), "\\u001b");
+    assert_eq_string(json_escape("é"), "é");
+    assert_eq_string(json_escape("日本"), "日本");
+    assert_eq_string(json_escape(" ~"), " ~");
+    assert_eq_string(json_escape(""), "")
+}
+
+// 30.9.26h AC4: the control-byte table on its own, at the boundaries.
+pub fn test_json_control_escape_boundaries() -> Unit {
+    assert_eq_string(json_control_escape(0), "\\u0000");
+    assert_eq_string(json_control_escape(10), "\\n");
+    assert_eq_string(json_control_escape(13), "\\r");
+    assert_eq_string(json_control_escape(9), "\\t");
+    assert_eq_string(json_control_escape(16), "\\u0010");
+    assert_eq_string(json_control_escape(26), "\\u001a");
+    assert_eq_string(json_control_escape(28), "\\u001c");
+    assert_eq_string(json_control_escape(29), "\\u001d");
+    assert_eq_string(json_control_escape(30), "\\u001e")
+}
+
+// 30.9.26h AC4: objects and arrays nest, and a line ends in exactly one \n.
+pub fn test_json_nesting_and_terminator() -> Unit {
+    let inner = json_object(Cons(json_field("k", json_null()), Nil));
+    let arr = json_array(Cons(json_nat(1), Cons(json_string("x"), Cons(inner, Nil))));
+    let outer = json_object(Cons(json_field("a", arr), Cons(json_field("b", json_array(Nil)), Nil)));
+    assert_eq_string(outer, "{\"a\":[1,\"x\",{\"k\":null}],\"b\":[]}");
+    assert_eq_string(json_object(Nil), "{}");
+    assert_eq_string(json_line(outer), outer ++ "\n");
+    assert_eq_string(json_string("q\""), "\"q\\\"\"")
+}
+
+// ---------------------------------------------------------------------------
+// The scalar copy: an evaluator-executable `string_slice`
+// ---------------------------------------------------------------------------
+
+// 30.9.26h: a copied range equals the slice, multi-byte scalars whole.
+pub fn test_string_copy_range_keeps_scalars_whole() -> Unit {
+    assert_eq_string(string_copy_range("--max-errors=0", 0, 12), "--max-errors");
+    assert_eq_string(string_copy_range("--max-errors=0", 13, 14), "0");
+    assert_eq_string(string_copy_range("aé日b", 1, 6), "é日");
+    assert_eq_string(string_copy_range("abc", 1, 99), "bc");
+    assert_eq_string(string_copy_range("abc", 2, 2), "");
+    assert_eq_string(string_copy_range("abc", 3, 1), "")
+}
+
+// 30.9.26h: UTF-8 widths, decoding and scalar starts.
+pub fn test_utf8_decoding() -> Unit {
+    assert_eq_nat(utf8_width(97), 1);
+    assert_eq_nat(utf8_width(127), 1);
+    assert_eq_nat(utf8_width(191), 1);
+    assert_eq_nat(utf8_width(192), 2);
+    assert_eq_nat(utf8_width(223), 2);
+    assert_eq_nat(utf8_width(224), 3);
+    assert_eq_nat(utf8_width(239), 3);
+    assert_eq_nat(utf8_width(240), 4);
+    assert_eq_nat(utf8_scalar_at("é", 0, 2), 233);
+    assert_eq_nat(utf8_scalar_at("日", 0, 3), 26085);
+    assert_eq_nat(utf8_scalar_at("😀", 0, 4), 128512);
+    assert_eq_nat(utf8_scalar_at("a", 0, 1), 97);
+    assert_eq_bool(utf8_is_scalar_start("aé", 0), true);
+    assert_eq_bool(utf8_is_scalar_start("aé", 1), true);
+    assert_eq_bool(utf8_is_scalar_start("aé", 2), false);
+    assert_eq_bool(utf8_is_scalar_start("😀", 0), true)
+}

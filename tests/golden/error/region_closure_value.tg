@@ -1,0 +1,5 @@
+// Golden test (ADR 9.10.26o AC 3): a closure-valued region is E0094.
+fn main() -> Nat {
+    let g = region { |x: Nat| x };
+    g(1)
+}

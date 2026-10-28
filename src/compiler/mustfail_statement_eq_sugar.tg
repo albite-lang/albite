@@ -1,0 +1,58 @@
+// Negative control for test_statement_eq_sugar.tg (ADR 2.10.26f AC 5).
+//
+// Every expectation of the positive suite, inverted. A classifier that the
+// evaluator could not run would leave each assertion Stuck in EITHER polarity
+// and the runner would report `ok` while asserting nothing; so this file must
+// FAIL, and `check-mustfail-fixtures` (make/quality/tg-tests.mk) requires the
+// failure to name `test_leading_identifier_statements_are_sugar`.
+//
+//   albite test src/compiler/mustfail_statement_eq_sugar.tg --require-tests
+//     -> assertion failed … test_leading_identifier_statements_are_sugar
+//        exit != 0
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_bool, assert_eq_nat};
+use lexer::scanner::{tokenize, lex_result_tokens};
+use parser::lib::{parse_file, file_parse_error_count};
+use parser::cursor::{cursor_new};
+use parser::types::eq_sugar::{statement_is_eq_sugar};
+
+fn classify_statement(src: String) -> Bool {
+    statement_is_eq_sugar(cursor_new(lex_result_tokens(tokenize(src, "t.tg")), "t.tg"))
+}
+
+fn error_count_of(src: String) -> Nat {
+    file_parse_error_count(parse_file(lex_result_tokens(tokenize(src, "t.tg")), "t.tg"))
+}
+
+pub fn test_leading_identifier_statements_are_sugar() -> Unit {
+    assert_eq_bool(classify_statement("n + 0 == n {"), false);
+    assert_eq_bool(classify_statement("(n + 0) == n {"), false);
+    assert_eq_bool(classify_statement("add(n, 0) + 1 == n {"), false)
+}
+
+pub fn test_types_without_eq_are_types() -> Unit {
+    assert_eq_bool(classify_statement("A + B {"), true);
+    assert_eq_bool(classify_statement("Eq<Nat, a, b> {"), true)
+}
+
+pub fn test_each_terminator_stops_the_scan() -> Unit {
+    assert_eq_bool(classify_statement("n + m { } == m"), true);
+    assert_eq_bool(classify_statement("n + m where n == m"), true);
+    assert_eq_bool(classify_statement("n + m fn g() == m"), true)
+}
+
+pub fn test_a_nested_eq_is_an_operands() -> Unit {
+    assert_eq_bool(classify_statement("f(a == b) {"), true);
+    assert_eq_bool(classify_statement("({ }) == m {"), false)
+}
+
+pub fn test_the_body_brace_never_opens_a_named_record() -> Unit {
+    assert_eq_nat(error_count_of("fn f(x: Nat) -> x == Some { refl }\nfn g() -> Nat { 0 }"), 1)
+}

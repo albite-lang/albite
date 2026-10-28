@@ -1,0 +1,6 @@
+// E0007 (ADR 4.10.26j D6): two packages may each define `helper`, but one
+// module importing both under one name is the duplicate-import refusal.
+use lib_a::helper;
+use lib_b::helper;
+
+fn main() -> Nat { helper() }

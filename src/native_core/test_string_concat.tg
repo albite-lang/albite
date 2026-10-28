@@ -1,0 +1,102 @@
+// The native core's `string_concat` and `string_concat_owned` on the
+// evaluator (ADR 4.10.26n AC 4, 6.10.26n AC 5).
+//
+// Cost 5: every assertion compares a value the port built through the byte
+// buffer — `bytes_new_uninit`, two blits, the conversion — against the
+// evaluator's own `++` of the same inputs, so a port that sizes, blits or
+// converts wrongly fails here before it is ever linked. `tungsten test
+// --assertion-census` proves each comparison ran. The allocation is unfilled
+// (ADR 9.10.26n D2), so the evaluator also stops on a conversion over any byte
+// no blit wrote: the empty-left, empty-right and both-empty joins below are
+// the edges where a zero-length copy must still leave nothing unwritten.
+//
+// It declares its own assertion externs, as
+// `tests/golden/test/companion_joins_its_module/asserts.tg` does, so it needs
+// no compiler module tree. NOT embedded in the bootstrap: the core's run
+// compiles `mod.tg`, `bytes.tg` and `string.tg` only.
+
+mod bytes;
+mod string;
+
+extern "C" fn tg_assert_eq_nat(left: Nat, right: Nat) -> Unit
+extern "C" fn tg_assert_eq_string(left: Nat, left_len: Nat, right: Nat, right_len: Nat) -> Unit
+extern "C" fn tg_string_to_cstring(s: String) -> Nat
+extern "C" fn tg_free_string(s: Nat) -> Unit
+
+fn assert_eq_string(left: String, right: String) -> Unit {
+    let lc = tg_string_to_cstring(left);
+    let rc = tg_string_to_cstring(right);
+    tg_assert_eq_string(lc, string_len(left), rc, string_len(right));
+    tg_free_string(lc);
+    tg_free_string(rc)
+}
+
+/// The port agrees with `++` on `left` and `right`, text and byte length.
+fn assert_concat_agrees(left: String, right: String) -> Unit {
+    let joined = string::string_concat(left, right);
+    assert_eq_string(joined, left ++ right);
+    tg_assert_eq_nat(string_len(joined), string_len(left) + string_len(right))
+}
+
+/// `s` doubled `n` times: `len(s) * 2^n` bytes. Built with the evaluator's
+/// `++`, never the port, so a broken port cannot also break its own input.
+#[partial]
+fn doubled(s: String, n: Nat) -> String {
+    if n == 0 { s } else { doubled(s ++ s, n - 1) }
+}
+
+pub fn test_empty_left() -> Unit { assert_concat_agrees("", "abc") }
+
+pub fn test_empty_right() -> Unit { assert_concat_agrees("abc", "") }
+
+pub fn test_both_empty() -> Unit { assert_concat_agrees("", "") }
+
+pub fn test_ascii() -> Unit { assert_concat_agrees("hello, ", "world") }
+
+pub fn test_multi_byte() -> Unit { assert_concat_agrees("café ", "—✓ é") }
+
+pub fn test_long_string() -> Unit {
+    let long = doubled("xy", 12);
+    tg_assert_eq_nat(string_len(long), 8192);
+    assert_concat_agrees(long, "!")
+}
+
+// ── The owned port, `string_concat_owned` (ADR 6.10.26n AC 5) ──────────────
+//
+// On the evaluator adoption is a copy (D2), so these prove the port's
+// arithmetic — the empty-left fallback, the blit at `n`, the conversion — not
+// the realloc, which the native batteries cover.
+
+/// The owned port agrees with `++` on `left` and `right`, text and length.
+fn assert_owned_agrees(left: String, right: String) -> Unit {
+    let joined = string::string_concat_owned(left, right);
+    assert_eq_string(joined, left ++ right);
+    tg_assert_eq_nat(string_len(joined), string_len(left) + string_len(right))
+}
+
+/// `acc` grown by `step` through the owned port `n` times, each step's left
+/// operand the previous step's result — the shape an owned chain takes.
+#[partial]
+fn owned_chain(acc: String, step: String, n: Nat) -> String {
+    if n == 0 { acc } else { owned_chain(string::string_concat_owned(acc, step), step, n - 1) }
+}
+
+/// The same chain through the evaluator's `++`.
+#[partial]
+fn reference_chain(acc: String, step: String, n: Nat) -> String {
+    if n == 0 { acc } else { reference_chain(acc ++ step, step, n - 1) }
+}
+
+pub fn test_owned_empty_left() -> Unit { assert_owned_agrees("", "abc") }
+
+pub fn test_owned_empty_right() -> Unit { assert_owned_agrees("abc", "") }
+
+pub fn test_owned_both_empty() -> Unit { assert_owned_agrees("", "") }
+
+pub fn test_owned_multi_byte() -> Unit { assert_owned_agrees("café ", "—✓ é") }
+
+pub fn test_owned_ten_step_chain() -> Unit {
+    let chained = owned_chain("<", "é-", 10);
+    assert_eq_string(chained, reference_chain("<", "é-", 10));
+    tg_assert_eq_nat(string_len(chained), 31)
+}

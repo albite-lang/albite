@@ -1,0 +1,158 @@
+// Unit tests for the self-host's constructor-coverage refusal (ADR 13.10.26l
+// D1, D3; ADR 16.10.26e D1). Every subject is a pure function over a
+// hand-built `Env`, as `test_unresolved_ctor_patterns.tg` builds one, and
+// hand-built match arms; nothing here parses or elaborates a file. The
+// end-to-end refusal is the three `flat_match_misses_*` error goldens and the
+// two `nested_group_misses_*` ones, compared by the records gate.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::{List, Nil, Cons};
+use driver::ffi::test::assert_eq_string;
+use driver::util::nat_to_string;
+use parser::ast::common::{VisPublic, ident_new, Path, MkPath};
+use parser::ast::{Pattern, PatConstructor, PatTuple, PatVar, PatWildcard, MatchArm, ExprIntLit, NoExpr};
+use lexer::span::{Span, span_new};
+use elab::ffi::INVALID_HANDLE;
+use elab::cir::{CIRVar, ct_unit};
+use elab::env::{env_new, Env};
+use elab::env::ops::env_register_constructor;
+use elab::env::defs::{ConstructorInfo, CtorIdentity, constructor_info_new};
+use elab::exprs::matches::{ScrutInfo};
+use elab::exprs::matches::arm_coverage::{
+    constructor_coverage, uncovered_constructors_error, refuse_unplaceable_arms
+};
+use elab::exprs::matches::patterns::resolve::{NoElabExprError, SomeElabExprError};
+use elab::exprs::matches::desugar::earliest_arm_span;
+
+// --- Builders ---------------------------------------------------------------
+
+fn coverage_span() -> Span { span_new(0, 0, "") }
+
+fn coverage_ctor(name: String, parent: String, index: Nat) -> ConstructorInfo {
+    let id: CtorIdentity = { name: name, parent_type: parent, index: index, arity: 0 };
+    constructor_info_new(id, INVALID_HANDLE(), INVALID_HANDLE(), VisPublic, coverage_span())
+}
+
+/// `type Hue = Rot | Grun | Blau` and `type Bit = Aus | An`.
+fn coverage_env() -> Env {
+    let hue = env_register_constructor(env_register_constructor(env_register_constructor(env_new(),
+        coverage_ctor("Rot", "Hue", 0)), coverage_ctor("Grun", "Hue", 1)), coverage_ctor("Blau", "Hue", 2));
+    env_register_constructor(env_register_constructor(hue, coverage_ctor("Aus", "Bit", 0)), coverage_ctor("An", "Bit", 1))
+}
+
+fn coverage_arm(pattern: Pattern) -> MatchArm {
+    { pattern: pattern, guard: NoExpr, body: ExprIntLit(0, coverage_span()), span: coverage_span() }
+}
+
+/// `<name>() => 0`
+fn named_arm(name: String) -> MatchArm {
+    let path = MkPath(Cons(ident_new(name, coverage_span()), Nil), coverage_span());
+    coverage_arm(PatConstructor(path, Nil, coverage_span()))
+}
+
+/// The coverage reading as `named/total`.
+fn coverage_of(arms: List<MatchArm>) -> String {
+    let (named, total) = constructor_coverage(coverage_env(), arms);
+    nat_to_string(named) ++ "/" ++ nat_to_string(total)
+}
+
+fn scrut_named(name: String) -> ScrutInfo {
+    { term: INVALID_HANDLE(), ty: INVALID_HANDLE(), cir: CIRVar(name, ct_unit()) } : ScrutInfo
+}
+
+// --- D1: the rule -----------------------------------------------------------
+
+// ADR 13.10.26l AC3: two of three named, no catch-all — a gap.
+pub fn test_flat_match_missing_a_constructor_is_a_gap() -> Unit {
+    assert_eq_string(coverage_of(Cons(named_arm("Rot"), Cons(named_arm("Grun"), Nil))), "2/3");
+    assert_eq_string(coverage_of(Cons(named_arm("Rot"), Cons(named_arm("Blau"), Nil))), "2/3")
+}
+
+// ADR 13.10.26l AC3: every constructor named, in any order.
+pub fn test_flat_match_naming_every_constructor_is_covered() -> Unit {
+    assert_eq_string(coverage_of(Cons(named_arm("Blau"), Cons(named_arm("Rot"), Cons(named_arm("Grun"), Nil)))), "3/3");
+    assert_eq_string(coverage_of(Cons(named_arm("An"), Cons(named_arm("Aus"), Nil))), "2/2")
+}
+
+// ADR 13.10.26l D1: two arms naming `Rot` count once.
+pub fn test_a_repeated_constructor_counts_once() -> Unit {
+    assert_eq_string(coverage_of(Cons(named_arm("Rot"), Cons(named_arm("Rot"), Cons(named_arm("Grun"), Nil)))), "2/3")
+}
+
+// ADR 13.10.26l D1: a catch-all anywhere gives no verdict.
+pub fn test_a_catch_all_gives_no_verdict() -> Unit {
+    assert_eq_string(coverage_of(Cons(named_arm("Rot"), Cons(coverage_arm(PatWildcard(coverage_span())), Nil))), "0/0");
+    let var_first: List<MatchArm> = Cons(coverage_arm(PatVar(ident_new("v", coverage_span()))), Cons(named_arm("Rot"), Nil));
+    assert_eq_string(coverage_of(var_first), "0/0")
+}
+
+// ADR 13.10.26l D1: another type's constructor leaves the verdict to the existing path.
+pub fn test_a_foreign_constructor_gives_no_verdict() -> Unit {
+    assert_eq_string(coverage_of(Cons(named_arm("Rot"), Cons(named_arm("Aus"), Nil))), "0/0")
+}
+
+// ADR 13.10.26l D1: no arm names a constructor — no count, no verdict.
+pub fn test_no_named_constructor_gives_no_verdict() -> Unit {
+    let tuple = PatTuple(Cons(PatVar(ident_new("a", coverage_span())), Nil), coverage_span());
+    assert_eq_string(coverage_of(Cons(coverage_arm(tuple), Nil)), "0/0");
+    assert_eq_string(coverage_of(Nil), "0/0")
+}
+
+// --- D3: the record ---------------------------------------------------------
+
+// ADR 13.10.26l AC2: the self-host's existing E0300, with the bootstrap's count.
+pub fn test_refusal_is_e0300_with_the_count() -> Unit {
+    let err = uncovered_constructors_error(2, 3, coverage_span());
+    assert_eq_string(err.code, "E0300");
+    assert_eq_string(err.message, "non-exhaustive match: 2 of 3 constructors named, and no catch-all")
+}
+
+// --- 16.10.26e: the desugar's inner match is covered alike -------------------
+
+/// The refusal over `Rot() => 0, Grun() => 0` with `scrut` as the scrutinee,
+/// read as `<code>@<start>`, or `none`.
+fn two_of_three_refusal(scrut: ScrutInfo, start: Nat) -> String {
+    let arms: List<MatchArm> = Cons(named_arm("Rot"), Cons(named_arm("Grun"), Nil));
+    match refuse_unplaceable_arms(coverage_env(), scrut, arms, span_new(start, start + 1, "")) {
+        NoElabExprError() => "none",
+        SomeElabExprError(e) => e.code ++ "@" ++ nat_to_string(e.span.start)
+    }
+}
+
+// ADR 16.10.26e AC5: the desugar's `__nested` binder, at every nesting level
+// (16.10.26d D3: `__nested_` one level down), is refused like a source-named
+// scrutinee, each at the span it was given.
+pub fn test_the_desugar_binder_is_covered_like_any_scrutinee() -> Unit {
+    assert_eq_string(two_of_three_refusal(scrut_named("__nested"), 41), "E0300@41");
+    assert_eq_string(two_of_three_refusal(scrut_named("__nested_"), 57), "E0300@57");
+    assert_eq_string(two_of_three_refusal(scrut_named("c"), 63), "E0300@63")
+}
+
+// ADR 16.10.26e D1: a `__nested` match naming every constructor is not refused.
+pub fn test_a_complete_desugar_match_is_not_refused() -> Unit {
+    let arms: List<MatchArm> = Cons(named_arm("Rot"), Cons(named_arm("Grun"), Cons(named_arm("Blau"), Nil)));
+    let verdict = match refuse_unplaceable_arms(coverage_env(), scrut_named("__nested"), arms, span_new(9, 10, "")) {
+        NoElabExprError() => "none",
+        SomeElabExprError(e) => e.code
+    };
+    assert_eq_string(verdict, "none")
+}
+
+/// `<name>() => 0` written at source offset `start`.
+fn arm_at(name: String, start: Nat) -> MatchArm {
+    let arm = named_arm(name);
+    { pattern: arm.pattern, guard: NoExpr, body: arm.body, span: span_new(start, start + 5, "") }
+}
+
+// ADR 16.10.26e D2: the inner match is spanned on the group's first SOURCE
+// arm, though the sort by constructor index can put a later arm at the head.
+pub fn test_the_inner_match_spans_the_earliest_source_arm() -> Unit {
+    let reordered: List<MatchArm> = Cons(arm_at("Grun", 28), Cons(arm_at("Rot", 15), Cons(arm_at("Blau", 40), Nil)));
+    assert_eq_string(nat_to_string(earliest_arm_span(reordered, span_new(28, 33, "")).start), "15");
+    let in_order: List<MatchArm> = Cons(arm_at("Rot", 15), Cons(arm_at("Grun", 28), Nil));
+    assert_eq_string(nat_to_string(earliest_arm_span(in_order, span_new(15, 20, "")).start), "15")
+}

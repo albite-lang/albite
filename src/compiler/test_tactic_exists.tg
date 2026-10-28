@@ -1,0 +1,75 @@
+// A tactic proof can state an existential or family goal (ADR 6.10.26e AC 2,
+// D8).
+//
+// `apply` makes a goal of a premise that sorts `Prop` and matches through an
+// `exists` (D2, D3); `exists w` gives a witness and leaves the body at `w` as
+// the goal (D4); `cases h { (k, e) => … }` unpacks an `exists` local into its
+// witness and evidence with 6.10.26c's β-redex (D6). `albite doctor check
+// proof kernel-census` reports every theorem below admitted.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration.
+// The must-fail twin is `mustfail_tactic_exists.tg`, checked by
+// `make check-mustfail-fixtures`.
+
+// `ring` cites the library's semiring laws by qualified path.
+mod nat_arith;
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+
+pub theorem le_refl(n: Nat) -> Le<n, n> { (0, refl) }
+pub theorem le_keep(a: Nat, b: Nat, h: Le<a, b>) -> Le<a, b> { h }
+
+// D3: the matcher binds `n := a` under the `exists`.
+pub theorem by_apply(a: Nat) -> Le<a, a> by { apply le_refl }
+
+// D2: the `Le` premise becomes a goal, which `exact` closes.
+pub theorem by_premise(a: Nat, b: Nat, h: Le<a, b>) -> Le<a, b> by {
+    apply le_keep(a, b); exact h
+}
+
+// D4: the witness is given, and the rest proved step by step.
+pub theorem by_witness(n: Nat, m: Nat) -> Le<n, m + n> by { exists m; ring }
+
+// D4 at an expression argument (6.10.26d).
+pub theorem by_numeral_witness(n: Nat) -> Le<n, n + 2> by { exists 2; refl }
+
+// D4 and D6: `le_trans`, unpacked, witnessed, rewritten and normalised.
+pub theorem by_unpack(a: Nat, b: Nat, c: Nat, h1: Le<a, b>, h2: Le<b, c>) -> Le<a, c> by {
+    cases h1 { (k1, e1) => cases h2 { (k2, e2) =>
+        { exists k1 + k2; rewrite [<- e2, <- e1]; ring } } }
+}
+
+fn test_by_apply_is_cited() -> Unit {
+    let x: Nat = 3;
+    let _r: Le<x, x> = by_apply(x);
+    ()
+}
+
+fn test_by_premise_is_cited() -> Unit {
+    let x: Nat = 2;
+    let h: Le<x, x> = (0, refl);
+    let _r: Le<x, x> = by_premise(x, x, h);
+    ()
+}
+
+fn test_by_witness_is_cited() -> Unit {
+    let x: Nat = 1;
+    let y: Nat = 4;
+    let _r: Le<x, y + x> = by_witness(x, y);
+    ()
+}
+
+fn test_by_numeral_witness_is_cited() -> Unit {
+    let x: Nat = 5;
+    let _r: Le<x, x + 2> = by_numeral_witness(x);
+    ()
+}
+
+// A `let` binding is opaque, so each hypothesis is `Le<x, x>`, whose witness
+// `0` holds whatever `x` is.
+fn test_by_unpack_is_cited() -> Unit {
+    let x: Nat = 1;
+    let h: Le<x, x> = (0, refl);
+    let _r: Le<x, x> = by_unpack(x, x, x, h, h);
+    ()
+}

@@ -1,0 +1,134 @@
+// The inner match a nested constructor group lowers to (ADR 13.5.26c,
+// 16.10.26d): its arms, read from the group's sub-patterns, and the outer
+// catch-all pushed in after them so the inner cases no arm names still run it.
+
+use parser::ast::{
+    Pattern, PatVar, PatWildcard, PatConstructor,
+    MatchArm,
+    Expr, ExprLet, ExprPath,
+    NoTypeExpr,
+    ident_new, path_simple
+};
+use lexer::span::Span;
+use driver::ffi::{List, Nil, Cons};
+use driver::util::{list_is_empty, starts_with};
+use elab::exprs::matches::patterns::is_catch_all_pattern;
+
+// ===========================================================================
+// THE PUSHED CATCH-ALL
+// ===========================================================================
+
+/// What a group's inner match receives from the outer match (ADR 16.10.26d
+/// D5): nothing when the outer arms have no catch-all, else the catch-all,
+/// the variable a pushed variable catch-all reads (D2) and the group binder
+/// (D3). `outer_name` is `""` for a wildcard over a non-variable scrutinee,
+/// which reads nothing.
+pub type NestedPush =
+    | NoPush
+    | Push(MatchArm, String, String)
+
+/// The variable a group binds its payload to (D3): `__nested` below a source
+/// scrutinee, and one `_` longer below a desugar binder, so a catch-all
+/// pushed from an inner match never reads a deeper level's payload.
+pub fn group_binder_name(outer_name: String) -> String {
+    if starts_with(outer_name, "__nested") { outer_name ++ "_" } else { "__nested" }
+}
+
+/// The binder for this push; a match with no catch-all has no pushed arm to
+/// capture, so its groups keep the plain name.
+pub fn push_binder(push: NestedPush) -> String {
+    match push {
+        NoPush() => "__nested",
+        Push(_, _, binder) => binder
+    }
+}
+
+/// The arm an inner match ends with (D1, D2). A wildcard goes in as written;
+/// `other => body` becomes `_ => { let other = <outer>; body }`, since inside
+/// the inner match a variable pattern would bind the payload, not the value
+/// the arm was written against.
+pub fn pushed_arm(arm: MatchArm, outer_name: String) -> MatchArm {
+    match arm.pattern {
+        PatVar(id) => {
+            let outer = ExprPath(path_simple(ident_new(outer_name, arm.span)));
+            {
+                pattern: PatWildcard(arm.span),
+                guard: arm.guard,
+                body: ExprLet(PatVar(id), NoTypeExpr, outer, arm.body, arm.span),
+                span: arm.span
+            } : MatchArm
+        },
+        _ => arm
+    }
+}
+
+/// A group with an arm like `B(m)` covers every inner constructor itself, so
+/// the outer catch-all is unreachable inside it and is not pushed (D1).
+pub fn group_has_own_catch_all(group: List<MatchArm>) -> Bool {
+    match group {
+        Nil() => false,
+        Cons(arm, rest) =>
+            if is_catch_all_pattern(extract_inner_pattern(arm.pattern)) { true }
+            else { group_has_own_catch_all(rest) }
+    }
+}
+
+/// The group's inner arms, ending with the pushed catch-all when there is
+/// one and the group has none of its own.
+pub fn inner_arms_with_push(group: List<MatchArm>, push: NestedPush) -> List<MatchArm> {
+    match push {
+        NoPush() => build_inner_arms(group),
+        Push(arm, outer_name, _) =>
+            if group_has_own_catch_all(group) { build_inner_arms(group) }
+            else { append_arm(build_inner_arms(group), pushed_arm(arm, outer_name)) }
+    }
+}
+
+fn append_arm(arms: List<MatchArm>, last: MatchArm) -> List<MatchArm> {
+    match arms {
+        Nil() => Cons(last, Nil()),
+        Cons(arm, rest) => Cons(arm, append_arm(rest, last))
+    }
+}
+
+// ===========================================================================
+// INNER ARMS FROM SUB-PATTERNS
+// ===========================================================================
+
+/// Build inner match arms from the original arms' sub-patterns.
+pub fn build_inner_arms(arms: List<MatchArm>) -> List<MatchArm> {
+    match arms {
+        Nil() => Nil(),
+        Cons(arm, rest) => {
+            let inner_pat = extract_inner_pattern(arm.pattern);
+            let inner_arm: MatchArm = {
+                pattern: inner_pat,
+                guard: arm.guard,
+                body: arm.body,
+                span: arm.span
+            };
+            Cons(inner_arm, build_inner_arms(rest))
+        }
+    }
+}
+
+/// Extract the inner pattern from a constructor pattern's sub-patterns.
+pub fn extract_inner_pattern(p: Pattern) -> Pattern {
+    match p {
+        PatConstructor(_, subs, s) =>
+            extract_from_subs(subs, s),
+        _ => p
+    }
+}
+
+fn extract_from_subs(subs: List<Pattern>, s: Span) -> Pattern {
+    match subs {
+        Nil() => PatWildcard(s),
+        Cons(sub, rest) =>
+            if list_is_empty(rest) {
+                sub
+            } else {
+                PatWildcard(s)
+            }
+    }
+}

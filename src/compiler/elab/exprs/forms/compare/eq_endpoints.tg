@@ -1,0 +1,36 @@
+// src/compiler/elab/exprs/forms/compare/eq_endpoints.tg
+// `Eq` meets `Eq` by endpoint conversion (ADR 3.10.26i D3).
+//
+// The self-host's mirror of the bootstrap's `check_eq_against` (ADR 30.9.26e
+// D5): a term whose type is `Eq<T, a, b>` is accepted at `Eq<T, a', b'>` when
+// the base types are equal and `a ≡ a'`, `b ≡ b'` under the core's δ-free
+// conversion (ADR 30.9.26g part (a)). `compare_synthesized` asks this just
+// before it would say "type mismatch", so only acceptances between two `Eq`
+// types change; every refusal keeps its message.
+//
+// It is where a declared return meets its body (`mul_one_right`), where a
+// `let` annotation is checked, and where a dependent `natind`'s cases meet
+// their instances P(0) and P(succ j).
+
+use elab::ffi::{
+    TypeHandle,
+    tg_type_is_eq, tg_type_get_eq_type, tg_type_get_eq_lhs, tg_type_get_eq_rhs,
+    tg_types_equal, tg_terms_convertible
+};
+use elab::env::Env;
+use elab::exprs::records::{deep_types_equal};
+
+/// Whether `actual` meets `expected` as two `Eq` types whose endpoints convert.
+pub fn eq_endpoints_convert(env: Env, actual: TypeHandle, expected: TypeHandle) -> Bool {
+    if tg_type_is_eq(actual) && tg_type_is_eq(expected) {
+        eq_base_types_agree(env, tg_type_get_eq_type(actual), tg_type_get_eq_type(expected))
+            && tg_terms_convertible(tg_type_get_eq_lhs(actual), tg_type_get_eq_lhs(expected))
+            && tg_terms_convertible(tg_type_get_eq_rhs(actual), tg_type_get_eq_rhs(expected))
+    } else {
+        false
+    }
+}
+
+fn eq_base_types_agree(env: Env, actual: TypeHandle, expected: TypeHandle) -> Bool {
+    tg_types_equal(actual, expected) || deep_types_equal(env, actual, expected)
+}

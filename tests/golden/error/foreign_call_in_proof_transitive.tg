@@ -1,0 +1,9 @@
+// == a wrapper does not launder a foreign call (ADR 3.10.26c AC4)
+// The chain names the wrapper the theorem mentions and the extern it reaches.
+extern "C" fn g(k: Nat) -> Nat
+
+fn wrapper(k: Nat) -> Nat { g(k) + 1 }
+
+theorem wrapped(k: Nat): wrapper(k) == wrapper(k) { refl }
+
+fn main() -> Nat { 0 }

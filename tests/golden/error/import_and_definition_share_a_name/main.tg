@@ -1,0 +1,8 @@
+// A `use` that imports a name the file also defines is E0004 at the
+// definition (ADR 13.10.26f AC 3). Before it, `run` printed 1: the import won
+// over the definition written below it.
+mod imported;
+use imported::{helper};
+fn helper() -> Nat { 2 }
+
+fn main() -> Nat { helper() }

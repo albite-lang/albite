@@ -1,0 +1,15 @@
+// `use shapes::…` is rooted at this package, mounted or not (ADR 29.9.26g D5).
+pub mod shapes;
+
+use shapes::{Shape, Square, Rect};
+
+fn times(a: Nat, b: Nat) -> Nat {
+    a * b
+}
+
+pub fn area(s: Shape) -> Nat {
+    match s {
+        Square(side) => times(side, side),
+        Rect(w, h) => times(w, h),
+    }
+}

@@ -1,0 +1,6 @@
+// ADR 30.9.26h: one `expected X, found Y` parse error (a missing `)`): self-host
+// E0800, bootstrap E0110, both at 4:19, and no cascade after it (ADR 3.10.26j).
+fn main() -> Nat {
+    let x = (1 + 2;
+    x
+}

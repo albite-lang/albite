@@ -1,0 +1,6 @@
+// `albite test --format junit` over a file with no tests (ADR 30.9.26k
+// AC 5): one document with `tests="0"` and no testcase, exit 0.
+
+fn helper() -> Nat {
+    42
+}

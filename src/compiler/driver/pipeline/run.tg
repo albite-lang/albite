@@ -1,0 +1,282 @@
+// src/compiler/driver/pipeline/run.tg
+// Run pipeline: check + evaluate main.
+
+use driver::ffi::{
+    eprintln, println, stderr_is_tty,
+    List, Nil, Cons,
+    EvalEnvHandle, eval_env_new, eval_env_add, eval_env_free,
+    eval_run, eval_display_value
+};
+use driver::util::{
+    Result, Ok, Err, Option, Some, None,
+    string_eq, string_lt, not, nat_to_string, list_len, list_take, list_drop
+};
+use driver::cli::{RunOpts};
+use driver::modules::{
+    ParsedModule,
+    tree_failure_message,
+    parsed_module_parse_errors, parsed_module_lex_errors
+};
+use driver::packages::{
+    ProjectTree, ProjectFailure, ProjectUnparsed, ProjectRefused, parse_project_tree,
+    project_module_info, report_package_notes
+};
+use parser::error::{parse_has_errors, parse_error_count};
+use lexer::error::{has_errors, error_count};
+use elab::env::types::{ElabCompile};
+use elab::items::{ElabResult, elab_result_ok, elab_result_error_count};
+use elab::items::result::ElabDef;
+use elab::items::per_module::{elaborate_module_tree};
+use elab::error::{
+    ElabError, errors_deduplicate,
+    SourceInfo, source_info_new,
+    render_diagnostics_limited
+};
+use elab::error::render::colors::{colorize_bold, ColorRed, ColorCyan};
+use elab::ffi::{TermHandle};
+use driver::pipeline::{PipelineResult, PipelineOk, PipelineErr, pipeline_tree_failure};
+use driver::pipeline::errors::{render_module_tree_errors, sources_for_errors};
+use driver::cli::format::{FormatHuman};
+
+// ===========================================================================
+// RUN PIPELINE
+// ===========================================================================
+
+/// Run the run pipeline: check + evaluate main.
+pub fn run_run(opts: RunOpts) -> PipelineResult {
+    let use_color = stderr_is_tty();
+    let max_errors = opts.max_errors;
+    
+    // Parse, and mount the manifest's packages (ADR 6.10.26j).
+    match parse_project_tree(opts.file) {
+        Err(failure) => run_project_failure(failure, use_color, max_errors),
+        Ok(project) => {
+            report_package_notes(project.notes, FormatHuman);
+            run_parsed_module(project, opts, use_color, max_errors)
+        }
+    }
+}
+
+/// A tree that did not parse, as before; or the package planner's refusals.
+fn run_project_failure(failure: ProjectFailure, use_color: Bool, max_errors: Nat) -> PipelineResult {
+    match failure {
+        ProjectUnparsed(tree_failure) => {
+            eprintln(colorize_bold("error", ColorRed, use_color) ++ ": " ++ tree_failure_message(tree_failure));
+            pipeline_tree_failure(tree_failure)
+        },
+        ProjectRefused(errors) => {
+            render_run_errors(errors, use_color, max_errors);
+            PipelineErr(list_len(errors))
+        }
+    }
+}
+
+/// Run a parsed module: check for errors, elaborate, then evaluate main.
+fn run_parsed_module(project: ProjectTree, opts: RunOpts,
+                     use_color: Bool, max_errors: Nat) -> PipelineResult {
+    // Whole-tree walk (ADR 12.8.26b P1/AC6) — see `render_module_tree_errors`.
+    let total_errs = render_module_tree_errors(project.tree, FormatHuman, max_errors, use_color);
+
+    if total_errs > 0 {
+        PipelineErr(total_errs)
+    } else {
+        elaborate_and_run(project, opts, use_color, max_errors)
+    }
+}
+
+/// Each error against its own file's source (ADR 30.9.26h D2).
+fn render_run_errors(errors: List<ElabError>, use_color: Bool, max_errors: Nat) -> Unit {
+    let deduped = errors_deduplicate(errors);
+    eprintln(render_diagnostics_limited(deduped, sources_for_errors(deduped), max_errors, use_color))
+}
+
+/// Elaborate module and run main if successful.
+fn elaborate_and_run(project: ProjectTree, opts: RunOpts,
+                     use_color: Bool, max_errors: Nat) -> PipelineResult {
+    // The workspace siblings' names under main's (ADR 3.10.26l D4), found
+    // beside the manifest when there is one (ADR 6.10.26j D4), with the
+    // package table (ADR 6.10.26p D2).
+    let module = project.tree;
+    let module_info = project_module_info(project);
+    // Per-module elaboration (W6.3a)
+    let elab_result = elaborate_module_tree(module, module_info, ElabCompile);
+
+    if not(elab_result_ok(elab_result)) {
+        render_run_errors(elab_result.errors, use_color, max_errors);
+        PipelineErr(elab_result_error_count(elab_result))
+    } else {
+        find_and_run_main(elab_result.defs, opts, use_color)
+    }
+}
+
+/// Refuse a program whose definitions repeat a name (ADR 13.10.26m D2), then
+/// find main and evaluate it.
+///
+/// Typing is per module, but the evaluator's environment is keyed by the bare
+/// name and the last writer wins, so two same-named values from two modules
+/// would both run as one of them. Until v2.1 gives the self-host a per-module
+/// value identity, refusing is the only answer that is never wrong.
+fn find_and_run_main(defs: List<ElabDef>, opts: RunOpts, use_color: Bool) -> PipelineResult {
+    match first_repeated_name(def_names(defs)) {
+        Some(name) => {
+            eprintln(colorize_bold("error", ColorRed, use_color) ++ ": `" ++ name ++
+                    "` is defined more than once; albite1 run cannot yet tell " ++
+                    "same-named definitions apart; `albite1 compile` or the " ++
+                    "bootstrap's `albite run` gives the right value");
+            PipelineErr(1)
+        },
+        None() => run_main_if_present(defs, opts, use_color)
+    }
+}
+
+/// Find main function and evaluate it.
+fn run_main_if_present(defs: List<ElabDef>, opts: RunOpts, use_color: Bool) -> PipelineResult {
+    match find_main_def(defs) {
+        None() => {
+            eprintln(colorize_bold("error", ColorRed, use_color) ++ 
+                    ": no `main` function found");
+            PipelineErr(1)
+        },
+        Some(main_def) => evaluate_main_def(main_def, defs, opts, use_color)
+    }
+}
+
+/// Build evaluation environment and evaluate main.
+fn evaluate_main_def(main_def: ElabDef, defs: List<ElabDef>,
+                     opts: RunOpts, use_color: Bool) -> PipelineResult {
+    let eval_env = eval_env_new();
+    build_eval_env_from_defs(eval_env, defs, main_def.name);
+    
+    if opts.verbose {
+        eprintln(colorize_bold("info", ColorCyan, use_color) ++ ": evaluating main()...")
+    };
+    
+    match eval_run(main_def.term, eval_env) {
+        None() => {
+            eprintln(colorize_bold("error", ColorRed, use_color) ++ ": evaluation failed");
+            eval_env_free(eval_env);
+            PipelineErr(1)
+        },
+        Some(result_handle) => display_eval_result(result_handle, eval_env, use_color)
+    }
+}
+
+/// Display evaluation result and clean up.
+fn display_eval_result(result_handle: TermHandle, eval_env: EvalEnvHandle,
+                       use_color: Bool) -> PipelineResult {
+    match eval_display_value(result_handle) {
+        None() => {
+            eprintln(colorize_bold("error", ColorRed, use_color) ++ ": could not display result");
+            eval_env_free(eval_env);
+            PipelineErr(1)
+        },
+        Some(result_str) => {
+            println(result_str);
+            eval_env_free(eval_env);
+            PipelineOk(1)
+        }
+    }
+}
+
+/// Find the main function in a list of elaborated definitions.
+fn find_main_def(defs: List<ElabDef>) -> Option<ElabDef> {
+    match defs {
+        Nil() => None(),
+        Cons(def, rest) => {
+            if string_eq(def.name, "main") {
+                Some(def)
+            } else {
+                find_main_def(rest)
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// REPEATED NAMES (ADR 13.10.26m D2)
+// ===========================================================================
+
+/// Every definition's bare name, in definition order.
+pub fn def_names(defs: List<ElabDef>) -> List<String> {
+    match defs {
+        Nil() => Nil,
+        Cons(def, rest) => Cons(def.name, def_names(rest))
+    }
+}
+
+/// The first name, in byte order, that `names` holds more than once.
+///
+/// Sorts once and scans adjacent pairs, so a program of thousands of
+/// definitions costs `O(n log n)` comparisons rather than a pairwise sweep.
+pub fn first_repeated_name(names: List<String>) -> Option<String> {
+    first_adjacent_repeat(sort_names_bytewise(names))
+}
+
+fn first_adjacent_repeat(sorted: List<String>) -> Option<String> {
+    match sorted {
+        Nil() => None(),
+        Cons(name, rest) => repeat_after(name, rest)
+    }
+}
+
+/// `previous` again at the head of `rest`, or the first later adjacent repeat.
+fn repeat_after(previous: String, rest: List<String>) -> Option<String> {
+    match rest {
+        Nil() => None(),
+        Cons(name, more) =>
+            if string_eq(previous, name) { Some(name) } else { repeat_after(name, more) }
+    }
+}
+
+// Partial: the halves are built by `list_take`/`list_drop`, not structural
+// subterms — a measure recursion. Executable driver code no proof reaches.
+#[partial]
+fn sort_names_bytewise(names: List<String>) -> List<String> {
+    let count = list_len(names);
+    if count < 2 {
+        names
+    } else {
+        let half = count / 2;
+        merge_sorted_names(sort_names_bytewise(list_take(names, half)),
+                           sort_names_bytewise(list_drop(names, half)))
+    }
+}
+
+// Partial: each call descends into one list or the other, never one fixed
+// argument, so no single parameter is the decreasing root.
+#[partial]
+fn merge_sorted_names(left: List<String>, right: List<String>) -> List<String> {
+    match left {
+        Nil() => right,
+        Cons(head, rest) => merge_name_into(head, rest, right)
+    }
+}
+
+/// `head :: rest` merged with `right`, both already in byte order.
+#[partial]
+fn merge_name_into(head: String, rest: List<String>, right: List<String>) -> List<String> {
+    match right {
+        Nil() => Cons(head, rest),
+        Cons(other, others) =>
+            if string_lt(other, head) {
+                Cons(other, merge_name_into(head, rest, others))
+            } else {
+                Cons(head, merge_sorted_names(rest, right))
+            }
+    }
+}
+
+/// Build evaluation environment from elaborated definitions.
+/// Adds all definitions except the one with skip_name.
+fn build_eval_env_from_defs(env: EvalEnvHandle, defs: List<ElabDef>, skip_name: String) -> Unit {
+    match defs {
+        Nil() => (),
+        Cons(def, rest) => {
+            if not(string_eq(def.name, skip_name)) {
+                let _ = eval_env_add(env, def.name, def.term);
+                ()
+            };
+            build_eval_env_from_defs(env, rest, skip_name)
+        }
+    }
+}

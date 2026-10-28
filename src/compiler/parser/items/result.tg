@@ -1,0 +1,12 @@
+// src/compiler/parser/items/result.tg
+// Parse result types for item parsing.
+// These types have been migrated to Result<(T, Cursor), ParseError>.
+
+use parser::ast::nodes::Item;
+use driver::ffi::List;
+use driver::util::list_reverse;
+
+/// Reverse an item list.
+pub fn item_list_reverse(list: List<Item>) -> List<Item> {
+    list_reverse(list)
+}

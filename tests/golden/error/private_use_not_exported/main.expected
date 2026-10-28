@@ -1,0 +1,14 @@
+warning: Signature Collection global collection failed with 1 error; cross-module imports may not resolve.
+  first error: error[E0006]: cannot find `secret_fn` in module `middle` (at 202..219)
+  hint: run `albite doctor check module signature-collection <file>` for details
+[E0006] Error: cannot find `secret_fn` in module `middle`
+   ╭─[tests/golden/error/private_use_not_exported/main.tg:8:5]
+   │
+ 8 │ use middle::secret_fn;
+   │     ────────┬────────  
+   │             ╰────────── 
+   │ 
+   │ Note: Signature Collection global collection failed — this error may be caused by a bad import in another module. Run `albite doctor check module signature-collection <file>` for details.
+───╯
+
+error: aborting due to 1 error

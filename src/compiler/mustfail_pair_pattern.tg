@@ -1,0 +1,39 @@
+// Negative control for test_pair_pattern.tg (ADR 6.10.26c D7, AC 3). Each
+// definition below must be refused, and `check-mustfail-fixtures`
+// (make/quality/tg-tests.mk) requires the file to fail with its exact error
+// count, so a twin that starts being accepted lowers the count and the gate
+// goes red.
+//
+// Each twin is ALSO asserted by its own code in
+// `bootstrap/src/elaborate/tests/items/sorts/pair_pattern.rs`, so one failing
+// for another reason is caught there. Only body-level refusals live here: a
+// signature-level refusal stops collection for the whole file.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+pub type Le(n: Nat, m: Nat): Prop = exists k: Nat. n + k == m
+
+pub theorem le_rebuilt(n: Nat, m: Nat, h: Le<n, m>) -> Le<n, m> {
+    let (k, e) = h;
+    (k, e)
+}
+
+// E0014: a dependent pair has two parts; `let (k, (p, q)) = h` spells nesting.
+pub theorem three_parts(n: Nat, m: Nat, h: Le<n, m>) -> Le<n, m> {
+    let (k, e, z) = h;
+    (k, e)
+}
+
+// E0010: the evidence is about `k`, so the rebuilt pair at `k + 1` is refused.
+pub theorem wrong_witness(n: Nat, m: Nat, h: Le<n, m>) -> Le<n, m> {
+    let (k, e) = h;
+    (k + 1, e)
+}
+
+// E0011: the block's inferred type names the unpacked witness, and its
+// scrutinee is no variable, so the witness would escape its `let`.
+fn escaping_witness(n: Nat, m: Nat, h: Le<n, m>) -> Nat {
+    let unpacked = { let (k, e) = le_rebuilt(n, m, h); e };
+    0
+}

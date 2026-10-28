@@ -1,0 +1,10 @@
+# ADR 16.10.26p D4: the live guardrail rung's mode. `report` warns and lets the
+# ladder continue; `enforce` (or this file's ABSENCE, or any other value) makes a
+# writable workspace or a planted instruction file `doctor` exit 3.
+#
+# The flip to enforce is its own commit, and it DELETES this file — after the
+# containers are recreated, AC4–AC9 pass and `make docker-vm-doctor` shows no
+# guardrail warning. A missing file means enforce, so report mode cannot come
+# back without re-adding a file that review will see.
+[guardrail]
+mode = "report"

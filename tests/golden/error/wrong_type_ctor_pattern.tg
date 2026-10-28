@@ -1,0 +1,10 @@
+// E0022 (ADR 4.10.26d D1, D2): `PickJar` belongs to `JarKind`, so it cannot
+// name a case of a `CupKind` — it would read index 0's `Unit` as its `Nat`.
+// The names are far from any other golden's, which see this file as a
+// sibling and would otherwise suggest one.
+type CupKind = EmptyCup | FullCup(Nat)
+type JarKind = PickJar(Nat) | SkipJar
+
+fn pick(c: CupKind) -> Nat {
+    match c { PickJar(k) => k, _ => 0 }
+}

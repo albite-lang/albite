@@ -1,0 +1,35 @@
+// Benchmark: many concatenations of short strings (ADR 4.10.26n P0.3)
+//
+// The shape where allocation and call overhead dominate: each round joins two
+// short strings and keeps only the length, so no result grows and every `++`
+// is the non-owned `tg_string_concat` (neither operand is a dead heap
+// temporary). `string_concat_short_native.tg` is the same loop over the port.
+// Usage: ./string_concat_short [rounds]  (default: 2000000)
+
+extern "C" fn tg_argc() -> Nat
+extern "C" fn tg_argv(index: Nat) -> Nat
+extern "C" fn tg_string_to_nat(s: Nat) -> Nat
+
+fn get_rounds() -> Nat {
+  if tg_argc() > 1 { tg_string_to_nat(tg_argv(1)) } else { 2000000 }
+}
+
+fn piece(i: Nat) -> String {
+  if i % 2 == 0 { "fox" } else { "dog!" }
+}
+
+/// Sum the lengths of `rounds` short joins. Tail-recursive.
+// Partial (ADR 11.8.26b): a counted loop, which the termination gate refuses.
+#[partial]
+fn join_rounds(i: Nat, rounds: Nat, total: Nat) -> Nat {
+  if i == rounds {
+    total
+  } else {
+    let joined = piece(i) ++ piece(i + 1);
+    join_rounds(i + 1, rounds, total + string_len(joined))
+  }
+}
+
+fn main() -> Nat {
+  join_rounds(0, get_rounds(), 0)
+}

@@ -1,0 +1,8 @@
+// ADR 4.10.26h D7: a statement that says a witness exists. The bootstrap
+// accepts it; tungsten1 consumes no `exists` token, so it refuses at parse.
+// The divergence is a refusal on the self-host's side, never an acceptance,
+// and the battery row records it (roadmap.4.10.26c D4: no mirror in batch 7).
+
+pub theorem zero_witness(n: Nat) -> exists k: Nat. n + k == n {
+    (0, refl)
+}

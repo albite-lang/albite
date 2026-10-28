@@ -1,0 +1,25 @@
+// src/compiler/codegen/ir_main.tg
+// The driver never reaches this module: `run_compile` delegates codegen to the
+// bootstrap binary, so it is compiled and type-checked but executed only by
+// `test_codegen*.tg` / `test_cir_captures.tg`. See codegen/mod.tg (ADR 3.9.26a).
+// Main wrapper generation.
+//
+// Emits a `main(argc, argv)` C entry point that calls the user's `albite_main`.
+
+use codegen::ir_builder::{IRState, emit_line, emit_blank};
+
+// ===========================================================================
+// MAIN WRAPPER
+// ===========================================================================
+
+/// Emit the C-level main() that calls albite_main and exits.
+pub fn emit_main_wrapper(st: IRState) -> IRState {
+    let st = emit_line(st, "; Entry point wrapper");
+    let st = emit_line(st, "define i64 @main(i32 %argc, ptr %argv) {");
+    let st = emit_line(st, "entry:");
+    // Call albite_main (closure wrapper returns { ptr, ptr }, we call $direct)
+    let st = emit_line(st, "  %result = call i64 @albite_main$direct(ptr null)");
+    let st = emit_line(st, "  ret i64 0");
+    let st = emit_line(st, "}");
+    emit_blank(st)
+}

@@ -1,0 +1,78 @@
+// What the termination mirror sends beside each parameter (ADR 3.9.26f).
+//
+// This encoder μ-wraps a type only when a field names it directly, so a
+// cluster member such as `MaybeExpr` reaches the shared engine as a bare sum,
+// which descent refuses as a root. The fix sends each parameter's DECLARED
+// type name beside its structure, and the seam names the binder back. These
+// assert the name that is sent, over a really parsed signature: the verdict
+// the name buys is asserted on the Rust side of the seam
+// (`albite_core/src/ffi/termination/tests/nominal.rs`), because the
+// evaluator executes none of the `tg_termination_*` externs.
+
+mod driver;
+mod lexer;
+mod parser;
+mod elab;
+
+use driver::ffi::test::{assert_eq_nat, assert_eq_string};
+use driver::ffi::{List, Nil, Cons};
+use lexer::scanner::{tokenize, lex_result_tokens};
+use parser::lib::{parse_file, file_parse_result_items};
+use parser::ast::nodes::{Item, ItemFn, Param};
+use elab::items::termination::{termination_type_head_name};
+use driver::util::{list_len};
+
+/// The parameters of the first item, which the fixtures make a function.
+fn params_of(src: String) -> List<Param> {
+    let toks = lex_result_tokens(tokenize(src, "t.tg"));
+    let items: List<Item> = file_parse_result_items(parse_file(toks, "t.tg"));
+    match items {
+        Cons(item, _) => fn_item_params(item),
+        _ => Nil()
+    }
+}
+
+// A lone `Cons(ItemFn(f), _)` arm is refused (E0021) since ADR 13.10.26u, so
+// the head is matched on its own.
+fn fn_item_params(item: Item) -> List<Param> {
+    match item {
+        ItemFn(f) => f.params,
+        _ => Nil()
+    }
+}
+
+/// The head name sent for each parameter, in order, each followed by a comma.
+fn head_names(params: List<Param>) -> String {
+    match params {
+        Nil() => "",
+        Cons(param, rest) => termination_type_head_name(param.ty) ++ "," ++ head_names(rest)
+    }
+}
+
+// 3.9.26f AC2: a bare path sends the name the binder is named back to.
+fn test_a_bare_path_sends_its_type_name() -> Unit {
+    let params = params_of("fn f(e: MaybeExpr) -> Nat { 0 }");
+    let _ = assert_eq_nat(list_len(params), 1);
+    assert_eq_string(head_names(params), "MaybeExpr,")
+}
+
+// An application sends its HEAD, never an argument: `List<UseTree>` is a list,
+// and naming it `UseTree` would make a list a root it is not.
+fn test_an_application_sends_its_head_not_its_argument() -> Unit {
+    let params = params_of("fn f(trees: List<UseTree>) -> Nat { 0 }");
+    assert_eq_string(head_names(params), "List,")
+}
+
+// A qualified path sends its last segment, the name the type graph keys on.
+fn test_a_qualified_path_sends_its_last_segment() -> Unit {
+    let params = params_of("fn f(t: parser::ast::UseTree) -> Nat { 0 }");
+    assert_eq_string(head_names(params), "UseTree,")
+}
+
+// A parameter with no type name still holds its position: the count is the
+// Lambda index, so a skipped slot must not shift the next name onto it.
+fn test_an_unnamed_type_sends_nothing_but_keeps_its_slot() -> Unit {
+    let params = params_of("fn f(g: Nat -> Nat, e: MaybeExpr) -> Nat { 0 }");
+    let _ = assert_eq_nat(list_len(params), 2);
+    assert_eq_string(head_names(params), ",MaybeExpr,")
+}

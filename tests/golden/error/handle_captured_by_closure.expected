@@ -1,0 +1,9 @@
+[E0093] Error: handle `sb` is captured by a closure, in `deferred`
+    ╭─[tests/golden/error/handle_captured_by_closure.tg:30:54]
+    │
+ 30 │     let finish = |suffix: String| to_string(push_str(sb, suffix));
+    │                                                      ─┬  
+    │                                                       ╰── 
+────╯
+
+error: aborting due to 1 error

@@ -1,0 +1,112 @@
+// The Tier 4 finite-sum library (ADR 9.10.26j): `sum_below(f, n)`, the sum
+// of `f(0)` through `f(n - 1)`, as a definition the kernel unfolds, with the
+// lemmas the binomial theorem cites.
+//
+// A FLAT sibling of nat_arith.tg and nat_order.tg, imported with
+// `mod nat_sum;` from any file in this directory (9.10.26j D1). It is apart
+// from nat_pow.tg because `ring` cites that file by path and has nothing to
+// take from this one.
+//
+// WHY `natrec` (arithmetic_library.md § H5): as nat_pow.tg, a `natrec` with no
+// self-call is admitted `Total` and unfolded by the kernel, so `sum_succ` is
+// `refl`.
+//
+// THE SUMMAND IS A REDEX. Cited at a lambda, `sum_succ`'s side carries the
+// application `(|k| c * f(k))(j)` unreduced: instantiation does not β-reduce,
+// `rewrite` has no β-step and `ring` reads an application as an atom. So each
+// inductive lemma's step is its own `*_step` lemma, stated at the converted
+// goal with the summand already reduced, and cited by `exact`, where
+// conversion meets the redex. `ring` closes the step lemma.
+//
+// `Lt` is spelled `nat_order::Lt`, which resolves when this file is imported
+// (nat_divmod.tg's finding).
+//
+// Suite: test_nat_pow_sum.tg, with its must-fail twin mustfail_nat_pow_sum.tg.
+
+// `ring` cites the semiring laws; `sum_shift`'s base cites `add_zero_left`.
+mod nat_arith;
+// `Lt`, `lt_trans`, `lt_succ_self`. Re-exported, so a suite reaches `Lt` as
+// `nat_sum::nat_order::Lt` and does not import the family file by a second
+// path, which loses its families (E0023; nat_divmod.tg's finding).
+pub mod nat_order;
+
+pub fn sum_below(f: Nat -> Nat, n: Nat) -> Nat {
+    natrec(Nat, 0, fn(j: Nat, acc: Nat) => acc + f(j), n)
+}
+
+pub theorem sum_zero(f: Nat -> Nat) -> Eq<Nat, sum_below(f, 0), 0> { refl }
+
+pub theorem sum_succ(f: Nat -> Nat, n: Nat) -> Eq<Nat, sum_below(f, n + 1), sum_below(f, n) + f(n)> { refl }
+
+// ── Linearity ───────────────────────────────────────────────────────────────
+
+pub theorem sum_add_step(f: Nat -> Nat, g: Nat -> Nat, j: Nat,
+    ih: Eq<Nat, sum_below(|k: Nat| f(k) + g(k), j), sum_below(f, j) + sum_below(g, j)>)
+    -> Eq<Nat, sum_below(|k: Nat| f(k) + g(k), j) + (f(j) + g(j)),
+               (sum_below(f, j) + f(j)) + (sum_below(g, j) + g(j))> by {
+    rewrite [ih];
+    ring
+}
+
+pub theorem sum_add(f: Nat -> Nat, g: Nat -> Nat, n: Nat)
+    -> Eq<Nat, sum_below(|k: Nat| f(k) + g(k), n), sum_below(f, n) + sum_below(g, n)> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact sum_add_step(f, g, j, ih)
+}
+
+pub theorem sum_mul_left_step(c: Nat, f: Nat -> Nat, j: Nat,
+    ih: Eq<Nat, sum_below(|k: Nat| c * f(k), j), c * sum_below(f, j)>)
+    -> Eq<Nat, sum_below(|k: Nat| c * f(k), j) + c * f(j), c * (sum_below(f, j) + f(j))> by {
+    rewrite [ih];
+    ring
+}
+
+pub theorem sum_mul_left(c: Nat, f: Nat -> Nat, n: Nat)
+    -> Eq<Nat, sum_below(|k: Nat| c * f(k), n), c * sum_below(f, n)> by {
+    induction n;
+    refl;
+    intro j;
+    intro ih;
+    exact sum_mul_left_step(c, f, j, ih)
+}
+
+// ── Re-indexing ─────────────────────────────────────────────────────────────
+
+pub theorem sum_shift_step(f: Nat -> Nat, j: Nat,
+    ih: Eq<Nat, sum_below(f, j + 1), f(0) + sum_below(|k: Nat| f(k + 1), j)>)
+    -> Eq<Nat, sum_below(f, j + 1) + f(j + 1), f(0) + (sum_below(|k: Nat| f(k + 1), j) + f(j + 1))> by {
+    rewrite [ih];
+    ring
+}
+
+// The base is `0 + f(0) == f(0)`: `+` is stuck on its left operand.
+pub theorem sum_shift(f: Nat -> Nat, n: Nat)
+    -> Eq<Nat, sum_below(f, n + 1), f(0) + sum_below(|k: Nat| f(k + 1), n)> by {
+    induction n;
+    exact nat_arith::add_zero_left(f(0));
+    intro j;
+    intro ih;
+    exact sum_shift_step(f, j, ih)
+}
+
+// ── Congruence ──────────────────────────────────────────────────────────────
+
+// The hypothesis is in the return type, so the motive quantifies over it
+// (its type mentions `n`; 7.10.26n). The step restricts it to `j` and uses it
+// at `j` for the new summand.
+pub theorem sum_congr(f: Nat -> Nat, g: Nat -> Nat, n: Nat)
+    -> ((k: Nat) -> nat_order::Lt<k, n> -> Eq<Nat, f(k), g(k)>) -> Eq<Nat, sum_below(f, n), sum_below(g, n)> by {
+    induction n;
+    intro h;
+    refl;
+    intro j;
+    intro ih;
+    intro h;
+    exact trans(cong(|x: Nat| x + f(j),
+                     ih(fn(k: Nat, hk: nat_order::Lt<k, j>) =>
+                            h(k, nat_order::lt_trans(k, j, j + 1, hk, nat_order::lt_succ_self(j))))),
+                cong(|x: Nat| sum_below(g, j) + x, h(j, nat_order::lt_succ_self(j))))
+}

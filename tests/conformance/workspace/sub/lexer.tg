@@ -1,0 +1,2 @@
+// The declared `lexer` of every entry in `sub/` (ADR 30.9.26i §2.5).
+pub fn sub_only() -> Nat { 2 }

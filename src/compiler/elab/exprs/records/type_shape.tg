@@ -1,0 +1,71 @@
+// Non-recursive type-shape predicates and component getters for deep type
+// equality (ADR 29.9.26k D3).
+//
+// None of these calls back into `deep_types_equal_aux`: the recursion stays in
+// the one function that is already annotated partial, so no helper joins a
+// recursive cycle and the termination census does not move. The price is that
+// a getter re-tests the former its predicate already matched — a few
+// non-allocating `tg_type_is_*` calls per node.
+//
+// Not glob-re-exported from `records/mod.tg` (D6): only `deep_eq.tg` imports
+// these, and a glob would leak them into every importer of `records`.
+
+use driver::ffi::{cstring_to_string};
+use elab::ffi::{
+    TypeHandle,
+    tg_type_is_product, tg_type_get_product_left, tg_type_get_product_right,
+    tg_type_is_tyvar, tg_type_get_tyvar_name,
+    tg_type_is_sum, tg_type_get_sum_left, tg_type_get_sum_right,
+    tg_type_is_arrow, tg_type_get_arrow_domain, tg_type_get_arrow_codomain,
+    tg_type_is_mu, tg_type_get_mu_body, tg_type_get_mu_var,
+    tg_type_is_forall, tg_type_get_forall_body, tg_type_get_forall_var,
+    tg_cstr_eq
+};
+
+/// Both types are the same two-component former: sum, product or arrow.
+pub fn same_pair_former(a: TypeHandle, b: TypeHandle) -> Bool {
+    (tg_type_is_sum(a) && tg_type_is_sum(b))
+    || (tg_type_is_product(a) && tg_type_is_product(b))
+    || (tg_type_is_arrow(a) && tg_type_is_arrow(b))
+}
+
+/// The left component of a sum or product, or an arrow's domain.
+pub fn pair_former_left(ty: TypeHandle) -> TypeHandle {
+    if tg_type_is_sum(ty) { tg_type_get_sum_left(ty) }
+    else if tg_type_is_product(ty) { tg_type_get_product_left(ty) }
+    else { tg_type_get_arrow_domain(ty) }
+}
+
+/// The right component of a sum or product, or an arrow's codomain.
+pub fn pair_former_right(ty: TypeHandle) -> TypeHandle {
+    if tg_type_is_sum(ty) { tg_type_get_sum_right(ty) }
+    else if tg_type_is_product(ty) { tg_type_get_product_right(ty) }
+    else { tg_type_get_arrow_codomain(ty) }
+}
+
+/// Both types are μ, or both ∀, binding the same name. The name fetches sit
+/// inside the `&&` chain, so they run only once both formers have matched.
+pub fn same_binder(a: TypeHandle, b: TypeHandle) -> Bool {
+    (tg_type_is_mu(a) && tg_type_is_mu(b)
+        && tg_cstr_eq(tg_type_get_mu_var(a), tg_type_get_mu_var(b)))
+    || (tg_type_is_forall(a) && tg_type_is_forall(b)
+        && tg_cstr_eq(tg_type_get_forall_var(a), tg_type_get_forall_var(b)))
+}
+
+/// The body under a μ or ∀ binder.
+pub fn binder_body(ty: TypeHandle) -> TypeHandle {
+    if tg_type_is_mu(ty) { tg_type_get_mu_body(ty) }
+    else { tg_type_get_forall_body(ty) }
+}
+
+/// A type variable against a μ binding the same name, in either order: the
+/// variable is the μ's own recursive occurrence.
+pub fn tyvar_meets_mu_binder(a: TypeHandle, b: TypeHandle) -> Bool {
+    if tg_type_is_tyvar(a) && tg_type_is_mu(b) {
+        cstring_to_string(tg_type_get_tyvar_name(a)) == cstring_to_string(tg_type_get_mu_var(b))
+    } else if tg_type_is_mu(a) && tg_type_is_tyvar(b) {
+        cstring_to_string(tg_type_get_mu_var(a)) == cstring_to_string(tg_type_get_tyvar_name(b))
+    } else {
+        false
+    }
+}

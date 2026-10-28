@@ -1,0 +1,34 @@
+// Negative control for test_tactic_ring.tg (ADR 4.10.26g D7, AC 4).
+//
+// Each theorem below is one wrong `ring` proof, and each must be refused
+// for its own reason. `check-mustfail-fixtures` (make/quality/tg-tests.mk)
+// requires this file to fail with exactly
+//
+//   albite test src/compiler/mustfail_tactic_ring.tg --require-tests
+//     -> aborting due to 4 errors
+//
+// The count alone cannot say which error fired, so each case's code is also
+// pinned by a Rust test in bootstrap/src/elaborate/tactics/procedures/ring/
+// tests/ (the 2.9.26c lesson). The cases and their codes:
+//
+//   1. ring_mustfail_false            `n + m = n * m`                   E0087
+//   2. ring_mustfail_hidden_by_atom   `(n - 1) + 1 = n`, false at 0     E0087
+//   3. ring_mustfail_bool             a goal over `Bool`                E0082
+//   4. ring_mustfail_non_equation     a goal that is not an equation    E0082
+//
+// `ring` without `mod nat_arith;` cannot share this file, which imports the
+// library: it is pinned by `ring_without_the_library_is_e0082` instead.
+//
+// Deliberately NOT named `test_*.tg`: `make tg-test` globs that pattern and a
+// file that must fail would fail the gate by design.
+
+// Cited by qualified path, as test_tactic_ring.tg does.
+mod nat_arith;
+
+pub theorem ring_mustfail_false(n: Nat, m: Nat) -> Eq<Nat, n + m, n * m> by { ring }
+
+pub theorem ring_mustfail_hidden_by_atom(n: Nat) -> Eq<Nat, (n - 1) + 1, n> by { ring }
+
+pub theorem ring_mustfail_bool(a: Bool) -> Eq<Bool, a, a> by { ring }
+
+pub theorem ring_mustfail_non_equation(n: Nat) -> Nat by { ring }

@@ -1,0 +1,17 @@
+// Golden test (ADR 9.10.26f AC 4): a program's `write` and `malloc` are its
+// own. Each returns its own value, so the sum is 3 + 40 = 43; and the
+// concatenation runs the runtime's allocator, which still reaches libc's
+// `malloc` because the program's is spelled `_tg_6malloc`.
+fn write(fd: Nat, buf: Nat, len: Nat) -> Nat { len }
+fn malloc(size: Nat) -> Nat { size * 10 }
+
+fn digits(n: Nat) -> String {
+    match n {
+        43 => "43",
+        _ => "not 43"
+    }
+}
+
+fn main() -> String {
+    "own write and malloc: " ++ digits(write(1, 0, 3) + malloc(4))
+}

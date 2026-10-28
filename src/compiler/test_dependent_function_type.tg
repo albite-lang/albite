@@ -1,0 +1,80 @@
+// A statement can take a dependent hypothesis (ADR 7.10.26n AC 2, AC 3).
+//
+// `(n: Nat) -> P<n>` is a dependent function type: a proof that `P` holds at
+// every `n`. Applied, `h(k)` is `P<k>`. These are 6.10.26h D9's drafted rows,
+// which had no surface spelling until this ADR. An unused binder is a plain
+// arrow, so `(n: Nat) -> Nat` is `Nat -> Nat`.
+//
+// Tier 3 (tg-test-tiers.toml): every assertion discharges at elaboration, and
+// every theorem here is re-checked by the kernel (`albite doctor check proof
+// kernel-census`). The must-fail twin is `mustfail_dependent_function_type.tg`;
+// the parse refusals (`(n: Nat)` with no arrow, a telescope) are Rust tests in
+// `bootstrap/src/parser/tests/dependent/function_type.rs`.
+//
+// Strong induction is proved in nat_order.tg (`nat_strong_ind`) and cited
+// here at a family, in a theorem the kernel re-checks.
+
+mod nat_order;
+
+pub type AtLeastOne(n: Nat): Prop = nat_order::Le<1, n>
+pub type AtLeastZero(n: Nat): Prop = nat_order::Le<0, n>
+
+// Leibniz's rule, as test_predicate_binder.tg states it.
+pub theorem pred_transport<P: Nat -> Prop>(a: Nat, b: Nat, e: Eq<Nat, a, b>, h: P<a>) -> P<b> {
+    subst(e, |x: Nat| P<x>, h)
+}
+
+// ── 6.10.26h D9's dropped rows ──────────────────────────────────────────────
+
+pub theorem pred_at<P: Nat -> Prop>(h: (n: Nat) -> P<n>, k: Nat) -> P<k> { h(k) }
+
+pub theorem one_le_succ_at(k: Nat, h: (n: Nat) -> AtLeastOne<n>) -> AtLeastOne<k> {
+    pred_at::<AtLeastOne>(h, k)
+}
+
+pub theorem pred_at_via_transport<P: Nat -> Prop>(h: (n: Nat) -> P<n>, k: Nat) -> P<k> {
+    pred_transport::<P>(k, k, refl, h(k))
+}
+
+pub theorem add_zero_everywhere(h: (n: Nat) -> Eq<Nat, n + 0, n>, k: Nat) -> Eq<Nat, k + 0, k> { h(k) }
+
+// A lambda checked against a dependent function type, its parameter named
+// apart from the binder.
+pub theorem lift(k: Nat) -> Eq<Nat, k + 0, k> { add_zero_everywhere(|m: Nat| refl, k) }
+
+// ── Strong induction, cited at a family ─────────────────────────────────────
+
+pub theorem all_at_least_zero(step: (n: Nat) -> ((m: Nat) -> nat_order::Lt<m, n> -> AtLeastZero<m>) -> AtLeastZero<n>, k: Nat) -> AtLeastZero<k> {
+    nat_order::nat_strong_ind::<AtLeastZero>(step, k)
+}
+
+// ── Each citation is the statement as written ───────────────────────────────
+
+fn test_an_unused_binder_is_an_arrow() -> Unit {
+    let f: (n: Nat) -> Nat = |m: Nat| m + 1;
+    let _g: Nat -> Nat = f;
+    ()
+}
+
+fn test_a_dependent_hypothesis_is_applied_at_its_argument() -> Unit {
+    let h: (n: Nat) -> AtLeastZero<n> = |n: Nat| nat_order::zero_le(n);
+    let _p: AtLeastZero<5> = pred_at::<AtLeastZero>(h, 5);
+    let _q: AtLeastZero<2> = pred_at_via_transport::<AtLeastZero>(h, 2);
+    ()
+}
+
+fn test_a_lambda_passes_as_a_dependent_hypothesis() -> Unit {
+    let _p: Eq<Nat, 4 + 0, 4> = lift(4);
+    let _q: Eq<Nat, 7 + 0, 7> = add_zero_everywhere(|j: Nat| refl, 7);
+    ()
+}
+
+fn test_strong_induction_is_cited_at_a_family() -> Unit {
+    let _p: AtLeastZero<3> = all_at_least_zero(|n: Nat, ih| nat_order::zero_le(n), 3);
+    let _q: AtLeastZero<4> = nat_order::nat_strong_ind::<AtLeastZero>(|n: Nat, ih| nat_order::zero_le(n), 4);
+    ()
+}
+
+fn test_a_dependent_hypothesis_refuses_a_bool() -> Unit {
+    expect_error({ let h: (n: Nat) -> AtLeastZero<n> = |n: Nat| nat_order::zero_le(n); h(true) }, "E0010")
+}

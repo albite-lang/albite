@@ -1,0 +1,155 @@
+//! Type component accessors.
+//!
+//! Provides C-compatible functions for decomposing types (get_* accessors).
+//! Type variable/app accessors, substitution, and debug are in `accessors_introspection.rs`.
+//! Type predicates (is_*) are in `predicates/`.
+//!
+//! Accessors return the STORED child handle — O(1), no copy (ADR 2.7.26a
+//! §4). Handles are opaque and never identity-compared by callers, so the
+//! aliasing is invisible; it also means decomposing then recomposing a type
+//! allocates only the recomposed spine.
+
+use super::nodes::TypeNode;
+use super::pi::arrow_view;
+use crate::ffi::{with_arena_ref, TypeHandle, INVALID_HANDLE};
+
+// ============================================================================
+// Type Component Accessors
+// ============================================================================
+
+/// Get the body of a μ-type. Returns `INVALID_HANDLE` if not a μ-type.
+#[no_mangle]
+pub extern "C" fn tg_type_get_mu_body(ty: TypeHandle) -> TypeHandle {
+    with_arena_ref!(|arena| {
+        match arena.get_type_node(ty) {
+            Some(TypeNode::Mu(_, body)) => *body,
+            _ => INVALID_HANDLE,
+        }
+    })
+}
+
+/// Get the left component of a sum type. Returns `INVALID_HANDLE` if not a sum.
+#[no_mangle]
+pub extern "C" fn tg_type_get_sum_left(ty: TypeHandle) -> TypeHandle {
+    with_arena_ref!(|arena| {
+        if let Some(TypeNode::Sum(left, _)) = arena.get_type_node(ty) {
+            *left
+        } else {
+            #[cfg(debug_assertions)]
+            if std::env::var("TG_DEBUG_TYPES").is_ok() {
+                eprintln!("[warn] tg_type_get_sum_left called on non-sum: handle={ty}");
+            }
+            INVALID_HANDLE
+        }
+    })
+}
+
+/// Get the right component of a sum type. Returns `INVALID_HANDLE` if not a sum.
+#[no_mangle]
+pub extern "C" fn tg_type_get_sum_right(ty: TypeHandle) -> TypeHandle {
+    with_arena_ref!(|arena| {
+        if let Some(TypeNode::Sum(_, right)) = arena.get_type_node(ty) {
+            *right
+        } else {
+            #[cfg(debug_assertions)]
+            if std::env::var("TG_DEBUG_TYPES").is_ok() {
+                eprintln!("[warn] tg_type_get_sum_right called on non-sum: handle={ty}");
+            }
+            INVALID_HANDLE
+        }
+    })
+}
+
+/// Get the left component of a product type. Returns `INVALID_HANDLE` if not a product.
+#[no_mangle]
+pub extern "C" fn tg_type_get_product_left(ty: TypeHandle) -> TypeHandle {
+    with_arena_ref!(|arena| {
+        match arena.get_type_node(ty) {
+            Some(TypeNode::Product(left, _)) => *left,
+            _ => INVALID_HANDLE,
+        }
+    })
+}
+
+/// Get the right component of a product type. Returns `INVALID_HANDLE` if not a product.
+#[no_mangle]
+pub extern "C" fn tg_type_get_product_right(ty: TypeHandle) -> TypeHandle {
+    with_arena_ref!(|arena| {
+        match arena.get_type_node(ty) {
+            Some(TypeNode::Product(_, right)) => *right,
+            _ => INVALID_HANDLE,
+        }
+    })
+}
+
+/// Get the domain of an arrow (or `Pi`, ADR 2.10.26f D1) type. Returns
+/// `INVALID_HANDLE` if not an arrow.
+#[no_mangle]
+pub extern "C" fn tg_type_get_arrow_domain(ty: TypeHandle) -> TypeHandle {
+    with_arena_ref!(|arena| {
+        arena
+            .get_type_node(ty)
+            .and_then(arrow_view)
+            .map_or(INVALID_HANDLE, |(domain, _)| domain)
+    })
+}
+
+/// Get the codomain of an arrow (or `Pi`) type, as written: a `Pi`'s binder
+/// stays free, so a reader that moves it into a result type calls
+/// `tg_type_instantiate_codomain` instead (ADR 2.10.26f D1, D3). Returns
+/// `INVALID_HANDLE` if not an arrow.
+#[no_mangle]
+pub extern "C" fn tg_type_get_arrow_codomain(ty: TypeHandle) -> TypeHandle {
+    with_arena_ref!(|arena| {
+        arena
+            .get_type_node(ty)
+            .and_then(arrow_view)
+            .map_or(INVALID_HANDLE, |(_, codomain)| codomain)
+    })
+}
+
+/// Get the type component of an equality type. Returns `INVALID_HANDLE` if not Eq.
+#[no_mangle]
+pub extern "C" fn tg_type_get_eq_type(ty: TypeHandle) -> TypeHandle {
+    with_arena_ref!(|arena| {
+        match arena.get_type_node(ty) {
+            Some(TypeNode::Eq(inner_ty, _, _)) => *inner_ty,
+            _ => INVALID_HANDLE,
+        }
+    })
+}
+
+/// Get the LHS term of an equality type. Returns `INVALID_HANDLE` if not Eq.
+#[no_mangle]
+pub extern "C" fn tg_type_get_eq_lhs(ty: TypeHandle) -> super::super::TermHandle {
+    with_arena_ref!(|arena| {
+        match arena.get_type_node(ty) {
+            Some(TypeNode::Eq(_, lhs, _)) => *lhs,
+            _ => INVALID_HANDLE,
+        }
+    })
+}
+
+/// Get the RHS term of an equality type. Returns `INVALID_HANDLE` if not Eq.
+#[no_mangle]
+pub extern "C" fn tg_type_get_eq_rhs(ty: TypeHandle) -> super::super::TermHandle {
+    with_arena_ref!(|arena| {
+        match arena.get_type_node(ty) {
+            Some(TypeNode::Eq(_, _, rhs)) => *rhs,
+            _ => INVALID_HANDLE,
+        }
+    })
+}
+
+/// Get the body of a forall type. Returns `INVALID_HANDLE` if not Forall.
+/// Note: The body still has the free type variable - full substitution
+/// requires additional support.
+#[no_mangle]
+pub extern "C" fn tg_type_get_forall_body(ty: TypeHandle) -> TypeHandle {
+    with_arena_ref!(|arena| {
+        match arena.get_type_node(ty) {
+            Some(TypeNode::Forall(_, body)) => *body,
+            _ => INVALID_HANDLE,
+        }
+    })
+}
